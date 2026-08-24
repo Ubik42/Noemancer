@@ -41,6 +41,7 @@ const expected = [
   "asset.registry",
   "asset.source.redo",
   "asset.source.undo",
+  "asset.sprite.pressure",
   "asset.tile-palette.autotile",
   "asset.tilemap.region",
   "asset.tilemap.stroke",
@@ -153,10 +154,16 @@ const vfxBenchmark = await client.callTool({ name: "vfx.benchmark", arguments: {
 const vfxGpuProgram = await client.callTool({ name: "vfx.gpu-program.inspect", arguments: {} });
 const vfxPreview = await client.callTool({ name: "vfx.preview", arguments: { seed: 42, steps: 20, maxParticles: 2 } });
 const vfxSpawn = await client.callTool({ name: "vfx.spawn", arguments: { position: { x: 2.5, y: 2.2, z: 1 }, seed: 42 } });
+const spritePressure = await client.callTool({ name: "asset.sprite.pressure", arguments: {
+  frameCount: 1024, clipCount: 8, framesPerClip: 256, atlasColumns: 64, frameEdge: 16,
+} });
 const networkProfile = await client.callTool({ name: "network.profile.describe", arguments: {} });
 const networkSnapshot = await client.callTool({ name: "network.snapshot.preview", arguments: { tick: 42, maxEntities: 2 } });
 const networkLoopback = await client.callTool({ name: "network.loopback.verify", arguments: {} });
 const networkTransport = await client.callTool({ name: "network.transport.verify", arguments: { payloadBytes: 384 } });
+if (spritePressure.isError || !textContent(spritePressure, "asset.sprite.pressure").includes("noemancer.sprite-production-pressure/0.1")) {
+  throw new Error("asset.sprite.pressure did not expose the bounded long-sequence production report");
+}
 if (inputResult.isError || !textContent(inputResult, "input.actions.observe").includes("gameplay.jump") ||
     projectUiResult.isError || !textContent(projectUiResult, "ui.project.observe").includes("noemancer.ui-observation/0.1") ||
     audioResult.isError || !textContent(audioResult, "audio.mixer.observe").includes("audio.master") ||

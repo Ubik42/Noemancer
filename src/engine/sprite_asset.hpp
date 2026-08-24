@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -81,6 +82,39 @@ struct SpriteAssetDocument final {
     SpriteProvenance provenance;
 };
 
+// Sprite assets intentionally keep the existing single-texture schema. These
+// limits bound authoring and ingestion work for long frame sequences and large
+// clip sets without inventing a texture-array or multi-page persistence shape.
+struct SpriteAssetValidationLimits final {
+    std::size_t max_source_bytes{64U * 1024U * 1024U};
+    std::size_t max_frames{65536U};
+    std::size_t max_clips{4096U};
+    std::size_t max_frames_per_clip{262144U};
+    std::size_t max_total_clip_frame_references{1000000U};
+};
+
+// Renderer-neutral production evidence for a sprite atlas.  atlas_page_count
+// is always one for the current schema because SpriteAssetDocument owns one
+// textureAsset; the remaining fields quantify layout occupancy and reuse.
+struct SpriteAssetProductionReport final {
+    bool valid{};
+    std::string code{"sprite.production-invalid"};
+    std::size_t frame_count{};
+    std::size_t clip_count{};
+    std::size_t total_clip_frame_references{};
+    std::size_t unique_referenced_frame_count{};
+    std::size_t unreferenced_frame_count{};
+    std::size_t max_clip_frame_count{};
+    std::uint32_t atlas_page_count{1U};
+    std::uint64_t atlas_area{};
+    std::uint64_t frame_area_sum{};
+    std::uint64_t occupied_area{};
+    std::uint64_t free_area{};
+    std::uint64_t overlap_area{};
+    std::uint64_t layout_fingerprint{};
+    std::vector<SpriteAssetError> diagnostics;
+};
+
 struct SpriteAssetParseResult final {
     std::optional<SpriteAssetDocument> document;
     std::vector<SpriteAssetError> errors;
@@ -90,7 +124,15 @@ struct SpriteAssetParseResult final {
 class SpriteAssetCodec final {
 public:
     [[nodiscard]] static SpriteAssetParseResult parse_json(std::string_view json);
+    [[nodiscard]] static SpriteAssetParseResult parse_json(
+        std::string_view json, const SpriteAssetValidationLimits& limits);
     [[nodiscard]] static std::vector<SpriteAssetError> validate(const SpriteAssetDocument& document);
+    [[nodiscard]] static std::vector<SpriteAssetError> validate(
+        const SpriteAssetDocument& document, const SpriteAssetValidationLimits& limits);
+    [[nodiscard]] static SpriteAssetProductionReport production_report(
+        const SpriteAssetDocument& document);
+    [[nodiscard]] static SpriteAssetProductionReport production_report(
+        const SpriteAssetDocument& document, const SpriteAssetValidationLimits& limits);
     [[nodiscard]] static std::string write_canonical_json(const SpriteAssetDocument& document);
     [[nodiscard]] static std::vector<std::string> asset_dependencies(const SpriteAssetDocument& document);
 };
@@ -144,5 +186,10 @@ public:
 private:
     std::unordered_map<std::string,SpriteAssetDocument> assets_;
 };
+
+// Deterministic synthetic long-sequence probe used by CLI/Agent acceptance.
+// It measures the existing single-atlas contract and never claims GPU timing.
+[[nodiscard]] std::string sprite_pressure_report_json(std::uint32_t frame_count,std::uint32_t clip_count,
+    std::uint32_t frames_per_clip,std::uint32_t atlas_columns=64,std::uint32_t frame_edge=16);
 
 } // namespace noemancer

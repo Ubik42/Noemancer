@@ -290,6 +290,10 @@ add_executable(noemancer_sprite_asset_tests sprite_asset_tests.cpp)
 target_link_libraries(noemancer_sprite_asset_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.sprite_asset COMMAND noemancer_sprite_asset_tests)
 
+add_executable(noemancer_sprite_asset_production_pressure_tests sprite_asset_production_pressure_tests.cpp)
+target_link_libraries(noemancer_sprite_asset_production_pressure_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.sprite_asset_production_pressure COMMAND noemancer_sprite_asset_production_pressure_tests)
+
 add_executable(noemancer_semantic_2d_rig_prototype_tests semantic_2d_rig_prototype_tests.cpp)
 target_link_libraries(noemancer_semantic_2d_rig_prototype_tests PRIVATE
     noemancer::engine nlohmann_json::nlohmann_json)
@@ -301,6 +305,10 @@ add_test(NAME noemancer.semantic_2d_rig_prototype
 add_executable(noemancer_tilemap_asset_tests tilemap_asset_tests.cpp)
 target_link_libraries(noemancer_tilemap_asset_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.tilemap_asset COMMAND noemancer_tilemap_asset_tests)
+
+add_executable(noemancer_tilemap_asset_production_pressure_tests tilemap_asset_production_pressure_tests.cpp)
+target_link_libraries(noemancer_tilemap_asset_production_pressure_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.tilemap_asset_production_pressure COMMAND noemancer_tilemap_asset_production_pressure_tests)
 
 add_executable(noemancer_project_document_tests project_document_tests.cpp)
 target_link_libraries(noemancer_project_document_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)

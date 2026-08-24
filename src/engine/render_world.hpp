@@ -286,6 +286,6 @@ public:
 
 [[nodiscard]] std::string render_world_json(const RenderWorldSnapshot& snapshot);
 [[nodiscard]] std::string tilemap_pressure_report_json(std::uint32_t chunk_columns,std::uint32_t chunk_rows,
-    std::uint32_t chunk_size,std::uint32_t visible_chunk_radius);
+    std::uint32_t chunk_size,std::uint32_t visible_chunk_radius,std::uint32_t occupied_cells_per_chunk=0);
 
 } // namespace noemancer

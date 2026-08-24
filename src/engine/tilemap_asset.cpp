@@ -160,8 +160,12 @@ TilemapParseResult TilemapAssetCodec::parse_tilemap_json(const std::string_view 
         else error(result.errors,"tilemap.chunk-size-range","/chunkSize","Chunk dimensions must be in [4,128].");
     } else error(result.errors,"tilemap.invalid-chunk-size","/chunkSize","chunkSize must contain two unsigned integers.");
     std::unordered_set<std::string> layer_ids;
+    std::size_t total_chunk_count{};
+    std::size_t total_cell_count{};
     if(!input.contains("layers")||!input.at("layers").is_array()||input.at("layers").empty())error(result.errors,"tilemap.invalid-layers","/layers","layers must be a non-empty array.");
-    else for(std::size_t layer_index=0;layer_index<input.at("layers").size();++layer_index) {
+    else if(input.at("layers").size()>TilemapProductionLimits::maximum_layers) {
+        error(result.errors,"tilemap.layer-limit","/layers","Tilemap layer count exceeds the production limit.");
+    } else for(std::size_t layer_index=0;layer_index<input.at("layers").size();++layer_index) {
         const auto path="/layers/"+std::to_string(layer_index);const auto& value=input.at("layers").at(layer_index);
         if(!fields(value,{"id","sortingLayer","sortingOrder","collisionEnabled","chunks"},path,result.errors))continue;
         TileLayer layer;text(value,"id",path,layer.id,result.errors);text(value,"sortingLayer",path,layer.sorting_layer,result.errors);
@@ -172,7 +176,9 @@ TilemapParseResult TilemapAssetCodec::parse_tilemap_json(const std::string_view 
         else error(result.errors,"tilemap.invalid-collision-enabled",path+"/collisionEnabled","collisionEnabled must be boolean.");
         std::set<std::pair<std::int32_t,std::int32_t>> chunk_positions;
         if(!value.contains("chunks")||!value.at("chunks").is_array())error(result.errors,"tilemap.invalid-chunks",path+"/chunks","chunks must be an array.");
-        else for(std::size_t chunk_index=0;chunk_index<value.at("chunks").size();++chunk_index) {
+        else if(total_chunk_count+value.at("chunks").size()>TilemapProductionLimits::maximum_chunks) {
+            error(result.errors,"tilemap.chunk-limit",path+"/chunks","Tilemap chunk count exceeds the production limit.");
+        } else for(std::size_t chunk_index=0;chunk_index<value.at("chunks").size();++chunk_index) {
             const auto chunk_path=path+"/chunks/"+std::to_string(chunk_index);const auto& item=value.at("chunks").at(chunk_index);
             if(!fields(item,{"position","cells"},chunk_path,result.errors))continue;
             TileChunk chunk;
@@ -183,6 +189,20 @@ TilemapParseResult TilemapAssetCodec::parse_tilemap_json(const std::string_view 
             } else error(result.errors,"tilemap.invalid-chunk-position",chunk_path+"/position","position must contain two signed integers.");
             std::set<std::pair<std::uint16_t,std::uint16_t>> occupied;
             if(!item.contains("cells")||!item.at("cells").is_array())error(result.errors,"tilemap.invalid-cells",chunk_path+"/cells","cells must be an array.");
+            else if(item.at("cells").size()>TilemapProductionLimits::maximum_cells_per_chunk) {
+                error(result.errors,"tilemap.cell-limit","/cells","Cells in a chunk exceed the production limit.");
+            } else if(total_cell_count+item.at("cells").size()>TilemapProductionLimits::maximum_cells) {
+                error(result.errors,"tilemap.cell-limit","/layers","Tilemap cell count exceeds the production limit.");
+            }
+            if(!item.contains("cells")||!item.at("cells").is_array()||
+               item.at("cells").size()>TilemapProductionLimits::maximum_cells_per_chunk||
+               total_cell_count+item.at("cells").size()>TilemapProductionLimits::maximum_cells) {
+                if(item.contains("cells")&&item.at("cells").is_array()) {
+                    // The bounded parser rejects this source before entering a
+                    // potentially unbounded cell loop.
+                    return result;
+                }
+            }
             else for(std::size_t cell_index=0;cell_index<item.at("cells").size();++cell_index) {
                 const auto cell_path=chunk_path+"/cells/"+std::to_string(cell_index);const auto& cell_value=item.at("cells").at(cell_index);
                 if(!cell_value.is_array()||(cell_value.size()!=3&&cell_value.size()!=5)||!cell_value[0].is_number_unsigned()||
@@ -197,6 +217,8 @@ TilemapParseResult TilemapAssetCodec::parse_tilemap_json(const std::string_view 
                 if(!occupied.emplace(cell.x,cell.y).second)error(result.errors,"tilemap.duplicate-cell",cell_path,"A chunk may define each local cell once.");
                 chunk.cells.push_back(std::move(cell));
             }
+            total_cell_count+=item.at("cells").size();
+            ++total_chunk_count;
             std::ranges::sort(chunk.cells,{},[](const TileCell& cell){return std::pair{cell.y,cell.x};});layer.chunks.push_back(std::move(chunk));
         }
         std::ranges::sort(layer.chunks,{},[](const TileChunk& chunk){return std::pair{chunk.y,chunk.x};});document.layers.push_back(std::move(layer));
@@ -206,6 +228,53 @@ TilemapParseResult TilemapAssetCodec::parse_tilemap_json(const std::string_view 
 
 std::string TilemapAssetCodec::write_palette_canonical_json(const TilePaletteDocument& document){return palette_json(document).dump(2);}
 std::string TilemapAssetCodec::write_tilemap_canonical_json(const TilemapDocument& document){return tilemap_json(document).dump(2);}
+
+TilemapProductionStats TilemapAssetCodec::production_stats(const TilemapDocument& document) {
+    TilemapProductionStats result;
+    result.layer_count=document.layers.size();
+    if(result.layer_count>TilemapProductionLimits::maximum_layers)
+        error(result.errors,"tilemap.layer-limit","/layers","Tilemap layer count exceeds the production limit.");
+    for(std::size_t layer_index{};layer_index<document.layers.size();++layer_index) {
+        const auto& layer=document.layers[layer_index];
+        if(result.chunk_count+layer.chunks.size()>TilemapProductionLimits::maximum_chunks)
+            error(result.errors,"tilemap.chunk-limit","/layers/"+std::to_string(layer_index)+"/chunks",
+                  "Tilemap chunk count exceeds the production limit.");
+        for(std::size_t chunk_index{};chunk_index<layer.chunks.size();++chunk_index) {
+            const auto& chunk=layer.chunks[chunk_index];
+            ++result.chunk_count;
+            result.maximum_cells_in_chunk=std::max(result.maximum_cells_in_chunk,chunk.cells.size());
+            if(chunk.cells.size()>TilemapProductionLimits::maximum_cells_per_chunk)
+                error(result.errors,"tilemap.cell-limit","/layers/"+std::to_string(layer_index)+"/chunks/"+
+                          std::to_string(chunk_index)+"/cells","Cells in a chunk exceed the production limit.");
+            if(chunk.cells.empty())++result.empty_chunk_count;
+            if(result.occupied_cell_count+chunk.cells.size()>TilemapProductionLimits::maximum_cells)
+                error(result.errors,"tilemap.cell-limit","/layers/"+std::to_string(layer_index)+"/chunks/"+
+                          std::to_string(chunk_index)+"/cells","Tilemap cell count exceeds the production limit.");
+            result.occupied_cell_count+=chunk.cells.size();
+            for(const auto& cell:chunk.cells)
+                if(cell.x>=document.chunk_width||cell.y>=document.chunk_height)
+                    error(result.errors,"tilemap.cell-out-of-chunk","/layers/"+std::to_string(layer_index)+"/chunks/"+
+                              std::to_string(chunk_index)+"/cells","Cell coordinates exceed chunkSize.");
+        }
+    }
+    result.source_json_bytes=write_tilemap_canonical_json(document).size();
+    result.estimated_packed_bytes=result.chunk_count*TilemapProductionLimits::packed_chunk_metadata_bytes+
+        result.occupied_cell_count*TilemapProductionLimits::packed_cell_stride_bytes;
+    result.valid=result.errors.empty();
+    result.code=result.valid?"ok":result.errors.front().code;
+    return result;
+}
+
+std::string TilemapAssetCodec::production_stats_json(const TilemapProductionStats& stats) {
+    Json errors=Json::array();
+    for(const auto& issue:stats.errors)
+        errors.push_back({{"code",issue.code},{"path",issue.path},{"message",issue.message}});
+    return Json{{"schemaVersion","noemancer.tilemap-production-stats/0.1"},{"valid",stats.valid},{"code",stats.code},
+        {"layerCount",stats.layer_count},{"chunkCount",stats.chunk_count},{"occupiedCellCount",stats.occupied_cell_count},
+        {"emptyChunkCount",stats.empty_chunk_count},{"maximumCellsInChunk",stats.maximum_cells_in_chunk},
+        {"sourceJsonBytes",stats.source_json_bytes},{"estimatedPackedBytes",stats.estimated_packed_bytes},
+        {"errors",std::move(errors)}}.dump();
+}
 
 std::string TilemapAssetCodec::tilemap_fingerprint(const TilemapDocument& document) {
     return text_fingerprint(write_tilemap_canonical_json(document));
@@ -413,6 +482,8 @@ std::string TilemapAssetCodec::palette_edit_plan_json(const TilePaletteEditPlan&
 TileColliderBakeResult TilemapAssetCodec::bake_colliders(const TilePaletteDocument& palette,const TilemapDocument& tilemap) {
     TileColliderBakeResult result;
     if(palette.asset_id!=tilemap.palette_asset){error(result.errors,"tilemap.palette-mismatch","/paletteAsset","Tilemap does not reference the supplied palette.");return result;}
+    const auto production=production_stats(tilemap);
+    if(!production.valid){result.errors=production.errors;return result;}
     std::unordered_map<std::string,std::string> collision;
     for(const auto& tile:palette.tiles)collision.emplace(tile.id,tile.collision);
     for(const auto& layer:tilemap.layers) {
@@ -421,7 +492,17 @@ TileColliderBakeResult TilemapAssetCodec::bake_colliders(const TilePaletteDocume
         for(const auto& chunk:layer.chunks)for(const auto& cell:chunk.cells) {
             const auto found=collision.find(cell.tile_id);
             if(found==collision.end()){error(result.errors,"tilemap.unknown-tile","/layers/"+layer.id,"Cell references unknown tile "+cell.tile_id+".");continue;}
-            if(found->second!="none")cells.emplace(std::pair{chunk.x*tilemap.chunk_width+cell.x,chunk.y*tilemap.chunk_height+cell.y},found->second);
+            if(found->second!="none") {
+                const auto global_x=static_cast<std::int64_t>(chunk.x)*tilemap.chunk_width+cell.x;
+                const auto global_y=static_cast<std::int64_t>(chunk.y)*tilemap.chunk_height+cell.y;
+                if(global_x<std::numeric_limits<std::int32_t>::min()||global_x>std::numeric_limits<std::int32_t>::max()||
+                   global_y<std::numeric_limits<std::int32_t>::min()||global_y>std::numeric_limits<std::int32_t>::max()) {
+                    error(result.errors,"tilemap.cell-coordinate-range","/layers/"+layer.id,
+                          "Cell world coordinates exceed the signed runtime range.");continue;
+                }
+                cells.emplace(std::pair{static_cast<std::int32_t>(global_x),static_cast<std::int32_t>(global_y)},found->second);
+                ++result.input_collision_cell_count;
+            }
         }
         std::set<std::pair<std::int32_t,std::int32_t>> consumed;
         for(const auto& [position,kind]:cells) {
@@ -437,12 +518,18 @@ TileColliderBakeResult TilemapAssetCodec::bake_colliders(const TilePaletteDocume
                 }
             }
             for(std::uint32_t y=0;y<height;++y)for(std::uint32_t x=0;x<width;++x)consumed.emplace(origin_x+static_cast<std::int32_t>(x),origin_y+static_cast<std::int32_t>(y));
+            result.merged_cell_count+=static_cast<std::size_t>(width)*height;
+            if(result.colliders.size()>=TilemapProductionLimits::maximum_colliders) {
+                error(result.errors,"tilemap.collider-limit","/colliders","Collider count exceeds the production limit.");
+                return result;
+            }
             const float world_width=width*tilemap.cell_width,world_height=height*tilemap.cell_height;
             result.colliders.push_back({layer.id,kind,origin_x,origin_y,width,height,
                 (static_cast<float>(origin_x)+width*0.5F)*tilemap.cell_width,
                 (static_cast<float>(origin_y)+height*0.5F)*tilemap.cell_height,world_width,world_height});
         }
     }
+    result.estimated_output_bytes=result.colliders.size()*TilemapProductionLimits::packed_collider_record_bytes;
     result.success=result.errors.empty();return result;
 }
 
@@ -451,7 +538,10 @@ std::string TilemapAssetCodec::collider_bake_json(const TileColliderBakeResult& 
         {"cellRect",{collider.cell_x,collider.cell_y,collider.cell_width,collider.cell_height}},
         {"center",{collider.center_x,collider.center_y}},{"size",{collider.width,collider.height}}});
     Json errors=Json::array();for(const auto& issue:bake.errors)errors.push_back({{"code",issue.code},{"path",issue.path},{"message",issue.message}});
-    return Json{{"schemaVersion","noemancer.tile-collider-bake/0.1"},{"success",bake.success},{"colliders",std::move(colliders)},{"errors",std::move(errors)}}.dump();
+    return Json{{"schemaVersion","noemancer.tile-collider-bake/0.1"},{"success",bake.success},
+        {"inputCollisionCellCount",bake.input_collision_cell_count},{"mergedCellCount",bake.merged_cell_count},
+        {"estimatedOutputBytes",bake.estimated_output_bytes},{"colliders",std::move(colliders)},
+        {"errors",std::move(errors)}}.dump();
 }
 
 bool TilemapAssetLibrary::register_palette(TilePaletteDocument document) {
@@ -479,6 +569,149 @@ const CompiledTilemapAsset* TilemapAssetLibrary::resolve_compiled(const std::str
     const auto found=compiled_.find(std::string(tilemap_asset));return found==compiled_.end()?nullptr:&found->second;
 }
 
+TilemapProductionStats TilemapAssetLibrary::production_stats(const std::string_view tilemap_asset) const {
+    if(const auto* compiled=resolve_compiled(tilemap_asset);compiled!=nullptr)return compiled->production;
+    TilemapProductionStats result;result.code="tilemap.asset-not-found";
+    error(result.errors,"tilemap.asset-not-found","/assetId","No compiled tilemap is registered for the requested asset.");
+    return result;
+}
+
+TilemapChunkVisibilityResult TilemapAssetLibrary::visible_chunks(
+    const std::string_view tilemap_asset,const TilemapChunkVisibilityQuery& query) const {
+    TilemapChunkVisibilityResult result;
+    const auto* compiled=resolve_compiled(tilemap_asset);
+    if(compiled==nullptr) {
+        result.code="tilemap.asset-not-found";
+        error(result.errors,"tilemap.asset-not-found","/assetId","No compiled tilemap is registered for the requested asset.");
+        return result;
+    }
+    result.source_fingerprint=compiled->source_fingerprint;
+    if(query.minimum_cell_x>query.maximum_cell_x||query.minimum_cell_y>query.maximum_cell_y) {
+        result.code="tilemap.visibility-bounds";
+        error(result.errors,"tilemap.visibility-bounds","/bounds","Visibility bounds must be ordered.");
+        return result;
+    }
+    if(query.maximum_chunk_count==0U||query.maximum_chunk_count>TilemapProductionLimits::maximum_visible_chunks) {
+        result.code="tilemap.visibility-limit";
+        error(result.errors,"tilemap.visibility-limit","/maximumChunkCount","Visible chunk budget exceeds the production limit.");
+        return result;
+    }
+    for(const auto& chunk:compiled->chunks) {
+        if(!query.layer_id.empty()&&chunk.layer_id!=query.layer_id)continue;
+        ++result.candidate_chunk_count;
+        if(chunk.maximum_cell_x<query.minimum_cell_x||chunk.minimum_cell_x>query.maximum_cell_x||
+           chunk.maximum_cell_y<query.minimum_cell_y||chunk.minimum_cell_y>query.maximum_cell_y)continue;
+        if(result.chunks.size()>=query.maximum_chunk_count) {
+            result.code="tilemap.visibility-limit";
+            error(result.errors,"tilemap.visibility-limit","/maximumChunkCount","Visible chunk result exceeds the requested budget.");
+            result.chunks.clear();result.visible_chunk_count=0U;result.visible_cell_count=0U;result.visible_packed_bytes=0U;
+            return result;
+        }
+        result.chunks.push_back({chunk.stable_id,chunk.content_fingerprint,chunk.layer_id,chunk.chunk_x,chunk.chunk_y,
+            chunk.cells.size(),chunk.gpu_range});
+        result.visible_cell_count+=chunk.cells.size();
+        result.visible_packed_bytes+=static_cast<std::size_t>(chunk.gpu_range.byte_size);
+    }
+    result.visible_chunk_count=result.chunks.size();result.success=true;result.code="ok";return result;
+}
+
+TilemapIncrementalUpdateResult TilemapAssetLibrary::apply_stroke(
+    const std::string_view tilemap_asset,const TilemapStrokePlan& plan,const bool dry_run) {
+    TilemapIncrementalUpdateResult result;result.dry_run=dry_run;
+    const auto map_found=tilemaps_.find(std::string(tilemap_asset));
+    const auto compiled_found=compiled_.find(std::string(tilemap_asset));
+    if(map_found==tilemaps_.end()||compiled_found==compiled_.end()) {
+        result.code="tilemap.asset-not-found";
+        error(result.errors,"tilemap.asset-not-found","/assetId","No compiled tilemap is registered for the requested asset.");
+        return result;
+    }
+    result.asset_id=map_found->second.asset_id;
+    result.source_fingerprint_before=TilemapAssetCodec::tilemap_fingerprint(map_found->second);
+    result.compilation_revision_before=compiled_found->second.compilation_revision;
+    TilemapDocument candidate=map_found->second;
+    const auto applied=TilemapAssetCodec::apply_stroke(candidate,plan,false);
+    if(!applied.success) {
+        result.code=applied.code;result.errors=plan.errors;return result;
+    }
+    const auto old_document=map_found->second;
+    const auto old_compiled=compiled_found->second;
+    const auto next_revision_before=next_compilation_revision_;
+    map_found->second=std::move(candidate);
+    rebuild(tilemap_asset);
+    const auto rebuilt_found=compiled_.find(std::string(tilemap_asset));
+    if(rebuilt_found==compiled_.end()) {
+        map_found->second=old_document;compiled_.insert_or_assign(std::string(tilemap_asset),old_compiled);
+        next_compilation_revision_=next_revision_before;
+        result.code="tilemap.incremental-compile-failed";
+        error(result.errors,"tilemap.incremental-compile-failed","/assetId","Incremental tilemap compilation failed validation.");
+        return result;
+    }
+    const auto& next_compiled=rebuilt_found->second;
+    result.source_fingerprint_after=TilemapAssetCodec::tilemap_fingerprint(map_found->second);
+    result.compilation_revision_after=next_compiled.compilation_revision;
+    result.changed_cell_count=applied.changed_cell_count;
+    result.resident_packed_bytes=next_compiled.production.estimated_packed_bytes;
+    std::unordered_map<std::string,const CompiledTilemapChunk*> old_chunks;
+    old_chunks.reserve(old_compiled.chunks.size());
+    for(const auto& chunk:old_compiled.chunks)old_chunks.emplace(chunk.stable_id,&chunk);
+    std::set<std::string> dirty_ids;
+    for(const auto& chunk:next_compiled.chunks) {
+        const auto old=old_chunks.find(chunk.stable_id);
+        if(old!=old_chunks.end()&&old->second->content_fingerprint==chunk.content_fingerprint) {
+            ++result.reused_chunk_count;
+            if(old->second->gpu_range==chunk.gpu_range)++result.stable_gpu_range_reuse_count;
+            continue;
+        }
+        ++result.rebuilt_chunk_count;dirty_ids.insert(chunk.stable_id);
+        ++result.created_chunk_count;
+        if(old!=old_chunks.end())--result.created_chunk_count;
+        result.uploaded_cell_count+=chunk.cells.size();
+    }
+    for(const auto& chunk:old_compiled.chunks)
+        if(!std::ranges::any_of(next_compiled.chunks,[&](const auto& candidate_chunk){return candidate_chunk.stable_id==chunk.stable_id;})) {
+            ++result.removed_chunk_count;dirty_ids.insert(chunk.stable_id);
+        }
+    result.dirty_chunk_ids.assign(dirty_ids.begin(),dirty_ids.end());result.dirty_chunk_count=dirty_ids.size();
+    result.uploaded_bytes=result.uploaded_cell_count*TilemapProductionLimits::packed_cell_stride_bytes;
+    result.success=true;result.code=dry_run?"tilemap.incremental-dry-run":"ok";
+    if(dry_run) {
+        map_found->second=old_document;compiled_.insert_or_assign(std::string(tilemap_asset),old_compiled);
+        next_compilation_revision_=next_revision_before;
+    }
+    return result;
+}
+
+std::string TilemapAssetLibrary::visibility_json(const TilemapChunkVisibilityResult& result) {
+    Json chunks=Json::array();
+    for(const auto& chunk:result.chunks)
+        chunks.push_back({{"stableId",chunk.stable_id},{"contentFingerprint",chunk.content_fingerprint},
+            {"layerId",chunk.layer_id},{"chunk",{chunk.chunk_x,chunk.chunk_y}},{"cellCount",chunk.cell_count},
+            {"gpuRange",{{"firstCell",chunk.gpu_range.first_cell},{"cellCount",chunk.gpu_range.cell_count},
+                {"byteOffset",chunk.gpu_range.byte_offset},{"byteSize",chunk.gpu_range.byte_size}}}});
+    Json errors=Json::array();for(const auto& issue:result.errors)
+        errors.push_back({{"code",issue.code},{"path",issue.path},{"message",issue.message}});
+    return Json{{"schemaVersion","noemancer.tilemap-visibility/0.1"},{"success",result.success},{"code",result.code},
+        {"sourceFingerprint",result.source_fingerprint},{"candidateChunkCount",result.candidate_chunk_count},
+        {"visibleChunkCount",result.visible_chunk_count},{"visibleCellCount",result.visible_cell_count},
+        {"visiblePackedBytes",result.visible_packed_bytes},{"chunks",std::move(chunks)},{"errors",std::move(errors)}}.dump();
+}
+
+std::string TilemapAssetLibrary::incremental_update_json(const TilemapIncrementalUpdateResult& result) {
+    Json dirty=Json::array();for(const auto& id:result.dirty_chunk_ids)dirty.push_back(id);
+    Json errors=Json::array();for(const auto& issue:result.errors)
+        errors.push_back({{"code",issue.code},{"path",issue.path},{"message",issue.message}});
+    return Json{{"schemaVersion","noemancer.tilemap-incremental-receipt/0.1"},{"success",result.success},
+        {"dryRun",result.dry_run},{"code",result.code},{"assetId",result.asset_id},
+        {"sourceFingerprintBefore",result.source_fingerprint_before},{"sourceFingerprintAfter",result.source_fingerprint_after},
+        {"compilationRevisionBefore",result.compilation_revision_before},{"compilationRevisionAfter",result.compilation_revision_after},
+        {"changedCellCount",result.changed_cell_count},{"dirtyChunkCount",result.dirty_chunk_count},
+        {"rebuiltChunkCount",result.rebuilt_chunk_count},{"reusedChunkCount",result.reused_chunk_count},
+        {"stableGpuRangeReuseCount",result.stable_gpu_range_reuse_count},{"createdChunkCount",result.created_chunk_count},
+        {"removedChunkCount",result.removed_chunk_count},{"uploadedCellCount",result.uploaded_cell_count},
+        {"uploadedBytes",result.uploaded_bytes},{"residentPackedBytes",result.resident_packed_bytes},
+        {"dirtyChunkIds",std::move(dirty)},{"errors",std::move(errors)}}.dump();
+}
+
 void TilemapAssetLibrary::rebuild(const std::string_view tilemap_asset) {
     const auto map_found=tilemaps_.find(std::string(tilemap_asset));
     if(map_found==tilemaps_.end()){compiled_.erase(std::string(tilemap_asset));return;}
@@ -489,7 +722,10 @@ void TilemapAssetLibrary::rebuild(const std::string_view tilemap_asset) {
     definitions.reserve(palette.tiles.size());for(const auto& tile:palette.tiles)definitions.emplace(tile.id,&tile);
     CompiledTilemapAsset compiled;
     compiled.source={map,palette};compiled.source_fingerprint=TilemapAssetCodec::tilemap_fingerprint(map);
+    compiled.production=TilemapAssetCodec::production_stats(map);
+    if(!compiled.production.valid){compiled_.erase(map_found->first);return;}
     compiled.compilation_revision=next_compilation_revision_++;
+    std::uint64_t packed_cell_offset{};
     for(const auto& layer:map.layers) {
         struct Occupied {const TileCell* cell{};const TileDefinition* tile{};std::int32_t chunk_x{};std::int32_t chunk_y{};};
         std::map<std::pair<std::int32_t,std::int32_t>,Occupied> occupied;
@@ -534,7 +770,13 @@ void TilemapAssetLibrary::rebuild(const std::string_view tilemap_asset) {
                 std::to_string(chunk.sorting_order)+"\n"+std::to_string(chunk.chunk_x)+","+std::to_string(chunk.chunk_y);
             for(const auto& cell:chunk.cells)content+="\n"+std::to_string(cell.cell_x)+","+std::to_string(cell.cell_y)+","+cell.tile_id+","+
                 cell.autotile_group+","+std::to_string(cell.autotile_mask)+","+cell.frame_id+","+(cell.flip_x?"1":"0")+","+(cell.flip_y?"1":"0");
-            chunk.content_fingerprint=text_fingerprint(content);compiled.chunks.push_back(std::move(chunk));
+            chunk.content_fingerprint=text_fingerprint(content);
+            const auto first_cell=packed_cell_offset;
+            const auto cell_count=static_cast<std::uint64_t>(chunk.cells.size());
+            chunk.gpu_range={first_cell,cell_count,first_cell*TilemapProductionLimits::packed_cell_stride_bytes,
+                cell_count*TilemapProductionLimits::packed_cell_stride_bytes};
+            packed_cell_offset+=cell_count;
+            compiled.chunks.push_back(std::move(chunk));
         }
     }
     compiled_.insert_or_assign(map_found->first,std::move(compiled));

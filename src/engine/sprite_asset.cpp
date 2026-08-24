@@ -2,13 +2,27 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <utility>
 #include <unordered_set>
 
 namespace noemancer {
 namespace {
 using Json=nlohmann::json;
+
+bool limits_are_valid(const SpriteAssetValidationLimits& limits) noexcept {
+    return limits.max_source_bytes > 0U && limits.max_frames > 0U && limits.max_clips > 0U &&
+        limits.max_frames_per_clip > 0U && limits.max_total_clip_frame_references > 0U;
+}
+
+void error(std::vector<SpriteAssetError>& errors,std::string code,std::string path,std::string message);
+
+void invalid_limits(std::vector<SpriteAssetError>& errors) {
+    error(errors, "sprite.invalid-validation-limits", "/limits",
+          "Sprite validation limits must all be positive.");
+}
 
 void error(std::vector<SpriteAssetError>& errors,std::string code,std::string path,std::string message) {
     errors.push_back({std::move(code),std::move(path),std::move(message)});
@@ -50,15 +64,189 @@ bool u32_field(const Json& value,const char* name,const std::string& path,std::u
     output=static_cast<std::uint32_t>(number); return true;
 }
 
+bool add_area_checked(const std::uint64_t left, const std::uint64_t right, std::uint64_t& output) noexcept {
+    if (right > std::numeric_limits<std::uint64_t>::max() - left) return false;
+    output = left + right;
+    return true;
+}
+
+struct AtlasEvent final {
+    std::uint64_t x{};
+    std::uint64_t y0{};
+    std::uint64_t y1{};
+    int delta{};
+};
+
+std::uint64_t union_area(const SpriteAssetDocument& document) {
+    std::vector<AtlasEvent> events;
+    std::vector<std::uint64_t> coordinates;
+    events.reserve(document.frames.size() * 2U);
+    coordinates.reserve(document.frames.size() * 2U);
+    for (const auto& frame : document.frames) {
+        const auto x0 = static_cast<std::uint64_t>(frame.x);
+        const auto y0 = static_cast<std::uint64_t>(frame.y);
+        const auto x1 = x0 + static_cast<std::uint64_t>(frame.width);
+        const auto y1 = y0 + static_cast<std::uint64_t>(frame.height);
+        events.push_back({x0, y0, y1, 1});
+        events.push_back({x1, y0, y1, -1});
+        coordinates.push_back(y0);
+        coordinates.push_back(y1);
+    }
+    if (events.empty()) return 0U;
+    std::ranges::sort(coordinates);
+    coordinates.erase(std::unique(coordinates.begin(), coordinates.end()), coordinates.end());
+    std::ranges::sort(events, [](const auto& left, const auto& right) {
+        if (left.x != right.x) return left.x < right.x;
+        return left.delta > right.delta;
+    });
+
+    const auto interval_count = coordinates.size() - 1U;
+    if (interval_count == 0U) return 0U;
+    std::vector<std::int32_t> cover(interval_count * 4U + 4U);
+    std::vector<std::uint64_t> covered(interval_count * 4U + 4U);
+    const auto pull = [&](const std::size_t node, const std::size_t left,
+                          const std::size_t right) -> void {
+        if (cover[node] > 0) {
+            covered[node] = coordinates[right + 1U] - coordinates[left];
+        } else if (left == right) {
+            covered[node] = 0U;
+        } else {
+            covered[node] = covered[node * 2U] + covered[node * 2U + 1U];
+        }
+    };
+    const auto update = [&](const auto& self, const std::size_t node, const std::size_t left,
+                            const std::size_t right, const std::size_t query_left,
+                            const std::size_t query_right, const int delta) -> void {
+        if (query_left > right || query_right < left || query_left > query_right) return;
+        if (query_left <= left && right <= query_right) {
+            cover[node] += delta;
+            pull(node, left, right);
+            return;
+        }
+        const auto middle = (left + right) / 2U;
+        self(self, node * 2U, left, middle, query_left, query_right, delta);
+        self(self, node * 2U + 1U, middle + 1U, right, query_left, query_right, delta);
+        pull(node, left, right);
+    };
+
+    std::uint64_t area{};
+    std::uint64_t previous_x = events.front().x;
+    std::size_t event_index{};
+    while (event_index < events.size()) {
+        const auto x = events[event_index].x;
+        const auto delta_x = x - previous_x;
+        // A valid rectangle set is bounded by textureSize, therefore the
+        // union area cannot exceed the representable atlas area.
+        area += covered[1U] * delta_x;
+        while (event_index < events.size() && events[event_index].x == x) {
+            const auto& event = events[event_index];
+            const auto first = static_cast<std::size_t>(std::ranges::lower_bound(coordinates, event.y0) - coordinates.begin());
+            const auto last_exclusive = static_cast<std::size_t>(std::ranges::lower_bound(coordinates, event.y1) - coordinates.begin());
+            if (first < last_exclusive)
+                update(update, 1U, 0U, interval_count - 1U, first, last_exclusive - 1U, event.delta);
+            ++event_index;
+        }
+        previous_x = x;
+    }
+    return area;
+}
+
+std::uint64_t layout_hash(const SpriteAssetDocument& document) {
+    constexpr std::uint64_t offset = 14695981039346656037ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    std::uint64_t hash = offset;
+    const auto feed = [&](std::uint64_t value, const std::size_t byte_count) {
+        for (std::size_t index = 0U; index < byte_count; ++index) {
+            hash ^= static_cast<unsigned char>(value & 0xFFU);
+            hash *= prime;
+            value >>= 8U;
+        }
+    };
+    const auto feed_string = [&](const std::string& value) {
+        for (const auto byte : value) {
+            hash ^= static_cast<unsigned char>(byte);
+            hash *= prime;
+        }
+        hash ^= 0xFFU;
+        hash *= prime;
+    };
+    feed(document.texture_width, sizeof(document.texture_width));
+    feed(document.texture_height, sizeof(document.texture_height));
+    for (const auto& frame : document.frames) {
+        feed_string(frame.id);
+        feed(frame.x, sizeof(frame.x)); feed(frame.y, sizeof(frame.y));
+        feed(frame.width, sizeof(frame.width)); feed(frame.height, sizeof(frame.height));
+        feed(frame.trim_x, sizeof(frame.trim_x)); feed(frame.trim_y, sizeof(frame.trim_y));
+        feed(frame.source_width, sizeof(frame.source_width)); feed(frame.source_height, sizeof(frame.source_height));
+    }
+    for (const auto& clip : document.clips) {
+        feed_string(clip.id);
+        feed(clip.looping ? 1U : 0U, 1U);
+        for (const auto& clip_frame : clip.frames) {
+            feed_string(clip_frame.frame_id);
+            feed(clip_frame.duration_ms, sizeof(clip_frame.duration_ms));
+        }
+    }
+    return hash;
+}
+
 } // namespace
 
 SpriteAssetParseResult SpriteAssetCodec::parse_json(const std::string_view source) {
+    return parse_json(source, SpriteAssetValidationLimits{});
+}
+
+SpriteAssetParseResult SpriteAssetCodec::parse_json(
+    const std::string_view source, const SpriteAssetValidationLimits& limits) {
     SpriteAssetParseResult result;
+    if (!limits_are_valid(limits)) {
+        invalid_limits(result.errors);
+        return result;
+    }
+    if (source.size() > limits.max_source_bytes) {
+        error(result.errors, "sprite.source-too-large", "/",
+              "Sprite asset JSON exceeds the bounded source-size limit.");
+        return result;
+    }
     const auto input=Json::parse(source,nullptr,false);
     if(input.is_discarded()||!input.is_object()) {
         error(result.errors,"sprite.invalid-json","/","Sprite asset must be a JSON object."); return result;
     }
     fields(input,{"schema","assetId","textureAsset","textureSize","pixelsPerUnit","sampling","alphaMode","material","frames","clips","provenance"},"",result.errors);
+    const auto frames_input = input.find("frames");
+    if (frames_input != input.end() && frames_input->is_array() && frames_input->size() > limits.max_frames) {
+        error(result.errors, "sprite.frame-count-limit", "/frames",
+              "Frame count exceeds the bounded SpriteAssetValidationLimits.max_frames limit.");
+        return result;
+    }
+    const auto clips_input = input.find("clips");
+    if (clips_input != input.end() && clips_input->is_array()) {
+        if (clips_input->size() > limits.max_clips) {
+            error(result.errors, "sprite.clip-count-limit", "/clips",
+                  "Clip count exceeds the bounded SpriteAssetValidationLimits.max_clips limit.");
+            return result;
+        }
+        std::size_t total_clip_frames{};
+        for (std::size_t index = 0U; index < clips_input->size(); ++index) {
+            const auto& clip = clips_input->at(index);
+            if (!clip.is_object()) continue;
+            const auto clip_frames = clip.find("frames");
+            if (clip_frames == clip.end() || !clip_frames->is_array()) continue;
+            if (clip_frames->size() > limits.max_frames_per_clip) {
+                error(result.errors, "sprite.clip-frame-count-limit",
+                      "/clips/" + std::to_string(index) + "/frames",
+                      "Clip frame count exceeds the bounded per-clip limit.");
+                return result;
+            }
+            if (clip_frames->size() > limits.max_total_clip_frame_references -
+                                      std::min(total_clip_frames, limits.max_total_clip_frame_references)) {
+                error(result.errors, "sprite.total-clip-frame-count-limit", "/clips",
+                      "Total clip frame references exceed the bounded production limit.");
+                return result;
+            }
+            total_clip_frames += clip_frames->size();
+        }
+    }
     SpriteAssetDocument document;
     text_field(input,"schema","",document.schema,result.errors);
     text_field(input,"assetId","",document.asset_id,result.errors);
@@ -177,12 +365,51 @@ SpriteAssetParseResult SpriteAssetCodec::parse_json(const std::string_view sourc
         text_field(value,"generator","/provenance",document.provenance.generator,result.errors);
         text_field(value,"license","/provenance",document.provenance.license,result.errors);
     }
-    auto semantic=validate(document);result.errors.insert(result.errors.end(),semantic.begin(),semantic.end());
+    auto semantic=validate(document, limits);result.errors.insert(result.errors.end(),semantic.begin(),semantic.end());
     if(result.errors.empty())result.document=std::move(document);return result;
 }
 
 std::vector<SpriteAssetError> SpriteAssetCodec::validate(const SpriteAssetDocument& document) {
+    return validate(document, SpriteAssetValidationLimits{});
+}
+
+std::vector<SpriteAssetError> SpriteAssetCodec::validate(
+    const SpriteAssetDocument& document, const SpriteAssetValidationLimits& limits) {
     std::vector<SpriteAssetError> errors;
+    if (!limits_are_valid(limits)) {
+        invalid_limits(errors);
+        return errors;
+    }
+    bool count_limit_exceeded = false;
+    if (document.frames.size() > limits.max_frames) {
+        error(errors, "sprite.frame-count-limit", "/frames",
+              "Frame count exceeds the bounded SpriteAssetValidationLimits.max_frames limit.");
+        return errors;
+    }
+    if (document.clips.size() > limits.max_clips) {
+        error(errors, "sprite.clip-count-limit", "/clips",
+              "Clip count exceeds the bounded SpriteAssetValidationLimits.max_clips limit.");
+        return errors;
+    }
+    std::size_t total_clip_frame_references{};
+    for (std::size_t index = 0U; index < document.clips.size(); ++index) {
+        const auto& clip = document.clips[index];
+        if (clip.frames.size() > limits.max_frames_per_clip) {
+            error(errors, "sprite.clip-frame-count-limit", "/clips/" + std::to_string(index) + "/frames",
+                  "Clip frame count exceeds the bounded per-clip limit.");
+            count_limit_exceeded = true;
+        }
+        if (clip.frames.size() > limits.max_total_clip_frame_references -
+                                  std::min(total_clip_frame_references, limits.max_total_clip_frame_references)) {
+            error(errors, "sprite.total-clip-frame-count-limit", "/clips",
+                  "Total clip frame references exceed the bounded production limit.");
+            count_limit_exceeded = true;
+            total_clip_frame_references = limits.max_total_clip_frame_references;
+        } else {
+            total_clip_frame_references += clip.frames.size();
+        }
+    }
+    if (count_limit_exceeded) return errors;
     if(document.schema!="noemancer.sprite-asset/0.1"&&document.schema!="noemancer.sprite-asset/0.2")
         error(errors,"sprite.unsupported-schema","/schema","Expected noemancer.sprite-asset/0.1 or noemancer.sprite-asset/0.2.");
     if(document.schema=="noemancer.sprite-asset/0.1"&&document.material)
@@ -282,6 +509,100 @@ std::vector<std::string> SpriteAssetCodec::asset_dependencies(const SpriteAssetD
     std::ranges::sort(result);
     result.erase(std::unique(result.begin(),result.end()),result.end());
     return result;
+}
+
+SpriteAssetProductionReport SpriteAssetCodec::production_report(const SpriteAssetDocument& document) {
+    return production_report(document, SpriteAssetValidationLimits{});
+}
+
+SpriteAssetProductionReport SpriteAssetCodec::production_report(
+    const SpriteAssetDocument& document, const SpriteAssetValidationLimits& limits) {
+    SpriteAssetProductionReport report;
+    report.frame_count = document.frames.size();
+    report.clip_count = document.clips.size();
+    report.atlas_page_count = 1U;
+    report.atlas_area = static_cast<std::uint64_t>(document.texture_width) *
+        static_cast<std::uint64_t>(document.texture_height);
+    report.diagnostics = validate(document, limits);
+    if (!report.diagnostics.empty()) {
+        report.code = report.diagnostics.front().code;
+        return report;
+    }
+
+    std::unordered_set<std::string> referenced_frames;
+    for (const auto& clip : document.clips) {
+        report.max_clip_frame_count = std::max(report.max_clip_frame_count, clip.frames.size());
+        report.total_clip_frame_references += clip.frames.size();
+        for (const auto& clip_frame : clip.frames) referenced_frames.insert(clip_frame.frame_id);
+    }
+    report.unique_referenced_frame_count = referenced_frames.size();
+    report.unreferenced_frame_count = report.frame_count - report.unique_referenced_frame_count;
+    for (const auto& frame : document.frames) {
+        const auto area = static_cast<std::uint64_t>(frame.width) *
+            static_cast<std::uint64_t>(frame.height);
+        if (!add_area_checked(report.frame_area_sum, area, report.frame_area_sum)) {
+            report.frame_area_sum = std::numeric_limits<std::uint64_t>::max();
+            error(report.diagnostics, "sprite.production-area-overflow", "/frames",
+                  "The aggregate frame area exceeds the bounded 64-bit production report.");
+            break;
+        }
+    }
+    report.occupied_area = union_area(document);
+    report.free_area = report.atlas_area >= report.occupied_area
+        ? report.atlas_area - report.occupied_area : 0U;
+    report.overlap_area = report.frame_area_sum >= report.occupied_area &&
+            report.frame_area_sum != std::numeric_limits<std::uint64_t>::max()
+        ? report.frame_area_sum - report.occupied_area : 0U;
+    report.layout_fingerprint = layout_hash(document);
+    report.valid = report.diagnostics.empty();
+    report.code = report.valid ? "ok" : report.diagnostics.front().code;
+    return report;
+}
+
+std::string sprite_pressure_report_json(const std::uint32_t frame_count,const std::uint32_t clip_count,
+    const std::uint32_t frames_per_clip,const std::uint32_t atlas_columns,const std::uint32_t frame_edge) {
+    constexpr std::uint64_t maximum_references=1000000U;
+    const auto reference_count=static_cast<std::uint64_t>(clip_count)*frames_per_clip;
+    if(frame_count==0||frame_count>16384||clip_count==0||clip_count>256||frames_per_clip==0||
+       reference_count>maximum_references||atlas_columns==0||atlas_columns>256||frame_edge==0||frame_edge>256) {
+        return Json{{"schemaVersion","noemancer.sprite-production-pressure/0.1"},{"valid",false},
+            {"code","sprite.pressure.invalid-budget"},{"limits",{{"maximumFrames",16384},{"maximumClips",256},
+            {"maximumClipFrameReferences",maximum_references},{"maximumAtlasColumns",256},{"maximumFrameEdge",256}}}}.dump();
+    }
+    const auto atlas_rows=(static_cast<std::uint64_t>(frame_count)+atlas_columns-1U)/atlas_columns;
+    const auto atlas_width=static_cast<std::uint64_t>(atlas_columns)*frame_edge;
+    const auto atlas_height=atlas_rows*frame_edge;
+    if(atlas_width>std::numeric_limits<std::uint32_t>::max()||atlas_height>std::numeric_limits<std::uint32_t>::max())
+        return Json{{"schemaVersion","noemancer.sprite-production-pressure/0.1"},{"valid",false},
+            {"code","sprite.pressure.atlas-dimensions-overflow"}}.dump();
+    SpriteAssetDocument document;document.schema="noemancer.sprite-asset/0.2";document.asset_id="sprite.pressure";
+    document.texture_asset="texture.pressure";document.texture_width=static_cast<std::uint32_t>(atlas_width);
+    document.texture_height=static_cast<std::uint32_t>(atlas_height);document.frames.reserve(frame_count);
+    for(std::uint32_t index=0;index<frame_count;++index) {
+        const auto id="frame."+std::to_string(index);const auto x=(index%atlas_columns)*frame_edge;
+        const auto y=(index/atlas_columns)*frame_edge;
+        document.frames.push_back(SpriteFrame{.id=id,.x=x,.y=y,.width=frame_edge,.height=frame_edge,
+            .source_width=frame_edge,.source_height=frame_edge});
+    }
+    document.clips.reserve(clip_count);
+    for(std::uint32_t clip_index=0;clip_index<clip_count;++clip_index) {
+        SpriteClip clip;clip.id="clip."+std::to_string(clip_index);clip.frames.reserve(frames_per_clip);
+        for(std::uint32_t index=0;index<frames_per_clip;++index)
+            clip.frames.push_back(SpriteClipFrame{.frame_id="frame."+std::to_string((static_cast<std::uint64_t>(clip_index)*frames_per_clip+index)%frame_count),.duration_ms=83});
+        document.clips.push_back(std::move(clip));
+    }
+    const auto report=SpriteAssetCodec::production_report(document);
+    Json diagnostics=Json::array();for(const auto& issue:report.diagnostics)
+        diagnostics.push_back({{"code",issue.code},{"path",issue.path},{"message",issue.message}});
+    return Json{{"schemaVersion","noemancer.sprite-production-pressure/0.1"},{"valid",report.valid},{"code",report.code},
+        {"workload",{{"frames",report.frame_count},{"clips",report.clip_count},
+            {"totalClipFrameReferences",report.total_clip_frame_references},{"uniqueReferencedFrames",report.unique_referenced_frame_count},
+            {"unreferencedFrames",report.unreferenced_frame_count},{"maximumFramesPerClip",report.max_clip_frame_count}}},
+        {"atlas",{{"policy","single-texture-atlas"},{"pageCount",report.atlas_page_count},{"width",document.texture_width},
+            {"height",document.texture_height},{"area",report.atlas_area},{"frameArea",report.frame_area_sum},
+            {"occupiedArea",report.occupied_area},{"freeArea",report.free_area},{"overlapArea",report.overlap_area},
+            {"layoutFingerprint",report.layout_fingerprint}}},{"diagnostics",std::move(diagnostics)},
+        {"scope","deterministic-source-layout-and-reference-pressure-not-gpu-timing"}}.dump();
 }
 
 bool SpriteAssetLibrary::register_asset(SpriteAssetDocument document) {

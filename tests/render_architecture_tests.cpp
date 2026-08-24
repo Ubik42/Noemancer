@@ -1,6 +1,7 @@
 #include "engine/render_graph.hpp"
 #include "engine/clustered_lighting.hpp"
 #include "engine/render_world.hpp"
+#include "engine/sprite_asset.hpp"
 #include "engine/stable_range_allocator.hpp"
 #include "engine/world.hpp"
 
@@ -426,10 +427,22 @@ int main() {
     if(!pressure.at("valid")||pressure.at("workload").at("totalCells")!=16384||
        pressure.at("culling").at("culledChunks").get<std::size_t>()==0||pressure.at("culling")!=pressure_repeat.at("culling")||
        pressure.at("submissionEstimate").at("estimatedDraws").get<std::size_t>()>=pressure.at("submissionEstimate").at("drawsWithoutInstancing").get<std::size_t>()||
-       pressure.at("schemaVersion")!="noemancer.tilemap-pressure/0.2"||
+       pressure.at("schemaVersion")!="noemancer.tilemap-pressure/0.3"||
        pressure.at("stableResidency").at("retainedOffsetsStable")!=pressure.at("stableResidency").at("retainedRanges")||
        pressure.at("stableResidency").at("rangeMoves")!=0||
        pressure.at("stableResidency").at("drawIndexBytes").get<std::size_t>()>=pressure.at("stableResidency").at("packedTailWorstCaseBytes").get<std::size_t>()||
        pressure.at("scope")!="deterministic-render-extraction-and-residency-simulation-not-gpu-timing")return 13;
+    const auto sparse_pressure=nlohmann::json::parse(noemancer::tilemap_pressure_report_json(64,64,32,3,8));
+    if(!sparse_pressure.at("valid")||sparse_pressure.at("workload").at("totalChunks")!=4096||
+       sparse_pressure.at("workload").at("addressableCells")!=4194304||
+       sparse_pressure.at("workload").at("occupiedCells")!=32768||
+       sparse_pressure.at("workload").at("occupancyRatio").get<double>()!=0.0078125||
+       sparse_pressure.at("culling").at("culledChunks").get<std::size_t>()==0||
+       sparse_pressure.at("stableResidency").at("retainedOffsetsStable")!=sparse_pressure.at("stableResidency").at("retainedRanges"))return 19;
+    const auto sprite_pressure=nlohmann::json::parse(noemancer::sprite_pressure_report_json(1024,8,256,64,16));
+    if(!sprite_pressure.at("valid")||sprite_pressure.at("workload").at("frames")!=1024||
+       sprite_pressure.at("workload").at("totalClipFrameReferences")!=2048||
+       sprite_pressure.at("atlas").at("pageCount")!=1||sprite_pressure.at("atlas").at("overlapArea")!=0||
+       sprite_pressure.at("scope")!="deterministic-source-layout-and-reference-pressure-not-gpu-timing")return 20;
     return 0;
 }

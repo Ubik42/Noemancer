@@ -11,6 +11,7 @@
 #include "engine/render_world.hpp"
 #include "engine/retained_ui_runtime.hpp"
 #include "engine/semantic_state.hpp"
+#include "engine/sprite_asset.hpp"
 #include "engine/tilemap_asset.hpp"
 #include "engine/world.hpp"
 
@@ -483,14 +484,25 @@ void CommandRegistry::register_commands() {
     });
 
     commands_.push_back(CommandDefinition{
-        .name="render.tilemap.pressure",
-        .description="Generate a bounded deterministic dense Tilemap workload and report chunk culling plus current 16-instance submission estimates without claiming GPU timing.",
+        .name="asset.sprite.pressure",
+        .description="Generate a bounded deterministic long-sequence Sprite workload and report the current single-atlas layout and clip-reference costs without claiming GPU timing.",
         .access="read",.idempotent=true,.supports_dry_run=false,.runtime_state="offline",.task_kind="bounded",
-        .input_schema_json=R"({"type":"object","properties":{"chunkColumns":{"type":"integer","minimum":1,"maximum":64,"default":8},"chunkRows":{"type":"integer","minimum":1,"maximum":64,"default":8},"chunkSize":{"type":"integer","minimum":4,"maximum":32,"default":16},"visibleChunkRadius":{"type":"integer","minimum":0,"maximum":32,"default":2}},"additionalProperties":false})",
+        .input_schema_json=R"({"type":"object","properties":{"frameCount":{"type":"integer","minimum":1,"maximum":16384,"default":1024},"clipCount":{"type":"integer","minimum":1,"maximum":256,"default":8},"framesPerClip":{"type":"integer","minimum":1,"maximum":16384,"default":256},"atlasColumns":{"type":"integer","minimum":1,"maximum":256,"default":64},"frameEdge":{"type":"integer","minimum":1,"maximum":256,"default":16}},"additionalProperties":false})",
+        .output_schema_json=R"({"type":"object","required":["schemaVersion","valid","code","workload","atlas","scope"]})",
+        .handler=[](const std::string_view arguments) {const auto input=parse_object(arguments);
+            return sprite_pressure_report_json(input.value("frameCount",1024U),input.value("clipCount",8U),
+                input.value("framesPerClip",256U),input.value("atlasColumns",64U),input.value("frameEdge",16U));}
+    });
+
+    commands_.push_back(CommandDefinition{
+        .name="render.tilemap.pressure",
+        .description="Generate a bounded deterministic dense or sparse Tilemap workload and report chunk culling plus current 16-instance submission estimates without claiming GPU timing.",
+        .access="read",.idempotent=true,.supports_dry_run=false,.runtime_state="offline",.task_kind="bounded",
+        .input_schema_json=R"({"type":"object","properties":{"chunkColumns":{"type":"integer","minimum":1,"maximum":64,"default":8},"chunkRows":{"type":"integer","minimum":1,"maximum":64,"default":8},"chunkSize":{"type":"integer","minimum":4,"maximum":32,"default":16},"visibleChunkRadius":{"type":"integer","minimum":0,"maximum":32,"default":2},"occupiedCellsPerChunk":{"type":"integer","minimum":1,"maximum":1024,"description":"Omit for a dense chunk; otherwise limits generated occupied cells per chunk."}},"additionalProperties":false})",
         .output_schema_json=R"({"type":"object","required":["schemaVersion","valid","code"]})",
         .handler=[](const std::string_view arguments) {const auto input=parse_object(arguments);
             return tilemap_pressure_report_json(input.value("chunkColumns",8U),input.value("chunkRows",8U),
-                input.value("chunkSize",16U),input.value("visibleChunkRadius",2U));}
+                input.value("chunkSize",16U),input.value("visibleChunkRadius",2U),input.value("occupiedCellsPerChunk",0U));}
     });
 
     commands_.push_back(CommandDefinition{

@@ -447,13 +447,16 @@ std::string render_world_json(const RenderWorldSnapshot& snapshot) {
 }
 
 std::string tilemap_pressure_report_json(const std::uint32_t chunk_columns,const std::uint32_t chunk_rows,
-    const std::uint32_t chunk_size,const std::uint32_t visible_chunk_radius) {
+    const std::uint32_t chunk_size,const std::uint32_t visible_chunk_radius,const std::uint32_t occupied_cells_per_chunk) {
     const auto total_chunks=static_cast<std::uint64_t>(chunk_columns)*chunk_rows;
-    const auto total_cells=total_chunks*chunk_size*chunk_size;
+    const auto cells_per_chunk=static_cast<std::uint64_t>(chunk_size)*chunk_size;
+    const auto occupied_per_chunk=occupied_cells_per_chunk==0?cells_per_chunk:occupied_cells_per_chunk;
+    const auto addressable_cells=total_chunks*cells_per_chunk;
+    const auto total_cells=total_chunks*occupied_per_chunk;
     if(chunk_columns==0||chunk_rows==0||chunk_columns>64||chunk_rows>64||chunk_size<4||chunk_size>32||
-       visible_chunk_radius>32||total_cells>65536) return nlohmann::json{{"schemaVersion","noemancer.tilemap-pressure/0.1"},
+       visible_chunk_radius>32||occupied_per_chunk>cells_per_chunk||total_cells>262144) return nlohmann::json{{"schemaVersion","noemancer.tilemap-pressure/0.3"},
         {"valid",false},{"code","tilemap.pressure.invalid-budget"},{"limits",{{"maximumChunksPerAxis",64},{"chunkSize",{4,32}},
-        {"maximumCells",65536},{"maximumVisibleChunkRadius",32}}}}.dump();
+        {"maximumOccupiedCells",262144},{"maximumVisibleChunkRadius",32},{"occupiedCellsPerChunk","0 means dense; otherwise [1, chunkSize^2]"}}}}.dump();
     RenderWorldSnapshot snapshot;const float center_x=static_cast<float>(chunk_columns*chunk_size)*0.5F;
     const float center_y=static_cast<float>(chunk_rows*chunk_size)*0.5F;
     snapshot.camera=RenderCameraSnapshot{.entity_id="camera.pressure",.position={center_x,center_y,10.0F},.target={center_x,center_y,0.0F},
@@ -466,7 +469,8 @@ std::string tilemap_pressure_report_json(const std::uint32_t chunk_columns,const
         .visible_chunk_count=static_cast<std::size_t>(total_chunks),.visible_cell_count=static_cast<std::size_t>(total_cells)});
     snapshot.tile_cells.reserve(static_cast<std::size_t>(total_cells));
     for(std::uint32_t chunk_y=0;chunk_y<chunk_rows;++chunk_y)for(std::uint32_t chunk_x=0;chunk_x<chunk_columns;++chunk_x)
-        for(std::uint32_t local_y=0;local_y<chunk_size;++local_y)for(std::uint32_t local_x=0;local_x<chunk_size;++local_x) {
+        for(std::uint32_t occupied_index=0;occupied_index<occupied_per_chunk;++occupied_index) {
+            const auto local_x=occupied_index%chunk_size,local_y=occupied_index/chunk_size;
             const auto x=static_cast<std::int32_t>(chunk_x*chunk_size+local_x),y=static_cast<std::int32_t>(chunk_y*chunk_size+local_y);
             RenderTileCellSnapshot cell;cell.stable_id="pressure/"+std::to_string(chunk_x)+","+std::to_string(chunk_y)+"/"+std::to_string(local_x)+","+std::to_string(local_y);
             cell.entity_id="entity.tilemap.pressure";cell.tilemap_asset="tilemap.pressure";cell.layer_id="ground";cell.cell_x=x;cell.cell_y=y;
@@ -477,28 +481,30 @@ std::string tilemap_pressure_report_json(const std::uint32_t chunk_columns,const
     RenderWorldExtractor::cull_tilemap_chunks(snapshot,1600,900);
     constexpr std::size_t batch_capacity=16;const auto visible_cells=snapshot.tile_cells.size();
     const auto estimated_draws=(visible_cells+batch_capacity-1)/batch_capacity;
-    const auto cells_per_chunk=static_cast<std::size_t>(chunk_size)*chunk_size;
-    const auto reserved_per_chunk=std::bit_ceil(cells_per_chunk);
+    const auto reserved_per_chunk=std::bit_ceil(static_cast<std::size_t>(occupied_per_chunk));
     StableRangeAllocator ranges(static_cast<std::size_t>(total_chunks)*reserved_per_chunk*2U);
     std::unordered_map<std::string,std::size_t> original_offsets;
     for(std::uint64_t chunk=0;chunk<total_chunks;++chunk) {
-        auto key="chunk/"+std::to_string(chunk);const auto allocation=ranges.acquire(key,cells_per_chunk,1);
+        auto key="chunk/"+std::to_string(chunk);const auto allocation=ranges.acquire(key,static_cast<std::size_t>(occupied_per_chunk),1);
         original_offsets.insert_or_assign(std::move(key),allocation.first);
     }
     for(std::uint64_t chunk=1;chunk<total_chunks;chunk+=2U)
-        static_cast<void>(ranges.acquire("chunk/"+std::to_string(chunk),cells_per_chunk,2));
+        static_cast<void>(ranges.acquire("chunk/"+std::to_string(chunk),static_cast<std::size_t>(occupied_per_chunk),2));
     const auto evicted=ranges.sweep(122,120);std::size_t stable_offsets=0;
     for(std::uint64_t chunk=1;chunk<total_chunks;chunk+=2U) {
-        const auto allocation=ranges.acquire("chunk/"+std::to_string(chunk),cells_per_chunk,123);
+        const auto allocation=ranges.acquire("chunk/"+std::to_string(chunk),static_cast<std::size_t>(occupied_per_chunk),123);
         if(allocation.first==original_offsets.at("chunk/"+std::to_string(chunk)))++stable_offsets;
     }
     std::size_t replacements=0;
     for(std::uint64_t chunk=0;chunk<total_chunks;chunk+=2U)
-        if(ranges.acquire("replacement/"+std::to_string(chunk),cells_per_chunk,123).valid)++replacements;
+        if(ranges.acquire("replacement/"+std::to_string(chunk),static_cast<std::size_t>(occupied_per_chunk),123).valid)++replacements;
     const auto residency=ranges.statistics();
-    return nlohmann::json{{"schemaVersion","noemancer.tilemap-pressure/0.2"},{"valid",true},{"code","ok"},
+    return nlohmann::json{{"schemaVersion","noemancer.tilemap-pressure/0.3"},{"valid",true},{"code","ok"},
         {"workload",{{"chunkColumns",chunk_columns},{"chunkRows",chunk_rows},{"chunkSize",chunk_size},
-            {"totalChunks",total_chunks},{"totalCells",total_cells},{"visibleChunkRadius",visible_chunk_radius}}},
+            {"totalChunks",total_chunks},{"addressableCells",addressable_cells},{"occupiedCells",total_cells},
+            {"totalCells",total_cells},{"occupiedCellsPerChunk",occupied_per_chunk},
+            {"occupancyRatio",addressable_cells==0?0.0:static_cast<double>(total_cells)/static_cast<double>(addressable_cells)},
+            {"visibleChunkRadius",visible_chunk_radius}}},
         {"culling",{{"visibleChunks",snapshot.tilemap_visible_chunk_count},{"culledChunks",snapshot.tilemap_culled_chunk_count},
             {"visibleCells",visible_cells},{"culledCells",total_cells-visible_cells},
             {"cellCullRatio",total_cells==0?0.0:static_cast<double>(total_cells-visible_cells)/static_cast<double>(total_cells)}}},

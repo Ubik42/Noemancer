@@ -999,10 +999,19 @@ std::string AssetRegistry::inspect_json(const std::string_view asset_id) const {
         if(parsed) {
             const auto document=Json::parse(SpriteAssetCodec::write_canonical_json(*parsed.document));
             const auto dependencies=SpriteAssetCodec::asset_dependencies(*parsed.document);
+            const auto production=SpriteAssetCodec::production_report(*parsed.document);
             inspection["importedMetadata"]["document"]=document;
             inspection["renderPayload"]={{"textureAsset",parsed.document->texture_asset},{"frameCount",parsed.document->frames.size()},
                 {"clipCount",parsed.document->clips.size()},{"sampling",parsed.document->sampling},{"alphaMode",parsed.document->alpha_mode},
                 {"pixelsPerUnit",parsed.document->pixels_per_unit},{"dependencies",dependencies},
+                {"production",{{"valid",production.valid},{"code",production.code},
+                    {"totalClipFrameReferences",production.total_clip_frame_references},
+                    {"uniqueReferencedFrames",production.unique_referenced_frame_count},
+                    {"unreferencedFrames",production.unreferenced_frame_count},{"maximumFramesPerClip",production.max_clip_frame_count},
+                    {"atlas",{{"pageCount",production.atlas_page_count},{"area",production.atlas_area},
+                        {"frameArea",production.frame_area_sum},{"occupiedArea",production.occupied_area},
+                        {"freeArea",production.free_area},{"overlapArea",production.overlap_area},
+                        {"layoutFingerprint",production.layout_fingerprint}}}}},
                 {"material",document.value("material",Json(nullptr))}};
         }
     } else if(asset->available&&is_animation_clip_asset(*asset)) {
@@ -1063,9 +1072,11 @@ std::string AssetRegistry::inspect_json(const std::string_view asset_id) const {
         Json errors=Json::array();for(const auto& value:parsed.errors)errors.push_back({{"code",value.code},{"path",value.path},{"message",value.message}});
         inspection["valid"]=static_cast<bool>(parsed);inspection["code"]=parsed?"ok":"tilemap.invalid-document";
         inspection["importedMetadata"]={{"format","noemancer.tilemap/0.1"},{"errors",std::move(errors)}};inspection["renderPayload"]=nullptr;
-        if(parsed){std::size_t chunks=0,cells=0;for(const auto& layer:parsed.document->layers){chunks+=layer.chunks.size();for(const auto& chunk:layer.chunks)cells+=chunk.cells.size();}
+        if(parsed){const auto production=TilemapAssetCodec::production_stats(*parsed.document);
             inspection["importedMetadata"]["document"]=Json::parse(TilemapAssetCodec::write_tilemap_canonical_json(*parsed.document));
-            inspection["renderPayload"]={{"paletteAsset",parsed.document->palette_asset},{"layerCount",parsed.document->layers.size()},{"chunkCount",chunks},{"cellCount",cells}};}
+            inspection["renderPayload"]={{"paletteAsset",parsed.document->palette_asset},{"layerCount",production.layer_count},
+                {"chunkCount",production.chunk_count},{"cellCount",production.occupied_cell_count},
+                {"production",Json::parse(TilemapAssetCodec::production_stats_json(production))}};}
     } else {
         inspection["importedMetadata"] = nullptr;
         inspection["renderPayload"] = nullptr;
