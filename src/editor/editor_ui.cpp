@@ -516,13 +516,19 @@ void EditorUi::draw_startup_hub() {
             "Use a project directory or its noemancer.project.json path.");
         if(creating) {
             ImGui::SetNextItemWidth(-1.0F);ImGui::InputText("Project name",project_name_.data(),project_name_.size());
+            constexpr const char* presets[]={"Starter 3D","Hybrid Pixel / HD2D"};
+            ImGui::SetNextItemWidth(-1.0F);ImGui::Combo("Project preset",&project_preset_index_,presets,2);
+            ImGui::TextDisabled(project_preset_index_==1?
+                "Pixel-stable 320 x 180 canvas, nearest integer presentation, and shared 2D/3D rendering.":
+                "General-purpose scene, C# entry point, HUD, input, animation, and built-in assets.");
         }
         ImGui::SetNextItemWidth(-1.0F);ImGui::InputText("Project path",project_path_.data(),project_path_.size());
         const auto ready=project_path_[0]!='\0'&&(!creating||project_name_[0]!='\0');
         ImGui::BeginDisabled(!ready);
         if(ImGui::Button(creating?"Create and Open":"Open in Editor",{180.0F,38.0F})) {
             project_request_=EditorProjectRequest{creating?EditorProjectCommand::create:EditorProjectCommand::open,
-                project_path_.data(),creating?project_name_.data():std::string{}};
+                project_path_.data(),creating?project_name_.data():std::string{},
+                creating&&project_preset_index_==1?"hybrid-pixel":"starter"};
         }
         ImGui::EndDisabled();
 
@@ -538,7 +544,7 @@ void EditorUi::draw_startup_hub() {
             const auto available=project.status==StartupHubProjectStatus::available;
             ImGui::BeginDisabled(!available);
             if(ImGui::Selectable(project.display_name.c_str(),false,ImGuiSelectableFlags_None,{0,42.0F}))
-                project_request_=EditorProjectRequest{EditorProjectCommand::open,project.path,{}};
+                project_request_=EditorProjectRequest{EditorProjectCommand::open,project.path,{},"starter"};
             ImGui::EndDisabled();
             ImGui::SameLine(190.0F);ImGui::TextDisabled("%s",project.path.c_str());
             if(!available){ImGui::SameLine();ImGui::TextColored(color_warning,"%s",startup_hub_project_status_name(project.status));}
@@ -1032,7 +1038,7 @@ void EditorUi::draw_root_dockspace() {
             if(ImGui::MenuItem("Project Hub..."))startup_hub_open_=true;
             ImGui::Separator();
             ImGui::BeginDisabled(model_.scene_dirty()||simulation_state_!=EditorSimulationState::edit||script_compile_busy_);
-            if(ImGui::MenuItem("New Project...")) {project_dialog_mode_=1;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}
+            if(ImGui::MenuItem("New Project...")) {project_dialog_mode_=1;project_preset_index_=0;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}
             if(ImGui::MenuItem("Open Project...")) {project_dialog_mode_=2;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}
             ImGui::EndDisabled();
             ImGui::Separator();
@@ -1134,13 +1140,21 @@ void EditorUi::draw_root_dockspace() {
         ImGui::TextUnformatted(creating?"Create Noemancer Project":"Open Noemancer Project");
         ImGui::TextDisabled(creating?"Choose an absolute path that does not exist. A scene, assets folder and C# project are created atomically.":
             "Enter a project directory or noemancer.project.json path.");
-        if(creating) {ImGui::SetNextItemWidth(620.0F);ImGui::InputText("Project name",project_name_.data(),project_name_.size());}
+        if(creating) {
+            ImGui::SetNextItemWidth(620.0F);ImGui::InputText("Project name",project_name_.data(),project_name_.size());
+            constexpr const char* presets[]={"Starter 3D","Hybrid Pixel / HD2D"};
+            ImGui::SetNextItemWidth(620.0F);ImGui::Combo("Project preset",&project_preset_index_,presets,2);
+            ImGui::TextDisabled(project_preset_index_==1?
+                "Pixel-stable 320 x 180 canvas with nearest integer presentation.":
+                "General-purpose scene, C# entry point, HUD, input, animation, and built-in assets.");
+        }
         ImGui::SetNextItemWidth(620.0F);ImGui::InputText("Project path",project_path_.data(),project_path_.size());
         const auto ready=project_path_[0]!='\0'&&(!creating||project_name_[0]!='\0');
         ImGui::BeginDisabled(!ready);
         if(ImGui::Button(creating?"Create & Open":"Open")) {
             project_request_=EditorProjectRequest{creating?EditorProjectCommand::create:EditorProjectCommand::open,
-                project_path_.data(),creating?project_name_.data():std::string{}};
+                project_path_.data(),creating?project_name_.data():std::string{},
+                creating&&project_preset_index_==1?"hybrid-pixel":"starter"};
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndDisabled();ImGui::SameLine();if(ImGui::Button("Cancel"))ImGui::CloseCurrentPopup();

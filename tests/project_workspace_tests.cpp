@@ -42,8 +42,68 @@ int main() {
     if(!animation_inspection.value("valid",false)||animation_inspection.value("code",std::string{})!="ok")return 4;
     const auto graph_inspection=nlohmann::json::parse(registry.inspect_json("animation.graph.orbit-garden.starter"));
     if(!graph_inspection.value("valid",false)||graph_inspection.value("code",std::string{})!="ok")return 4;
+
+    // The Hybrid Pixel preset only adds the one engine-owned profile; the
+    // generated project must retain the complete starter contract and load
+    // through the same ProjectDocument path as the default workspace.
+    const auto hybrid_root=root.parent_path()/(root.filename().string()+"-hybrid");
+    const auto hybrid_receipt=nlohmann::json::parse(
+        noemancer::create_project_workspace_json({hybrid_root,"Pixel Garden",
+            std::string(noemancer::project_workspace_preset_hybrid_pixel)}));
+    const auto hybrid=noemancer::load_project(hybrid_root);
+    if(!hybrid_receipt.value("success",false)||
+       hybrid_receipt.value("code",std::string{})!="ok"||
+       hybrid_receipt.value("preset",std::string{})!=noemancer::project_workspace_preset_hybrid_pixel||!hybrid||
+       hybrid.project->schema!="noemancer.project/0.2"||
+       hybrid.project->project_id!="game.pixel-garden"||
+       !hybrid.project->hybrid_pixel_profile||
+       hybrid.project->hybrid_pixel_profile->schema!=noemancer::hybrid_pixel_profile_schema||
+       hybrid.project->hybrid_pixel_profile->profile_id!="project.pixel-garden.hybrid-pixel"||
+       hybrid.project->hybrid_pixel_profile->virtual_width!=320U||
+       hybrid.project->hybrid_pixel_profile->virtual_height!=180U||
+       hybrid.project->hybrid_pixel_profile->pixels_per_unit!=16.0F||
+       !hybrid.project->hybrid_pixel_profile->enabled||
+       !hybrid.project->hybrid_pixel_profile->integer_scaling||
+       !hybrid.project->hybrid_pixel_profile->snap_camera||
+       !hybrid.project->hybrid_pixel_profile->snap_sprites||
+       hybrid.project->hybrid_pixel_profile->presentation_filter!="nearest"||
+       !std::filesystem::is_regular_file(hybrid_root/"noemancer.project.json")||
+       !std::filesystem::is_regular_file(hybrid_root/"scenes"/"main.scene.json")||
+       !std::filesystem::is_regular_file(hybrid_root/"scripts"/"PixelGarden.Gameplay"/"GameEntry.cs")||
+       !std::filesystem::is_regular_file(hybrid_root/"scripts"/"PixelGarden.Gameplay"/"PixelGarden.Gameplay.csproj")||
+       !std::filesystem::is_regular_file(hybrid_root/"ui"/"hud.ui.json")||
+       !std::filesystem::is_regular_file(hybrid_root/"assets"/"registry.json")||
+       hybrid.project->input_actions.size()!=3U) {
+        std::cerr<<noemancer::project_load_errors_json(hybrid)<<'\n';return 7;
+    }
+    std::ifstream hybrid_manifest_stream(hybrid_root/"noemancer.project.json",std::ios::binary);
+    const auto hybrid_manifest=nlohmann::json::parse(hybrid_manifest_stream,nullptr,false);
+    hybrid_manifest_stream.close();
+    const auto expected_profile=nlohmann::json::parse(
+        noemancer::HybridPixelProfileCodec::write_canonical_json(*hybrid.project->hybrid_pixel_profile),
+        nullptr,false);
+    if(hybrid_manifest.is_discarded()||hybrid_manifest.value("schema",std::string{})!="noemancer.project/0.2"||
+       hybrid_manifest.value("hybridPixelProfile",nlohmann::json(nullptr))!=expected_profile||
+       hybrid_manifest.value("startupScene",std::string{})!="scenes/main.scene.json"||
+       hybrid_manifest.value("assetRoots",nlohmann::json(nullptr))!=nlohmann::json::array({"assets"})||
+       !hybrid_manifest.contains("scriptProject")||!hybrid_manifest.contains("hudDocument")||
+       !hybrid_manifest.contains("inputActions"))return 8;
+
+    // Preset validation happens before staging, so an unknown preset cannot
+    // leave either a target directory or a partially written sibling behind.
+    const auto invalid_root=root.parent_path()/(root.filename().string()+"-invalid");
+    const auto invalid=nlohmann::json::parse(
+        noemancer::create_project_workspace_json({invalid_root,"Invalid Preset","not-a-preset"}));
+    if(invalid.value("success",true)||
+       invalid.value("code",std::string{})!="project.create-invalid-preset"||
+       std::filesystem::exists(invalid_root))return 9;
+
     const auto duplicate=nlohmann::json::parse(noemancer::create_project_workspace_json({root,"Duplicate"}));
-    if(duplicate.value("success",true)||duplicate.value("code",std::string{})!="project.create-target-exists")return 5;
+    if(duplicate.value("success",true)||duplicate.value("code",std::string{})!="project.create-target-exists")return 10;
     std::error_code cleanup_error;std::filesystem::remove_all(root,cleanup_error);
-    if(cleanup_error){std::cerr<<cleanup_error.message()<<'\n';return 6;}return 0;
+    if(cleanup_error){std::cerr<<cleanup_error.message()<<'\n';return 11;}
+    std::filesystem::remove_all(hybrid_root,cleanup_error);
+    if(cleanup_error){std::cerr<<cleanup_error.message()<<'\n';return 12;}
+    std::filesystem::remove_all(invalid_root,cleanup_error);
+    if(cleanup_error){std::cerr<<cleanup_error.message()<<'\n';return 13;}return 0;
 }

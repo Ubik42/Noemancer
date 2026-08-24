@@ -547,7 +547,7 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
 void Application::apply_project_request(const EditorProjectRequest& request) {
     using Json=nlohmann::json;std::string result;
     if(request.command==EditorProjectCommand::create) {
-        const auto created=create_project_workspace_json({request.path,request.name});
+        const auto created=create_project_workspace_json({request.path,request.name,request.preset});
         const auto receipt=Json::parse(created,nullptr,false);
         result=receipt.is_object()&&receipt.value("success",false)?load_editor_project_json(receipt.value("projectPath",std::string{})):created;
     } else result=load_editor_project_json(request.path);

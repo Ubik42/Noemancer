@@ -2,6 +2,7 @@
 
 #include "engine/animation_graph.hpp"
 #include "engine/animation_state_machine.hpp"
+#include "engine/hybrid_pixel_profile.hpp"
 #include "engine/scene_document.hpp"
 #include "engine/gameplay_runtime.hpp"
 
@@ -80,6 +81,14 @@ Json starter_hud_document(const std::string_view name) {
         })}};
 }
 
+HybridPixelProfile starter_hybrid_pixel_profile(const std::string_view project_slug) {
+    HybridPixelProfile profile;
+    // Keep the profile identity stable within the generated project while
+    // retaining the codec's complete, validated starter defaults.
+    profile.profile_id = "project." + std::string(project_slug) + ".hybrid-pixel";
+    return profile;
+}
+
 AnimationStateMachineDocument starter_animation_state_machine(const std::string_view project_slug) {
     AnimationStateMachineDocument document;
     document.asset_id="animation.machine."+std::string(project_slug)+".starter";
@@ -113,6 +122,10 @@ std::string create_project_workspace_json(const ProjectWorkspaceCreateRequest& r
         return failure("project.create-invalid-root","Project root must be an absolute path naming a new directory.",root).dump();
     if(request.name.empty()||request.name.size()>96U)
         return failure("project.create-invalid-name","Project name must contain between 1 and 96 characters.",root).dump();
+    if(request.preset!=project_workspace_preset_starter&&
+       request.preset!=project_workspace_preset_hybrid_pixel)
+        return failure("project.create-invalid-preset",
+            "Project workspace preset must be starter or hybrid-pixel.",root).dump();
     if(std::filesystem::exists(root,error)||error)
         return failure("project.create-target-exists","Project creation never overwrites an existing path.",root).dump();
 
@@ -135,10 +148,16 @@ std::string create_project_workspace_json(const ProjectWorkspaceCreateRequest& r
 
     const auto script_directory=std::filesystem::path("scripts")/(code_name+".Gameplay");
     const auto script_project=script_directory/(code_name+".Gameplay.csproj");
-    const auto manifest=Json{{"schema","noemancer.project/0.2"},{"projectId","game."+project_slug},{"name",request.name},
+    Json manifest_document=Json{{"schema","noemancer.project/0.2"},{"projectId","game."+project_slug},{"name",request.name},
         {"startupScene","scenes/main.scene.json"},{"assetRoots",Json::array({"assets"})},
         {"scriptProject",script_project.generic_string()},{"hudDocument","ui/hud.ui.json"},
-        {"inputActions",starter_input_actions()}}.dump(2)+"\n";
+        {"inputActions",starter_input_actions()}};
+    if(request.preset==project_workspace_preset_hybrid_pixel) {
+        const auto profile=starter_hybrid_pixel_profile(project_slug);
+        manifest_document["hybridPixelProfile"]=
+            Json::parse(HybridPixelProfileCodec::write_canonical_json(profile));
+    }
+    const auto manifest=manifest_document.dump(2)+"\n";
     const auto csproj=std::string{R"(<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -194,6 +213,7 @@ std::string create_project_workspace_json(const ProjectWorkspaceCreateRequest& r
         return failure("project.create-commit-failed",error.message(),root).dump();}
     return Json{{"schemaVersion","noemancer.project-workspace-action/0.1"},{"success",true},{"code","ok"},
         {"operation","project.create"},{"detail","Project workspace created atomically."},{"projectPath",root.generic_string()},
+        {"preset",request.preset},
         {"manifest",(root/"noemancer.project.json").generic_string()},{"startupScene",(root/"scenes"/"main.scene.json").generic_string()},
         {"scriptProject",(root/script_project).generic_string()}}.dump();
 }

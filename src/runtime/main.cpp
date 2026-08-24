@@ -85,7 +85,7 @@ void print_usage() {
         << "  noemancer tools list [--format json]\n"
         << "  noemancer tool call <name> [--input JSON]\n"
         << "  noemancer serve [--project PATH] --format jsonl\n"
-        << "  noemancer project create --path PATH --name NAME [--format json]\n"
+        << "  noemancer project create --path PATH --name NAME [--preset starter|hybrid-pixel] [--format json]\n"
         << "  noemancer network-server --port PORT [--sessions N] [--timeout-ms N] --format json\n"
         << "  noemancer network-client --host IPv4 --port PORT [--peer-id ID] [--payload-bytes N] --format json\n"
         << "  noemancer package --project PATH --output PATH [--target-profile windows-x64-release|windows-x64-debug] [--dry-run] [--format json]\n";
@@ -154,7 +154,7 @@ int run_package_cli(const int argc, char** argv) {
 
 int run_project_cli(const int argc,char** argv) {
     if(argc<3||std::string_view(argv[2])!="create") {
-        std::cerr<<"Expected: noemancer project create --path PATH --name NAME [--format json]\n";
+        std::cerr<<"Expected: noemancer project create --path PATH --name NAME [--preset starter|hybrid-pixel] [--format json]\n";
         return 2;
     }
     noemancer::ProjectWorkspaceCreateRequest request;
@@ -162,9 +162,10 @@ int run_project_cli(const int argc,char** argv) {
         const std::string_view argument=argv[index];
         if(argument=="--path"&&index+1<argc)request.root=argv[++index];
         else if(argument=="--name"&&index+1<argc)request.name=argv[++index];
+        else if(argument=="--preset"&&index+1<argc)request.preset=argv[++index];
         else if(argument=="--format"&&index+1<argc&&std::string_view(argv[++index])=="json") {}
         else {
-            std::cerr<<"Expected: noemancer project create --path PATH --name NAME [--format json]\n";
+            std::cerr<<"Expected: noemancer project create --path PATH --name NAME [--preset starter|hybrid-pixel] [--format json]\n";
             return 2;
         }
     }

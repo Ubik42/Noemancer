@@ -87,6 +87,7 @@ struct EditorProjectRequest final {
     EditorProjectCommand command{EditorProjectCommand::open};
     std::string path;
     std::string name;
+    std::string preset{"starter"};
 };
 
 struct EditorSourceOpenRequest final {
@@ -245,6 +246,7 @@ private:
     std::array<char,128> new_scene_name_{};
     std::array<char,512> project_path_{};
     std::array<char,128> project_name_{};
+    int project_preset_index_{};
     int project_dialog_mode_{};
     bool exit_requested_{};
     bool close_dialog_open_{};
