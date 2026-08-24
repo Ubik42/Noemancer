@@ -138,6 +138,109 @@ int main() {
        resolved->texture_width!=64||resolved->pixels_per_unit!=16.0F||resolved->material) {
         std::cerr<<"deterministic sprite playback or semantic observation failed\n";return 8;
     }
+
+    const std::vector<noemancer::SpriteRuntimePageBinding> page_bindings{
+        {.sprite_asset_id="sprite.courier",.frame_id="idle.0",.derived_texture_asset_id="texture.courier.page.0",
+         .page_index=0,.page_width=32,.page_height=32,.x=2,.y=4,.width=16,.height=24,
+         .layout_fingerprint=0x1111ULL,.page_fingerprint="sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+        {.sprite_asset_id="sprite.courier",.frame_id="idle.1",.derived_texture_asset_id="texture.courier.page.1",
+         .page_index=1,.page_width=32,.page_height=32,.x=1,.y=2,.width=16,.height=24,
+         .layout_fingerprint=0x1111ULL,.page_fingerprint="sha256:1111111111111111111111111111111111111111111111111111111111111111"}};
+    const auto empty_binding_observation=nlohmann::json::parse(
+        library.observe_page_bindings_json("sprite.courier"));
+    if(!empty_binding_observation.at("valid").get<bool>()||empty_binding_observation.at("code")!="ok"||
+       empty_binding_observation.at("revision")!=0U||empty_binding_observation.at("bindings").at("total")!=0U) {
+        std::cerr<<"unbound SpriteAsset did not expose a stable empty page-binding observation\n";return 23;
+    }
+    const auto first_binding=library.register_page_bindings("sprite.courier",page_bindings);
+    if(!first_binding.success||first_binding.code!="ok"||first_binding.revision!=1U||first_binding.binding_count!=2U||
+       !first_binding.diagnostics.empty()) {
+        std::cerr<<"valid multi-page SpriteAsset binding batch was not atomically registered\n";return 24;
+    }
+    const auto bound_idle0=library.resolve_frame("sprite.courier","idle.0");
+    auto bound_playback=playback;bound_playback.frame_index=1;bound_playback.elapsed_in_frame_ms=0.0;
+    const auto bound_idle1=library.resolve(bound_playback);
+    const auto bound_observation=nlohmann::json::parse(library.observe_json(playback));
+    const auto binding_observation=nlohmann::json::parse(
+        library.observe_page_bindings_json("sprite.courier"));
+    if(!bound_idle0||bound_idle0->texture_asset!="texture.courier.page.0"||bound_idle0->texture_width!=32||
+       bound_idle0->texture_height!=32||bound_idle0->frame.x!=2||bound_idle0->frame.y!=4||
+       bound_idle0->frame.width!=16||bound_idle0->frame.height!=24||
+       !bound_idle1||bound_idle1->texture_asset!="texture.courier.page.1"||bound_idle1->frame.x!=1||
+       bound_idle1->frame.y!=2||bound_observation.at("pageBinding").at("pageIndex")!=0U||
+       bound_observation.at("pageBinding").at("derivedTextureAssetId")!="texture.courier.page.0"||
+       !binding_observation.at("valid").get<bool>()||binding_observation.at("code")!="ok"||
+       binding_observation.at("revision")!=1U||binding_observation.at("bindingCount")!=2U||
+       binding_observation.at("bindings").at("total")!=2U||binding_observation.at("bindings").at("items").size()!=2U) {
+        std::cerr<<"bound Sprite resolve/observation did not select page-local geometry\n";return 25;
+    }
+
+    auto invalid_batch=page_bindings;
+    invalid_batch[1].frame_id="missing.frame";
+    invalid_batch.push_back(page_bindings.front());
+    const auto rejected_batch=library.register_page_bindings("sprite.courier",invalid_batch);
+    const auto after_rejected=library.resolve_frame("sprite.courier","idle.0");
+    if(rejected_batch.success||rejected_batch.code!="sprite.page-binding-unknown-frame"||
+       rejected_batch.revision!=first_binding.revision||rejected_batch.binding_count!=2U||
+       rejected_batch.diagnostics.size()<2U||!after_rejected||
+       after_rejected->texture_asset!="texture.courier.page.0"||after_rejected->frame.x!=2) {
+        std::cerr<<"invalid page binding batch partially committed or lost stable diagnostics\n";return 26;
+    }
+    auto out_of_bounds_batch=page_bindings;
+    out_of_bounds_batch[0].x=24U;
+    const auto rejected_rect=library.register_page_bindings("sprite.courier",out_of_bounds_batch);
+    if(rejected_rect.success||rejected_rect.code!="sprite.page-binding-rect-out-of-bounds"||
+       rejected_rect.revision!=first_binding.revision||
+       !library.resolve_frame("sprite.courier","idle.1")||
+       library.resolve_frame("sprite.courier","idle.1")->texture_asset!="texture.courier.page.1") {
+        std::cerr<<"out-of-bounds page binding was accepted or replaced the active overlay\n";return 27;
+    }
+    auto empty_fingerprint_batch=page_bindings;
+    empty_fingerprint_batch[0].page_fingerprint.clear();
+    const auto rejected_empty_fingerprint=library.register_page_bindings(
+        "sprite.courier",empty_fingerprint_batch);
+    auto unsupported_fingerprint_batch=page_bindings;
+    unsupported_fingerprint_batch[0].page_fingerprint="md5:legacy-page";
+    const auto rejected_unsupported_fingerprint=library.register_page_bindings(
+        "sprite.courier",unsupported_fingerprint_batch);
+    if(rejected_empty_fingerprint.success||
+       rejected_empty_fingerprint.code!="sprite.page-binding-empty-page-fingerprint"||
+       rejected_empty_fingerprint.revision!=first_binding.revision||
+       rejected_unsupported_fingerprint.success||
+       rejected_unsupported_fingerprint.code!="sprite.page-binding-unsupported-page-fingerprint"||
+       rejected_unsupported_fingerprint.revision!=first_binding.revision) {
+        std::cerr<<"page fingerprint identity validation accepted an empty or unsupported prefix\n";return 31;
+    }
+
+    auto replacement_bindings=page_bindings;
+    replacement_bindings[0].derived_texture_asset_id="texture.courier.page.replacement";
+    replacement_bindings[0].page_index=3U;
+    replacement_bindings[0].x=4U;
+    const auto conflict=library.replace_page_bindings("sprite.courier",replacement_bindings,0U);
+    const auto after_conflict=library.resolve_frame("sprite.courier","idle.0");
+    if(conflict.success||conflict.code!="sprite.page-binding-revision-conflict"||
+       conflict.revision!=first_binding.revision||conflict.binding_count!=2U||conflict.diagnostics.size()!=1U||
+       !after_conflict||after_conflict->texture_asset!="texture.courier.page.0"||after_conflict->frame.x!=2U) {
+        std::cerr<<"page binding revision CAS conflict changed the active overlay\n";return 32;
+    }
+    const auto replaced=library.replace_page_bindings("sprite.courier",replacement_bindings,first_binding.revision);
+    const auto replaced_frame=library.resolve_frame("sprite.courier","idle.0");
+    const auto idempotent=library.register_page_bindings("sprite.courier",replacement_bindings);
+    if(!replaced.success||replaced.revision!=first_binding.revision+1U||replaced.binding_count!=2U||
+       !replaced_frame||replaced_frame->texture_asset!="texture.courier.page.replacement"||replaced_frame->frame.x!=4U||
+       !idempotent.success||idempotent.revision!=replaced.revision) {
+        std::cerr<<"page binding replacement or idempotent revision semantics failed\n";return 33;
+    }
+    const auto cleared=library.clear_page_bindings("sprite.courier");
+    const auto fallback_frame=library.resolve_frame("sprite.courier","idle.0");
+    const auto cleared_observation=nlohmann::json::parse(
+        library.observe_page_bindings_json("sprite.courier"));
+    if(!cleared.success||cleared.revision!=replaced.revision+1U||cleared.binding_count!=0U||
+       !fallback_frame||fallback_frame->texture_asset!="texture.courier.atlas"||fallback_frame->texture_width!=64||
+       fallback_frame->frame.x!=0U||cleared_observation.at("revision")!=cleared.revision||
+       cleared_observation.at("bindings").at("total")!=0U) {
+        std::cerr<<"clearing page bindings did not restore the legacy single-atlas resolve path\n";return 34;
+    }
     noemancer::SpriteAssetLibrary material_library;
     if(!material_library.register_asset(*explicit_material.document))return 20;
     const noemancer::SpritePlaybackState material_playback{.asset_id="sprite.courier",.clip_id="idle"};

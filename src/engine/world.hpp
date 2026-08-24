@@ -351,6 +351,9 @@ public:
     [[nodiscard]] bool register_animation_state_machine(AnimationStateMachineDocument document);
     [[nodiscard]] bool register_animation_graph(AnimationGraphDocument document);
     [[nodiscard]] bool register_sprite_asset(SpriteAssetDocument document);
+    [[nodiscard]] SpritePageBindingUpdateResult register_sprite_page_bindings(
+        std::string_view asset_id, const std::vector<SpriteRuntimePageBinding>& bindings,
+        std::optional<std::uint64_t> expected_revision = std::nullopt);
     [[nodiscard]] bool register_tile_palette(TilePaletteDocument document);
     [[nodiscard]] bool register_tilemap_asset(TilemapDocument document);
     void tick(float delta_seconds);

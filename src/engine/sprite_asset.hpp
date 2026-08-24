@@ -251,17 +251,69 @@ struct SpriteResolvedFrame final {
     std::string event;
 };
 
+// Runtime-only page binding overlay.  Authoring SpriteAsset 0.2 JSON remains
+// a single texture contract; this data selects a renderer-neutral derived page
+// without rewriting the authored frame or persistence schema.
+struct SpriteRuntimePageBinding final {
+    std::string sprite_asset_id;
+    std::string frame_id;
+    std::string derived_texture_asset_id;
+    std::uint32_t page_index{};
+    std::uint32_t page_width{};
+    std::uint32_t page_height{};
+    std::uint32_t x{};
+    std::uint32_t y{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint64_t layout_fingerprint{};
+    // The artifact's page identity is preserved verbatim (for example,
+    // "sha256:<digest>") rather than being lossy-converted to an integer.
+    std::string page_fingerprint;
+};
+
+struct SpritePageBindingUpdateResult final {
+    bool success{};
+    std::string code{"sprite.page-binding-invalid"};
+    std::uint64_t revision{};
+    std::size_t binding_count{};
+    std::vector<SpriteAssetError> diagnostics;
+};
+
+inline constexpr std::size_t sprite_runtime_binding_max_entries{65536U};
+inline constexpr std::uint32_t sprite_runtime_binding_max_page_dimension{16384U};
+inline constexpr std::size_t sprite_runtime_binding_max_observation_entries{4096U};
+
 class SpriteAssetLibrary final {
 public:
     [[nodiscard]] bool register_asset(SpriteAssetDocument document);
+    // Validates the complete batch before replacing the current overlay.  A
+    // failure leaves both the prior bindings and their revision untouched.
+    [[nodiscard]] SpritePageBindingUpdateResult replace_page_bindings(
+        std::string_view asset_id, const std::vector<SpriteRuntimePageBinding>& bindings,
+        std::optional<std::uint64_t> expected_revision = std::nullopt);
+    [[nodiscard]] SpritePageBindingUpdateResult register_page_bindings(
+        std::string_view asset_id, const std::vector<SpriteRuntimePageBinding>& bindings,
+        std::optional<std::uint64_t> expected_revision = std::nullopt);
+    [[nodiscard]] SpritePageBindingUpdateResult clear_page_bindings(
+        std::string_view asset_id, std::optional<std::uint64_t> expected_revision = std::nullopt);
     [[nodiscard]] const SpriteAssetDocument* find(std::string_view asset_id) const noexcept;
     [[nodiscard]] std::optional<SpriteResolvedFrame> resolve_frame(std::string_view asset_id,
                                                                     std::string_view frame_id) const;
     [[nodiscard]] std::optional<SpriteResolvedFrame> resolve(const SpritePlaybackState& state) const;
     [[nodiscard]] SpritePlaybackResult advance(SpritePlaybackState& state,double delta_seconds) const;
     [[nodiscard]] std::string observe_json(const SpritePlaybackState& state) const;
+    [[nodiscard]] std::string observe_page_bindings_json(std::string_view asset_id) const;
 private:
+    struct RuntimePageBindingState final {
+        std::uint64_t revision{};
+        std::unordered_map<std::string, SpriteRuntimePageBinding> bindings;
+    };
+
+    [[nodiscard]] const SpriteRuntimePageBinding* find_page_binding(
+        std::string_view asset_id, std::string_view frame_id) const noexcept;
+
     std::unordered_map<std::string,SpriteAssetDocument> assets_;
+    std::unordered_map<std::string,RuntimePageBindingState> page_bindings_;
 };
 
 // Deterministic synthetic long-sequence probe used by CLI/Agent acceptance.

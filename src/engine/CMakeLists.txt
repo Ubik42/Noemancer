@@ -56,6 +56,8 @@ add_library(noemancer_engine STATIC
     scripting_runtime.cpp
     simulation_runtime.cpp
     sprite_asset.cpp
+    sprite_atlas_artifact.cpp
+    sprite_atlas_page_cache.cpp
     tilemap_asset.cpp
     temporal_aa.cpp
     texture_streaming_demand.cpp

@@ -12,6 +12,7 @@
 #include "engine/ktx2_cook_adapter.hpp"
 #include "engine/mesh_runtime_artifact.hpp"
 #include "engine/sprite_asset.hpp"
+#include "engine/sprite_atlas_artifact.hpp"
 #include "engine/simulation_runtime.hpp"
 #include "engine/tilemap_asset.hpp"
 
@@ -250,6 +251,7 @@ std::string cooked_payload_format(const AssetRecord& asset) {
     if(asset.uri.starts_with("builtin://"))return "builtin/json";
     if(is_animation_clip_asset(asset))return "noemancer/animbin";
     if(asset.extension==".glb"||asset.extension==".fbx")return "noemancer/meshbin/0.2";
+    if(is_sprite_asset(asset))return "noemancer.sprite-atlas-artifact/0.1";
     if(is_texture_cook_source(asset))return "ktx2";
     return asset.extension;
 }
@@ -1158,10 +1160,25 @@ std::string AssetRegistry::cook_plan_json(
             else {
                 importer=parsed.document->schema;
                 const auto dependencies=SpriteAssetCodec::asset_dependencies(*parsed.document);
+                std::string recipe_material = parsed.document->schema + "\n" +
+                    SpriteAssetCodec::write_canonical_json(*parsed.document) + "\n" +
+                    std::string(target_profile) + "\n";
                 for(const auto& texture_asset:dependencies) {
-                    if(find(texture_asset)==nullptr)errors.push_back({{"code","sprite.texture-asset-not-found"},{"assetId",id},{"textureAsset",texture_asset}});
-                    else if(scheduled.insert(texture_asset).second)scheduled_ids.push_back(texture_asset);
+                    const auto* dependency = find(texture_asset);
+                    if(dependency==nullptr) {
+                        errors.push_back({{"code","sprite.texture-asset-not-found"},{"assetId",id},{"textureAsset",texture_asset}});
+                    } else {
+                        if (!dependency->available)
+                            errors.push_back({{"code","sprite.texture-asset-unavailable"},{"assetId",id},{"textureAsset",texture_asset}});
+                        recipe_material += dependency->id + "\n" + dependency->content_hash + "\n";
+                        if(scheduled.insert(texture_asset).second)scheduled_ids.push_back(texture_asset);
+                    }
                 }
+                const auto hash = sha256_bytes(std::as_bytes(std::span(recipe_material)));
+                if (!hash.success)
+                    errors.push_back({{"code",hash.code},{"assetId",id},{"detail",hash.detail}});
+                else
+                    recipe_hash = hash.value;
             }
         } else if (is_animation_graph_asset(*asset)) {
             importer=std::string(animation_graph_schema);
@@ -1269,6 +1286,7 @@ std::string AssetRegistry::apply_cook_plan_json(
         {"artifacts", Json::array()},
         {"errors", Json::array()}
     };
+    std::vector<std::filesystem::path> sprite_created_page_paths;
     try {
         const auto plan = Json::parse(plan_json);
         receipt["planId"] = plan.value("planId", std::string{});
@@ -1298,6 +1316,19 @@ std::string AssetRegistry::apply_cook_plan_json(
         if (dry_run) return receipt.dump();
 
         const auto generated_root = asset_root_.parent_path() / "generated";
+        const auto resolve_generated_uri = [&](const std::string_view uri)
+            -> std::optional<std::filesystem::path> {
+            constexpr std::string_view prefix = "generated://";
+            if (!uri.starts_with(prefix)) return std::nullopt;
+            const auto relative_text = std::string(uri.substr(prefix.size()));
+            if (relative_text.empty()) return std::nullopt;
+            const std::filesystem::path relative(relative_text);
+            if (relative.is_absolute()) return std::nullopt;
+            for (const auto& component : relative) {
+                if (component == ".." || component == "." || component.empty()) return std::nullopt;
+            }
+            return (generated_root / relative).lexically_normal();
+        };
         Json outputs = Json::array();
         for (const auto& input : plan.at("inputs")) {
             const auto id = input.at("assetId").get<std::string>();
@@ -1322,6 +1353,7 @@ std::string AssetRegistry::apply_cook_plan_json(
             }
             const auto profile=cook_platform_profile(plan.at("targetProfile").get<std::string>());
             const bool texture_cook=is_texture_cook_source(*asset);
+            const bool sprite_atlas_cook=is_sprite_asset(*asset);
             const auto texture_cook_settings=texture_settings(*asset);
             const auto texture_plan=texture_cook?plan_texture_cook(CookSource{.asset_id=asset->id,.source_uri=asset->uri,
                 .source_hash=asset->content_hash,.source_bytes=asset->source_bytes,.importer=input.at("importer").get<std::string>()},
@@ -1361,11 +1393,51 @@ std::string AssetRegistry::apply_cook_plan_json(
                     imported->contains("runtimeContract") && imported->at("runtimeContract").is_object() &&
                     imported->at("runtimeContract").value("sourceDecodeAtRuntime", true) == false;
             }
+            if (cache_hit && sprite_atlas_cook) {
+                const auto cached_metadata = Json::parse(read_text_file(metadata_path), nullptr, false);
+                const auto cached_payload_hash = noemancer::sha256_file(payload_path);
+                const auto* imported = cached_metadata.is_object() && cached_metadata.contains("importedMetadata")
+                    ? &cached_metadata.at("importedMetadata") : nullptr;
+                cache_hit = imported != nullptr && imported->is_object() &&
+                    cached_metadata.value("schema", std::string{}) == "noemancer.cooked-asset/0.1" &&
+                    cached_metadata.value("recipeHash", std::string{}) == planned_recipe_hash &&
+                    cached_payload_hash.success &&
+                    cached_metadata.value("payloadHash", std::string{}) == cached_payload_hash.value &&
+                    cached_metadata.value("payloadFormat", std::string{}) ==
+                        "noemancer.sprite-atlas-artifact/0.1" &&
+                    imported->value("format", std::string{}) == "noemancer.sprite-atlas-artifact/0.1" &&
+                    imported->contains("authoringDocument") && imported->at("authoringDocument").is_object() &&
+                    imported->contains("atlasArtifact") && imported->at("atlasArtifact").is_object() &&
+                    imported->at("atlasArtifact").value("kind", std::string{}) == "SpriteAtlas";
+                if (cache_hit && imported->contains("atlasArtifact") &&
+                    imported->at("atlasArtifact").is_object() &&
+                    imported->at("atlasArtifact").contains("pageArtifacts") &&
+                    imported->at("atlasArtifact").at("pageArtifacts").is_array()) {
+                    const auto& cached_sprite_page_outputs = imported->at("atlasArtifact").at("pageArtifacts");
+                    for (const auto& page : cached_sprite_page_outputs) {
+                        const auto page_uri = page.value("payloadUri", std::string{});
+                        const auto page_path = resolve_generated_uri(page_uri);
+                        const auto expected_hash = page.value("payloadHash", std::string{});
+                        if (!page_path || expected_hash.empty()) {
+                            cache_hit = false;
+                            break;
+                        }
+                        const auto page_identity = noemancer::sha256_file(*page_path);
+                        if (!page_identity.success || page_identity.value != expected_hash) {
+                            cache_hit = false;
+                            break;
+                        }
+                    }
+                } else {
+                    cache_hit = false;
+                }
+            }
             if (cache_hit) {
                 receipt["cacheHits"] = receipt.at("cacheHits").get<std::size_t>() + 1;
             } else {
                 receipt["cacheMisses"] = receipt.at("cacheMisses").get<std::size_t>() + 1;
                 Json imported_metadata = nullptr;
+                Json cooked_dependencies = input.value("dependencies", asset->dependencies);
                 std::vector<std::byte> cooked_binary_payload;
                 std::string cooked_payload_hash;
                 const bool animation_clip=is_animation_clip_asset(*asset);
@@ -1492,17 +1564,137 @@ std::string AssetRegistry::apply_cook_plan_json(
                         {"iblCookContract",{{"version","split-sum-ggx/1.0"},{"irradiance",{{"resolution",16},{"format","RGBA16F"}}},
                             {"prefilteredSpecular",{{"resolution",64},{"mipLevels",7},{"format","RGBA16F"}}},
                             {"brdfLut",{{"resolution",128},{"format","RG16F"}}}}}};
-                } else if(!animation_document && is_sprite_asset(*asset)) {
+                } else if(!animation_document && sprite_atlas_cook) {
                     const auto parsed=SpriteAssetCodec::parse_json(read_text_file(source_file));
-                    if(!parsed)throw std::runtime_error("Sprite document validation failed for "+asset->id);
+                    if(!parsed)throw std::runtime_error("sprite.invalid-document: Sprite document validation failed for "+asset->id);
                     const auto document=Json::parse(SpriteAssetCodec::write_canonical_json(*parsed.document));
                     const auto dependencies=SpriteAssetCodec::asset_dependencies(*parsed.document);
-                    imported_metadata={{"format",parsed.document->schema},
-                        {"document",document},{"dependencies",dependencies},
-                        {"runtimeContract",{{"textureAsset",parsed.document->texture_asset},{"frameCount",parsed.document->frames.size()},
-                            {"clipCount",parsed.document->clips.size()},{"sampling",parsed.document->sampling},
-                            {"alphaMode",parsed.document->alpha_mode},{"pixelsPerUnit",parsed.document->pixels_per_unit},
-                            {"dependencies",dependencies},{"material",document.value("material",Json(nullptr))}}}};
+                    std::vector<std::string> material_dependencies;
+                    for(const auto& dependency:dependencies)
+                        if(dependency!=parsed.document->texture_asset)material_dependencies.push_back(dependency);
+                    const auto* texture_asset=find(parsed.document->texture_asset);
+                    if(texture_asset==nullptr||!texture_asset->available)
+                        throw std::runtime_error("sprite.texture-asset-unavailable: " +
+                            parsed.document->texture_asset + " for " + asset->id);
+                    const auto texture_source=source_path(*texture_asset);
+                    const auto texture_identity=noemancer::sha256_file(texture_source);
+                    if(!texture_identity.success||texture_identity.value!=texture_asset->content_hash)
+                        throw std::runtime_error("sprite.texture-source-changed: " + texture_asset->id);
+                    const auto encoded=read_binary_file(texture_source);
+                    const auto decoded=decode_png_rgba8(std::span<const std::byte>(encoded.data(),encoded.size()));
+                    if(!decoded.valid)
+                        throw std::runtime_error("sprite.atlas-source-decode-failed: " + texture_asset->id +
+                            ": " + decoded.code + " - " + decoded.detail);
+                    if(decoded.width!=parsed.document->texture_width||decoded.height!=parsed.document->texture_height)
+                        throw std::runtime_error("sprite.atlas-source-size-mismatch: " + texture_asset->id);
+                    const auto atlas_rgba8=std::span<const std::byte>(
+                        reinterpret_cast<const std::byte*>(decoded.rgba8.data()),decoded.rgba8.size());
+                    const auto sprite_texture_settings=texture_settings(*texture_asset);
+                    SpriteAtlasArtifactExecutionOptions atlas_execution;
+                    // The cache adapter adds its own versioned namespace. Do
+                    // not repeat that name here: real Windows projects often
+                    // Cook from long staging paths and must stay below legacy
+                    // path limits while retaining atomic temporary names.
+                    atlas_execution.page_cache_root=generated_root/"cook-cache";
+                    atlas_execution.compression=texture_compression(sprite_texture_settings);
+                    const auto artifact=execute_sprite_atlas_artifact(
+                        *parsed.document,atlas_rgba8,SpriteAtlasPlanningOptions{},
+                        CookSource{.asset_id=asset->id,.source_uri=asset->uri,.source_hash=asset->content_hash,
+                            .source_bytes=asset->source_bytes,.importer=input.at("importer").get<std::string>()},
+                        profile,sprite_texture_settings,{},atlas_execution);
+                    if(!artifact.valid)
+                        throw std::runtime_error("sprite.atlas-artifact-failed: " + artifact.code +
+                            (artifact.detail.empty()?std::string{}:": "+artifact.detail));
+
+                    Json atlas_manifest=Json::parse(sprite_atlas_artifact_json(artifact));
+                    const auto page_metadata_source=*texture_asset;
+                    const auto streaming_policy=Json{
+                        {"mode",page_metadata_source.streaming_mode},
+                        {"importance",page_metadata_source.streaming_importance},
+                        {"priority",page_metadata_source.streaming_priority}};
+                    Json page_artifacts=Json::array();
+                    std::vector<std::string> page_ids;
+                    page_ids.reserve(artifact.pages.size());
+                    const auto page_items=atlas_manifest.value("pages",Json::object()).value("items",Json::array());
+                    for(std::size_t page_index=0U;page_index<artifact.pages.size();++page_index) {
+                        const auto& page=artifact.pages[page_index];
+                        page_ids.push_back(page.asset_id);
+                        const auto page_path=cache_directory/"pages"/("page-"+std::to_string(page.page_index)+".ktx2");
+                        const auto page_uri="generated://cook-cache/"+hash+"/pages/page-"+
+                            std::to_string(page.page_index)+".ktx2";
+                        const auto existing_identity=noemancer::sha256_file(page_path);
+                        if(existing_identity.success) {
+                            if(existing_identity.value!=page.payload_fingerprint)
+                                throw std::runtime_error("sprite.page-artifact-conflict: "+page_path.string());
+                        } else {
+                            std::string page_error;
+                            if(!write_atomic_bytes(page_path,std::span<const std::byte>(page.payload.data(),page.payload.size()),page_error))
+                                throw std::runtime_error("sprite.page-artifact-write-failed: "+page_error);
+                            sprite_created_page_paths.push_back(page_path);
+                        }
+                        Json page_record={
+                            {"assetId",page.asset_id},
+                            {"displayName",asset->display_name+" / Atlas Page "+std::to_string(page.page_index)},
+                            {"kind","SpriteAtlasPage"},
+                            {"license",page_metadata_source.license},
+                            {"redistribution",page_metadata_source.redistribution},
+                            {"streamingPolicy",streaming_policy},
+                            {"tags",page_metadata_source.tags},
+                            {"dependencies",material_dependencies},
+                            {"required",!asset->optional&&!page_metadata_source.optional},
+                            {"sourceAssetId",asset->id},
+                            {"sourceTextureAssetId",texture_asset->id},
+                            {"pageIndex",page.page_index},
+                            {"payloadUri",page_uri},
+                            {"payloadFormat","ktx2"},
+                            {"payloadHash",page.payload_fingerprint},
+                            {"payloadBytes",page.payload_bytes},
+                            {"cacheKey",page.cache_key},
+                            {"frameCount",page.frame_count},
+                            {"size",Json::array({page.width,page.height})}};
+                        page_artifacts.push_back(std::move(page_record));
+                        if(page_index<page_items.size()&&page_items.at(page_index).is_object()) {
+                            atlas_manifest["pages"]["items"][page_index]["payloadUri"]=page_uri;
+                            atlas_manifest["pages"]["items"][page_index]["sourceAssetId"]=asset->id;
+                        }
+                    }
+                    std::vector<std::string> manifest_dependencies=page_ids;
+                    for(const auto& dependency:material_dependencies)
+                        if(std::ranges::find(manifest_dependencies,dependency)==manifest_dependencies.end())
+                            manifest_dependencies.push_back(dependency);
+                    cooked_dependencies=manifest_dependencies;
+                    atlas_manifest["displayName"]=asset->display_name;
+                    atlas_manifest["kind"]="SpriteAtlas";
+                    atlas_manifest["license"]=asset->license;
+                    atlas_manifest["redistribution"]=asset->redistribution;
+                    atlas_manifest["streamingPolicy"]={{"mode",asset->streaming_mode},
+                        {"importance",asset->streaming_importance},{"priority",asset->streaming_priority}};
+                    atlas_manifest["tags"]=asset->tags;
+                    atlas_manifest["dependencies"]=manifest_dependencies;
+                    atlas_manifest["authoringDependencies"]=dependencies;
+                    atlas_manifest["authoringDocument"]=document;
+                    atlas_manifest["required"]=!asset->optional;
+                    atlas_manifest["sourceAssetId"]=asset->id;
+                    atlas_manifest["pageArtifacts"]=page_artifacts;
+                    atlas_manifest["payloadFormat"]="noemancer.sprite-atlas-artifact/0.1";
+                    const auto atlas_manifest_text=atlas_manifest.dump(2)+"\n";
+                    cooked_binary_payload.assign(reinterpret_cast<const std::byte*>(atlas_manifest_text.data()),
+                        reinterpret_cast<const std::byte*>(atlas_manifest_text.data()+atlas_manifest_text.size()));
+                    const auto atlas_identity=sha256_bytes(std::span<const std::byte>(
+                        cooked_binary_payload.data(),cooked_binary_payload.size()));
+                    if(!atlas_identity.success)throw std::runtime_error("sprite.atlas-manifest-hash-failed: "+atlas_identity.detail);
+                    cooked_payload_hash=atlas_identity.value;
+                    imported_metadata={{"format","noemancer.sprite-atlas-artifact/0.1"},
+                        {"document",document},{"authoringDocument",document},{"authoringDependencies",dependencies},
+                        {"dependencies",manifest_dependencies},{"atlasArtifact",atlas_manifest},
+                        {"displayName",asset->display_name},{"kind","SpriteAtlas"},{"license",asset->license},
+                        {"redistribution",asset->redistribution},{"streamingPolicy",streaming_policy},
+                        {"tags",asset->tags},{"required",!asset->optional},{"sourceAssetId",asset->id},
+                        {"runtimeContract",{{"textureAsset",parsed.document->texture_asset},
+                            {"frameCount",parsed.document->frames.size()},{"clipCount",parsed.document->clips.size()},
+                            {"sampling",parsed.document->sampling},{"alphaMode",parsed.document->alpha_mode},
+                            {"pixelsPerUnit",parsed.document->pixels_per_unit},{"dependencies",manifest_dependencies},
+                            {"material",document.value("material",Json(nullptr))},{"atlasManifest",atlas_manifest}}}};
                 } else if(is_animation_state_machine_asset(*asset)) {
                     const auto parsed=AnimationStateMachineCodec::parse_json(read_text_file(source_file));
                     if(!parsed)throw std::runtime_error("Animation State Machine validation failed for "+asset->id+": "+parsed.code);
@@ -1546,7 +1738,7 @@ std::string AssetRegistry::apply_cook_plan_json(
                     {"payloadFormat", payload_format},
                     {"payloadHash",cooked_payload_hash},
                     {"recipeHash",planned_recipe_hash},
-                    {"dependencies", input.value("dependencies", asset->dependencies)},
+                    {"dependencies", cooked_dependencies},
                     {"importedMetadata", imported_metadata}
                 };
                 std::string write_error;
@@ -1557,11 +1749,12 @@ std::string AssetRegistry::apply_cook_plan_json(
                     if (!write_atomic(payload_path, imported_metadata.dump(2) + "\n", write_error)) {
                         throw std::runtime_error("Built-in payload write failed: " + write_error);
                     }
-                } else if (mesh_cook||texture_cook||animation_clip) {
+                } else if (mesh_cook||texture_cook||animation_clip||sprite_atlas_cook) {
                     if (cooked_binary_payload.empty() || !write_atomic_bytes(payload_path,
                         std::span<const std::byte>(cooked_binary_payload.data(), cooked_binary_payload.size()),
                         write_error)) {
-                        const auto product_kind=mesh_cook?"Mesh":animation_clip?"Animation":"Texture";
+                        const auto product_kind=mesh_cook?"Mesh":animation_clip?"Animation":
+                            sprite_atlas_cook?"Sprite Atlas":"Texture";
                         throw std::runtime_error(std::string(product_kind)+" Cook payload write failed: " + write_error);
                     }
                 } else {
@@ -1578,9 +1771,35 @@ std::string AssetRegistry::apply_cook_plan_json(
             const auto committed_payload_hash=noemancer::sha256_file(payload_path);
             if(!committed_payload_hash.success)
                 throw std::runtime_error("Cook payload identity failed for "+asset->id+": "+committed_payload_hash.detail);
-            outputs.push_back({{"assetId", id}, {"metadataUri", metadata_uri}, {"payloadUri", payload_uri},
+            Json output={{"assetId", id}, {"metadataUri", metadata_uri}, {"payloadUri", payload_uri},
                 {"payloadFormat", payload_format}, {"payloadHash",committed_payload_hash.value},
-                {"buildInputs",input.value("buildInputs",Json::array())},{"cacheHit", cache_hit}});
+                {"buildInputs",input.value("buildInputs",Json::array())},{"cacheHit", cache_hit}};
+            Json derived_outputs=Json::array();
+            if (sprite_atlas_cook) {
+                const auto cached_metadata=Json::parse(read_text_file(metadata_path),nullptr,false);
+                const auto* imported=cached_metadata.is_object()&&cached_metadata.contains("importedMetadata")
+                    ? &cached_metadata.at("importedMetadata"):nullptr;
+                if(imported!=nullptr&&imported->is_object()) {
+                    output["displayName"]=asset->display_name;
+                    output["kind"]="SpriteAtlas";
+                    output["license"]=asset->license;
+                    output["redistribution"]=asset->redistribution;
+                    output["streamingPolicy"]={{"mode",asset->streaming_mode},
+                        {"importance",asset->streaming_importance},{"priority",asset->streaming_priority}};
+                    output["tags"]=asset->tags;
+                    const auto atlas_manifest=imported->value("atlasArtifact",Json::object());
+                    output["dependencies"]=atlas_manifest.value("dependencies",Json::array());
+                    output["required"]=!asset->optional;
+                    output["sourceAssetId"]=asset->id;
+                    derived_outputs=atlas_manifest.value("pageArtifacts",Json::array());
+                    output["derivedOutputs"]=derived_outputs;
+                    for(const auto& page:derived_outputs)
+                        if(page.contains("payloadUri"))receipt["artifacts"].push_back(page.at("payloadUri"));
+                }
+            }
+            outputs.push_back(std::move(output));
+            if (sprite_atlas_cook)
+                for (const auto& page : derived_outputs) outputs.push_back(page);
             receipt["artifacts"].push_back(metadata_uri);
             receipt["artifacts"].push_back(payload_uri);
         }
@@ -1602,6 +1821,9 @@ std::string AssetRegistry::apply_cook_plan_json(
         receipt["artifacts"].push_back(
             "generated://cook-manifests/" + manifest_path.filename().string());
     } catch (const std::exception& error) {
+        std::error_code cleanup_error;
+        for (const auto& page_path : sprite_created_page_paths)
+            std::filesystem::remove(page_path, cleanup_error);
         receipt["success"] = false;
         receipt["code"] = "asset.cook-failed";
         receipt["detail"] = error.what();

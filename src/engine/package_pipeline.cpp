@@ -118,6 +118,7 @@ std::string slug(std::string_view value) {
 
 std::string payload_extension(std::string_view format) {
     if (format.starts_with("noemancer/meshbin/")) return "meshbin";
+    if (format == "noemancer.sprite-atlas-artifact/0.1") return "sprite-atlas.json";
     const auto slash = format.find_last_of("/\\");
     auto leaf = slash == std::string_view::npos ? format : format.substr(slash + 1U);
     while(leaf.starts_with('.'))leaf.remove_prefix(1U);

@@ -29,6 +29,7 @@
 #include <string_view>
 #include <tuple>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace noemancer {
@@ -37,6 +38,10 @@ namespace {
 using Json = nlohmann::json;
 
 constexpr std::string_view kCookManifestSchema = "noemancer.cook-manifest/0.1";
+constexpr std::size_t kCookManifestMaxOutputs = 8192U;
+constexpr std::size_t kCookManifestMaxMetadataText = 4096U;
+constexpr std::size_t kCookManifestMaxIdentifierText = 256U;
+constexpr std::size_t kCookManifestMaxMetadataItems = 512U;
 
 std::string path_text(const std::filesystem::path& path) {
     return path.generic_string();
@@ -144,6 +149,18 @@ struct ServiceError final {
     std::string code;
     std::string detail;
 };
+
+bool bounded_manifest_text(const Json& value, const std::size_t maximum,
+                           const bool allow_empty, std::string& output) {
+    if (!value.is_string()) return false;
+    output = value.get<std::string>();
+    if ((!allow_empty && output.empty()) || output.size() > maximum) return false;
+    for (const auto character : output) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (byte == 0U || std::iscntrl(byte)) return false;
+    }
+    return true;
+}
 
 Json error_json(const ServiceError& error) {
     return Json{
@@ -521,7 +538,8 @@ std::optional<std::filesystem::path> find_script_assembly(const ProjectDocument&
 std::optional<PackageCookManifest> make_cook_manifest(const PackageInput& input,
                                                        const AssetRegistry& registry,
                                                        const Json& manifest, ServiceError& error) {
-    if (!manifest.contains("outputs") || !manifest.at("outputs").is_array()) {
+    if (!manifest.contains("outputs") || !manifest.at("outputs").is_array() ||
+        manifest.at("outputs").size() > kCookManifestMaxOutputs) {
         error = {"package.cook-manifest-invalid", "Cook manifest outputs must be an array."};
         return std::nullopt;
     }
@@ -538,34 +556,54 @@ std::optional<PackageCookManifest> make_cook_manifest(const PackageInput& input,
             error = {"package.cook-manifest-invalid", "Cook manifest output at index " + std::to_string(index) + " is incomplete."};
             return std::nullopt;
         }
-        const auto asset_id = output.at("assetId").get<std::string>();
-        const auto payload_format = output.at("payloadFormat").get<std::string>();
-        const auto payload_hash = output.value("payloadHash", std::string{});
-        if (payload_hash.empty()) {
+        std::string asset_id;
+        std::string payload_uri;
+        std::string payload_format;
+        std::string payload_hash;
+        if (!bounded_manifest_text(output.at("assetId"), kCookManifestMaxIdentifierText, false, asset_id) ||
+            !bounded_manifest_text(output.at("payloadUri"), kCookManifestMaxMetadataText, false, payload_uri) ||
+            !bounded_manifest_text(output.at("payloadFormat"), kCookManifestMaxIdentifierText, false, payload_format)) {
+            error = {"package.cook-manifest-invalid", "Cook manifest output at index " +
+                std::to_string(index) + " has an invalid or oversized identity field."};
+            return std::nullopt;
+        }
+        if (!output.contains("payloadHash") ||
+            !bounded_manifest_text(output.at("payloadHash"), kCookManifestMaxMetadataText, false,
+                                   payload_hash)) {
             error = {"package.artifact-hash-missing", "Cook output " + asset_id + " has no payloadHash."};
             return std::nullopt;
         }
         if(output.contains("buildInputs")) {
-            if(!output.at("buildInputs").is_array()) {
+            if(!output.at("buildInputs").is_array() ||
+               output.at("buildInputs").size() > kCookManifestMaxMetadataItems) {
                 error={"package.cook-manifest-invalid","Cook buildInputs must be an array."};
                 return std::nullopt;
             }
             for(const auto& build_input:output.at("buildInputs")) {
+                std::string build_input_id;
                 if(!build_input.is_object()||!build_input.contains("assetId")||
-                    !build_input.at("assetId").is_string()) {
+                    !bounded_manifest_text(build_input.at("assetId"), kCookManifestMaxIdentifierText,
+                                           false, build_input_id)) {
                     error={"package.cook-manifest-invalid","Cook build input identity is invalid."};
                     return std::nullopt;
                 }
-                if(lower(build_input.value("redistribution",std::string{}))=="local-only") {
+                std::string build_input_redistribution;
+                if (build_input.contains("redistribution") &&
+                    !bounded_manifest_text(build_input.at("redistribution"), kCookManifestMaxIdentifierText,
+                                           true, build_input_redistribution)) {
+                    error={"package.cook-manifest-invalid","Cook build input redistribution is invalid."};
+                    return std::nullopt;
+                }
+                if(lower(build_input_redistribution)=="local-only") {
                     error={"package.derived-source-not-redistributable",
                         "Cooked asset "+asset_id+" derives from local-only source "+
-                            build_input.at("assetId").get<std::string>()+"."};
+                            build_input_id+"."};
                     return std::nullopt;
                 }
             }
         }
         ServiceError path_error;
-        const auto payload = payload_path(input.project.root, output.at("payloadUri").get<std::string>(), path_error);
+        const auto payload = payload_path(input.project.root, payload_uri, path_error);
         if (!path_error.code.empty()) {
             error = path_error;
             return std::nullopt;
@@ -576,7 +614,7 @@ std::optional<PackageCookManifest> make_cook_manifest(const PackageInput& input,
                 "Cook output " + asset_id + " does not match its payloadHash."};
             return std::nullopt;
         }
-        const auto output_identity=std::tuple{output.at("payloadUri").get<std::string>(),payload_format,payload_hash};
+        const auto output_identity=std::tuple{payload_uri,payload_format,payload_hash};
         if(const auto found=unique_outputs.find(asset_id);found!=unique_outputs.end()) {
             if(found->second!=output_identity) {
                 error={"package.cook-output-conflict","Cook manifest repeats "+asset_id+" with a different payload identity."};
@@ -607,29 +645,171 @@ std::optional<PackageCookManifest> make_cook_manifest(const PackageInput& input,
                 return std::nullopt;
             }
         }
+        std::string source_asset_id;
+        if (output.contains("sourceAssetId") &&
+            !bounded_manifest_text(output.at("sourceAssetId"), kCookManifestMaxIdentifierText,
+                                   false, source_asset_id)) {
+            error = {"package.cook-manifest-invalid", "Cook output " + asset_id +
+                " sourceAssetId must be a bounded non-empty string."};
+            return std::nullopt;
+        }
         const auto* asset = registry.find(asset_id);
+        const auto* source_asset = source_asset_id.empty() ? nullptr : registry.find(source_asset_id);
+        // A derived page normally has no registry record of its own. Its
+        // sourceAssetId supplies the legal/default metadata while explicit
+        // manifest fields remain authoritative for the derived artifact.
+        const auto* metadata_asset = asset == nullptr ? source_asset : asset;
+
         PackageCookArtifact artifact;
         artifact.asset_id = asset_id;
-        artifact.display_name = asset == nullptr ? asset_id : asset->display_name;
-        artifact.kind = asset == nullptr ? std::string{"Cooked"} : asset->kind;
-        artifact.payload_uri = output.at("payloadUri").get<std::string>();
+        artifact.display_name = metadata_asset == nullptr ? asset_id : metadata_asset->display_name;
+        artifact.kind = metadata_asset == nullptr ? std::string{"Cooked"} : metadata_asset->kind;
+        artifact.payload_uri = payload_uri;
         artifact.payload_format = payload_format;
         artifact.source_path = payload;
         artifact.content_hash = payload_hash;
-        artifact.license_id = asset == nullptr ? std::string{} : asset->license;
-        artifact.redistribution = asset == nullptr ? std::string{} : asset->redistribution;
-        artifact.streaming_mode = asset == nullptr ? std::string{"stream"} : asset->streaming_mode;
-        artifact.streaming_importance = asset == nullptr ? std::string{"normal"} : asset->streaming_importance;
-        artifact.streaming_priority = asset == nullptr ? 500U : asset->streaming_priority;
+        artifact.license_id = metadata_asset == nullptr ? std::string{} : metadata_asset->license;
+        artifact.redistribution = metadata_asset == nullptr ? std::string{} : metadata_asset->redistribution;
+        artifact.streaming_mode = metadata_asset == nullptr ? std::string{"stream"} : metadata_asset->streaming_mode;
+        artifact.streaming_importance = metadata_asset == nullptr ? std::string{"normal"} : metadata_asset->streaming_importance;
+        artifact.streaming_priority = metadata_asset == nullptr ? 500U : metadata_asset->streaming_priority;
         artifact.available = true;
         // The manifest may contain cache outputs from a broader Cook. Package
         // closure starts from startup-scene references and follows dependencies.
         artifact.required = false;
-        if (asset != nullptr) artifact.dependencies = asset->dependencies;
-        if (asset != nullptr) artifact.tags = asset->tags;
+        if (metadata_asset != nullptr) artifact.dependencies = metadata_asset->dependencies;
+        if (metadata_asset != nullptr) artifact.tags = metadata_asset->tags;
+
+        const auto invalid_metadata = [&](const std::string_view field,
+                                          const std::string_view expected) {
+            error = {"package.cook-manifest-invalid", "Cook output " + asset_id +
+                " field " + std::string(field) + " " + std::string(expected) + "."};
+            return false;
+        };
+        const auto read_text_field = [&](const char* field, std::string& target,
+                                         const std::size_t maximum = kCookManifestMaxMetadataText) {
+            if (!output.contains(field)) return true;
+            std::string value;
+            if (!bounded_manifest_text(output.at(field), maximum, false, value))
+                return invalid_metadata(field, "must be a bounded non-empty string");
+            target = std::move(value);
+            return true;
+        };
+        if (!read_text_field("displayName", artifact.display_name, kCookManifestMaxMetadataText) ||
+            !read_text_field("kind", artifact.kind, kCookManifestMaxIdentifierText) ||
+            !read_text_field("license", artifact.license_id, kCookManifestMaxIdentifierText) ||
+            !read_text_field("redistribution", artifact.redistribution, kCookManifestMaxIdentifierText))
+            return std::nullopt;
+
+        const auto read_string_array = [&](const char* field, std::vector<std::string>& target) {
+            if (!output.contains(field)) return true;
+            const auto& value = output.at(field);
+            if (!value.is_array() || value.size() > kCookManifestMaxMetadataItems)
+                return invalid_metadata(field, "must be an array within the metadata bound");
+            std::vector<std::string> items;
+            items.reserve(value.size());
+            for (std::size_t item_index = 0U; item_index < value.size(); ++item_index) {
+                std::string item;
+                if (!bounded_manifest_text(value.at(item_index), kCookManifestMaxIdentifierText,
+                                           false, item)) {
+                    error = {"package.cook-manifest-invalid", "Cook output " + asset_id +
+                        " field " + field + " contains an invalid item at index " +
+                        std::to_string(item_index) + "."};
+                    return false;
+                }
+                items.push_back(std::move(item));
+            }
+            target = std::move(items);
+            return true;
+        };
+        if (!read_string_array("tags", artifact.tags) ||
+            !read_string_array("dependencies", artifact.dependencies))
+            return std::nullopt;
+
+        if (output.contains("required")) {
+            if (!output.at("required").is_boolean()) {
+                invalid_metadata("required", "must be a boolean");
+                return std::nullopt;
+            }
+            artifact.required = output.at("required").get<bool>();
+        }
+        if (output.contains("streamingPolicy")) {
+            const auto& policy = output.at("streamingPolicy");
+            if (!policy.is_object()) {
+                invalid_metadata("streamingPolicy", "must be an object");
+                return std::nullopt;
+            }
+            for (auto field = policy.begin(); field != policy.end(); ++field) {
+                if (field.key() != "mode" && field.key() != "importance" && field.key() != "priority") {
+                    invalid_metadata("streamingPolicy", "contains an unknown field");
+                    return std::nullopt;
+                }
+            }
+            std::string mode;
+            std::string importance;
+            if (!policy.contains("mode") || !bounded_manifest_text(
+                    policy.at("mode"), kCookManifestMaxIdentifierText, false, mode) ||
+                (mode != "stream" && mode != "resident")) {
+                invalid_metadata("streamingPolicy.mode", "must be stream or resident");
+                return std::nullopt;
+            }
+            if (!policy.contains("importance") || !bounded_manifest_text(
+                    policy.at("importance"), kCookManifestMaxIdentifierText, false, importance) ||
+                (importance != "low" && importance != "normal" && importance != "high" &&
+                 importance != "critical")) {
+                invalid_metadata("streamingPolicy.importance", "must be low, normal, high or critical");
+                return std::nullopt;
+            }
+            if (!policy.contains("priority") || !policy.at("priority").is_number_unsigned()) {
+                invalid_metadata("streamingPolicy.priority", "must be an unsigned integer in 0..1000");
+                return std::nullopt;
+            }
+            const auto priority = policy.at("priority").get<std::uint64_t>();
+            if (priority > 1000U) {
+                invalid_metadata("streamingPolicy.priority", "must be an unsigned integer in 0..1000");
+                return std::nullopt;
+            }
+            artifact.streaming_mode = std::move(mode);
+            artifact.streaming_importance = std::move(importance);
+            artifact.streaming_priority = static_cast<std::uint32_t>(priority);
+        }
         result.outputs.push_back(std::move(artifact));
     }
     return result;
+}
+
+void add_cook_artifact_license(std::map<std::string, PackageLicenseDescriptor>& licenses,
+                               const PackageCookArtifact& artifact,
+                               const AssetRecord* provenance_asset,
+                               const std::filesystem::path& project_root) {
+    if (artifact.license_id.empty()) return;
+    if (provenance_asset != nullptr && provenance_asset->license == artifact.license_id) {
+        add_license(licenses, provenance_asset, project_root);
+        return;
+    }
+    if (licenses.contains(artifact.license_id)) return;
+
+    const bool project_owned = is_project_owned(artifact.license_id) ||
+        artifact.redistribution == "project-only";
+    const auto source = provenance_asset == nullptr ? std::filesystem::path{} :
+        (provenance_asset->source_root.empty() || provenance_asset->relative_path.empty()
+            ? std::filesystem::path{}
+            : std::filesystem::path(provenance_asset->source_root) / provenance_asset->relative_path);
+    const auto notice = source.empty()
+        ? std::string("License declared by the Cook manifest for derived artifact ") + artifact.asset_id + "."
+        : read_notice(source, project_root).value_or(
+            std::string("License declared by the Cook manifest for derived artifact ") + artifact.asset_id + ".");
+    licenses.emplace(artifact.license_id, PackageLicenseDescriptor{
+        .id = artifact.license_id,
+        .name = artifact.license_id,
+        .spdx_id = artifact.license_id,
+        .notice = notice,
+        .source_uri = provenance_asset == nullptr ?
+            "generated://cook-manifest/" + slug(artifact.asset_id) : provenance_asset->uri,
+        .third_party = !project_owned,
+        .redistributable = project_owned || artifact.redistribution == "public" ||
+            artifact.redistribution == "allowed"
+    });
 }
 
 PackageCommitCallback make_atomic_commit_callback(const PackagePlan& plan) {
@@ -834,7 +1014,20 @@ std::string run_windows_package_json(const WindowsPackageOptions& options) {
             return error_json({"package.vc-runtime-missing",
                 "Release distribution requires the official Microsoft VC143 app-local Runtime and redistribution notice."}).dump();
         std::map<std::string, PackageLicenseDescriptor> licenses;
-        for (const auto& output : input.cook_manifest.outputs) add_license(licenses, registry.find(output.asset_id), loaded.project->root);
+        for (const auto& output : input.cook_manifest.outputs) {
+            const AssetRecord* provenance_asset = registry.find(output.asset_id);
+            if (provenance_asset == nullptr) {
+                for (const auto& manifest_output : manifest->at("outputs")) {
+                    if (!manifest_output.is_object() ||
+                        manifest_output.value("assetId", std::string{}) != output.asset_id ||
+                        !manifest_output.contains("sourceAssetId") ||
+                        !manifest_output.at("sourceAssetId").is_string()) continue;
+                    provenance_asset = registry.find(manifest_output.at("sourceAssetId").get<std::string>());
+                    if (provenance_asset != nullptr) break;
+                }
+            }
+            add_cook_artifact_license(licenses, output, provenance_asset, loaded.project->root);
+        }
         for(const auto& output:manifest->at("outputs"))if(output.contains("buildInputs"))
             for(const auto& build_input:output.at("buildInputs")) {
                 const auto* build_asset=registry.find(build_input.at("assetId").get<std::string>());

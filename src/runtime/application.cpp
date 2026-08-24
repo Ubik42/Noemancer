@@ -20,6 +20,7 @@
 #include "engine/project_workspace.hpp"
 #include "engine/retained_ui_runtime.hpp"
 #include "engine/semantic_ui.hpp"
+#include "engine/sprite_atlas_artifact.hpp"
 #include "runtime/scene_renderer.hpp"
 #include "runtime/retained_ui_gpu_adapter.hpp"
 #include "runtime/source_editor_service.hpp"
@@ -801,6 +802,9 @@ void Application::poll_package_job() {
 }
 
 void Application::register_sprite_assets(World& world) {
+    // Register authoring documents first. Runtime page bindings are a derived
+    // overlay and must never become an ordering-dependent replacement for the
+    // source Sprite contract.
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.kind!="Sprite"&&!asset.relative_path.ends_with(".sprite.json")))continue;
         std::ifstream input(asset_registry_.source_path(asset),std::ios::binary);
@@ -808,6 +812,28 @@ void Application::register_sprite_assets(World& world) {
         const std::string source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
         auto parsed=SpriteAssetCodec::parse_json(source);
         if(parsed)static_cast<void>(world.register_sprite_asset(std::move(*parsed.document)));
+    }
+    for(const auto& asset:asset_registry_.records()) {
+        if(!asset.available||asset.kind!="SpriteAtlas")continue;
+        std::ifstream input(asset_registry_.source_path(asset),std::ios::binary);
+        if(!input)continue;
+        const std::string source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+        const auto manifest=nlohmann::json::parse(source,nullptr,false);
+        if(!manifest.is_object()||!manifest.contains("authoringDocument")||
+            !manifest.at("authoringDocument").is_object())continue;
+        auto authoring=SpriteAssetCodec::parse_json(manifest.at("authoringDocument").dump());
+        if(!authoring||!world.register_sprite_asset(std::move(*authoring.document)))continue;
+        const auto parsed=parse_sprite_atlas_artifact_json(source);
+        if(!parsed||!parsed.artifact)continue;
+        const auto bindings=sprite_runtime_page_bindings(*parsed.artifact);
+        if(bindings.size()!=parsed.artifact->bindings.size())continue;
+        const auto receipt=world.register_sprite_page_bindings(parsed.artifact->source_asset_id,bindings);
+        if(!receipt.success)logger_.error("sprite.atlas-binding",nlohmann::json{{"assetId",asset.id},
+            {"sourceAssetId",parsed.artifact->source_asset_id},{"code",receipt.code},
+            {"diagnostics",receipt.diagnostics.size()}}.dump());
+        else logger_.info("sprite.atlas-binding",nlohmann::json{{"assetId",asset.id},
+            {"sourceAssetId",parsed.artifact->source_asset_id},{"code",receipt.code},
+            {"bindingCount",receipt.binding_count},{"revision",receipt.revision}}.dump());
     }
 }
 

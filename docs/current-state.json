@@ -3,6 +3,7 @@
   "updated": "2026-08-24",
   "status": "active-development",
   "currentSlice": "hybrid-pixel.large-sprite-tilemap-production-pressure",
+  "currentStep": "sprite-atlas.actual-package-player-and-cross-process-page-cache-evidence",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",

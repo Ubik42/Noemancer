@@ -1,6 +1,7 @@
 #include "engine/sprite_asset.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -19,6 +20,14 @@ bool limits_are_valid(const SpriteAssetValidationLimits& limits) noexcept {
 }
 
 void error(std::vector<SpriteAssetError>& errors,std::string code,std::string path,std::string message);
+
+bool valid_sha256_identity(const std::string_view value) noexcept {
+    constexpr std::string_view prefix = "sha256:";
+    if (!value.starts_with(prefix) || value.size() != prefix.size() + 64U) return false;
+    return std::ranges::all_of(value.substr(prefix.size()), [](const char character) {
+        return std::isxdigit(static_cast<unsigned char>(character)) != 0;
+    });
+}
 
 void invalid_limits(std::vector<SpriteAssetError>& errors) {
     error(errors, "sprite.invalid-validation-limits", "/limits",
@@ -1011,13 +1020,185 @@ std::string sprite_pressure_report_json(const std::uint32_t frame_count,const st
         {"scope","deterministic-source-layout-and-reference-pressure-not-gpu-timing"}}.dump();
 }
 
+SpritePageBindingUpdateResult SpriteAssetLibrary::replace_page_bindings(
+    const std::string_view asset_id, const std::vector<SpriteRuntimePageBinding>& bindings,
+    const std::optional<std::uint64_t> expected_revision) {
+    SpritePageBindingUpdateResult result;
+    const auto asset_iterator = assets_.find(std::string(asset_id));
+    const auto current_state = page_bindings_.find(std::string(asset_id));
+    result.revision = current_state == page_bindings_.end() ? 0U : current_state->second.revision;
+    result.binding_count = current_state == page_bindings_.end() ? 0U : current_state->second.bindings.size();
+    const auto fail = [&](const std::string_view code, const std::string_view path,
+                          const std::string_view message) {
+        const auto first = result.diagnostics.empty();
+        error(result.diagnostics, std::string(code), std::string(path), std::string(message));
+        if (first) result.code = std::string(code);
+        result.success = false;
+    };
+    if (asset_iterator == assets_.end()) {
+        fail("sprite.asset-not-found", "/assetId", "Cannot bind pages for an unregistered SpriteAsset.");
+        return result;
+    }
+    if (expected_revision && *expected_revision != result.revision) {
+        fail("sprite.page-binding-revision-conflict", "/revision",
+             "Expected page binding revision does not match the active overlay.");
+        return result;
+    }
+    if (bindings.size() > sprite_runtime_binding_max_entries) {
+        fail("sprite.page-binding-count-limit", "/bindings",
+             "Page binding count exceeds the bounded runtime overlay limit.");
+        return result;
+    }
+
+    std::unordered_set<std::string> seen_frame_ids;
+    std::unordered_map<std::string, SpriteRuntimePageBinding> candidate;
+    candidate.reserve(bindings.size());
+    for (std::size_t index = 0U; index < bindings.size(); ++index) {
+        const auto& binding = bindings[index];
+        const auto path = "/bindings/" + std::to_string(index);
+        bool valid = true;
+        if (binding.sprite_asset_id != asset_id) {
+            fail("sprite.page-binding-asset-mismatch", path + "/spriteAssetId",
+                 "Binding spriteAssetId must match the registration target.");
+            valid = false;
+        }
+        if (binding.frame_id.empty()) {
+            fail("sprite.page-binding-empty-frame", path + "/frameId",
+                 "Binding frameId cannot be empty.");
+            valid = false;
+        } else if (!seen_frame_ids.insert(binding.frame_id).second) {
+            fail("sprite.page-binding-duplicate-frame", path + "/frameId",
+                 "A frame may occur at most once in a page binding batch.");
+            valid = false;
+        }
+        const auto frame = std::ranges::find(asset_iterator->second.frames, binding.frame_id,
+                                             &SpriteFrame::id);
+        if (frame == asset_iterator->second.frames.end()) {
+            fail("sprite.page-binding-unknown-frame", path + "/frameId",
+                 "Binding frameId is not present in the registered SpriteAsset.");
+            valid = false;
+        }
+        if (binding.derived_texture_asset_id.empty()) {
+            fail("sprite.page-binding-empty-texture", path + "/derivedTextureAssetId",
+                 "Derived texture asset ID cannot be empty.");
+            valid = false;
+        }
+        if (binding.page_fingerprint.empty()) {
+            fail("sprite.page-binding-empty-page-fingerprint", path + "/pageFingerprint",
+                 "Page fingerprint cannot be empty.");
+            valid = false;
+        } else if (!valid_sha256_identity(binding.page_fingerprint)) {
+            fail("sprite.page-binding-unsupported-page-fingerprint", path + "/pageFingerprint",
+                 "Page fingerprint must be sha256: followed by exactly 64 hexadecimal digits.");
+            valid = false;
+        }
+        if (binding.page_width == 0U || binding.page_height == 0U) {
+            fail("sprite.page-binding-invalid-page-size", path + "/pageSize",
+                 "Bound page dimensions must be positive.");
+            valid = false;
+        } else if (binding.page_width > sprite_runtime_binding_max_page_dimension ||
+                   binding.page_height > sprite_runtime_binding_max_page_dimension) {
+            fail("sprite.page-binding-page-size-limit", path + "/pageSize",
+                 "Bound page dimensions exceed the runtime overlay limit.");
+            valid = false;
+        }
+        if (binding.width == 0U || binding.height == 0U) {
+            fail("sprite.page-binding-invalid-rect", path + "/rect",
+                 "Bound page-local rect dimensions must be positive.");
+            valid = false;
+        } else if (static_cast<std::uint64_t>(binding.x) + binding.width > binding.page_width ||
+                   static_cast<std::uint64_t>(binding.y) + binding.height > binding.page_height) {
+            fail("sprite.page-binding-rect-out-of-bounds", path + "/rect",
+                 "Bound page-local rect must stay inside page dimensions.");
+            valid = false;
+        }
+        if (valid) candidate.insert_or_assign(binding.frame_id, binding);
+    }
+    if (!result.diagnostics.empty()) {
+        return result;
+    }
+
+    const auto bindings_equal = [](const auto& left, const auto& right) noexcept {
+        return left.sprite_asset_id == right.sprite_asset_id && left.frame_id == right.frame_id &&
+            left.derived_texture_asset_id == right.derived_texture_asset_id &&
+            left.page_index == right.page_index && left.page_width == right.page_width &&
+            left.page_height == right.page_height && left.x == right.x && left.y == right.y &&
+            left.width == right.width && left.height == right.height &&
+            left.layout_fingerprint == right.layout_fingerprint && left.page_fingerprint == right.page_fingerprint;
+    };
+    bool unchanged = current_state != page_bindings_.end() &&
+        current_state->second.bindings.size() == candidate.size();
+    if (unchanged) {
+        for (const auto& [frame_id, binding] : candidate) {
+            const auto current = current_state->second.bindings.find(frame_id);
+            if (current == current_state->second.bindings.end() || !bindings_equal(current->second, binding)) {
+                unchanged = false;
+                break;
+            }
+        }
+    }
+    if (unchanged || (candidate.empty() && current_state == page_bindings_.end())) {
+        result.success = true;
+        result.code = "ok";
+        return result;
+    }
+    if (current_state != page_bindings_.end() &&
+        current_state->second.revision == std::numeric_limits<std::uint64_t>::max()) {
+        fail("sprite.page-binding-revision-overflow", "/revision",
+             "Page binding revision cannot advance beyond uint64 range.");
+        return result;
+    }
+
+    const auto next_revision = current_state == page_bindings_.end() ? 1U : current_state->second.revision + 1U;
+    if (current_state == page_bindings_.end()) {
+        RuntimePageBindingState state;
+        state.revision = next_revision;
+        state.bindings = std::move(candidate);
+        page_bindings_.emplace(std::string(asset_id), std::move(state));
+    } else {
+        // Validation and equality checks are complete before this swap, so a
+        // rejected item can never partially replace the active overlay.
+        current_state->second.revision = next_revision;
+        current_state->second.bindings.swap(candidate);
+    }
+    result.success = true;
+    result.code = "ok";
+    result.revision = next_revision;
+    result.binding_count = bindings.size();
+    return result;
+}
+
+SpritePageBindingUpdateResult SpriteAssetLibrary::register_page_bindings(
+    const std::string_view asset_id, const std::vector<SpriteRuntimePageBinding>& bindings,
+    const std::optional<std::uint64_t> expected_revision) {
+    return replace_page_bindings(asset_id, bindings, expected_revision);
+}
+
+SpritePageBindingUpdateResult SpriteAssetLibrary::clear_page_bindings(
+    const std::string_view asset_id, const std::optional<std::uint64_t> expected_revision) {
+    return replace_page_bindings(asset_id, {}, expected_revision);
+}
+
 bool SpriteAssetLibrary::register_asset(SpriteAssetDocument document) {
     if(!SpriteAssetCodec::validate(document).empty())return false;
-    const auto id=document.asset_id;assets_.insert_or_assign(id,std::move(document));return true;
+    const auto id=document.asset_id;
+    assets_.insert_or_assign(id,std::move(document));
+    // A new authoring document may have different frame geometry.  Drop the
+    // runtime overlay so no stale page-local rect can leak into resolution.
+    page_bindings_.erase(id);
+    return true;
 }
 
 const SpriteAssetDocument* SpriteAssetLibrary::find(const std::string_view asset_id) const noexcept {
     const auto found=assets_.find(std::string(asset_id));return found==assets_.end()?nullptr:&found->second;
+}
+
+const SpriteRuntimePageBinding* SpriteAssetLibrary::find_page_binding(
+    const std::string_view asset_id, const std::string_view frame_id) const noexcept {
+    const auto state = page_bindings_.find(std::string(asset_id));
+    if (state == page_bindings_.end()) return nullptr;
+    const auto binding = state->second.bindings.find(std::string(frame_id));
+    return binding == state->second.bindings.end() ? nullptr : &binding->second;
 }
 
 std::optional<SpriteResolvedFrame> SpriteAssetLibrary::resolve_frame(
@@ -1025,8 +1206,18 @@ std::optional<SpriteResolvedFrame> SpriteAssetLibrary::resolve_frame(
     const auto* asset=find(asset_id);if(asset==nullptr)return std::nullopt;
     const auto frame=std::ranges::find(asset->frames,frame_id,&SpriteFrame::id);
     if(frame==asset->frames.end())return std::nullopt;
-    return SpriteResolvedFrame{asset->asset_id,{},asset->texture_asset,asset->texture_width,
+    SpriteResolvedFrame resolved{asset->asset_id,{},asset->texture_asset,asset->texture_width,
         asset->texture_height,asset->pixels_per_unit,asset->sampling,asset->alpha_mode,asset->material,*frame,0,{}};
+    if (const auto* binding = find_page_binding(asset_id, frame_id); binding != nullptr) {
+        resolved.texture_asset = binding->derived_texture_asset_id;
+        resolved.texture_width = binding->page_width;
+        resolved.texture_height = binding->page_height;
+        resolved.frame.x = binding->x;
+        resolved.frame.y = binding->y;
+        resolved.frame.width = binding->width;
+        resolved.frame.height = binding->height;
+    }
+    return resolved;
 }
 
 std::optional<SpriteResolvedFrame> SpriteAssetLibrary::resolve(const SpritePlaybackState& state) const {
@@ -1036,9 +1227,19 @@ std::optional<SpriteResolvedFrame> SpriteAssetLibrary::resolve(const SpritePlayb
     const auto& clip_frame=clip->frames[state.frame_index];
     const auto frame=std::ranges::find(asset->frames,clip_frame.frame_id,&SpriteFrame::id);
     if(frame==asset->frames.end())return std::nullopt;
-    return SpriteResolvedFrame{asset->asset_id,clip->id,asset->texture_asset,asset->texture_width,
+    SpriteResolvedFrame resolved{asset->asset_id,clip->id,asset->texture_asset,asset->texture_width,
         asset->texture_height,asset->pixels_per_unit,asset->sampling,asset->alpha_mode,asset->material,*frame,
         clip_frame.duration_ms,clip_frame.event};
+    if (const auto* binding = find_page_binding(state.asset_id, clip_frame.frame_id); binding != nullptr) {
+        resolved.texture_asset = binding->derived_texture_asset_id;
+        resolved.texture_width = binding->page_width;
+        resolved.texture_height = binding->page_height;
+        resolved.frame.x = binding->x;
+        resolved.frame.y = binding->y;
+        resolved.frame.width = binding->width;
+        resolved.frame.height = binding->height;
+    }
+    return resolved;
 }
 
 SpritePlaybackResult SpriteAssetLibrary::advance(SpritePlaybackState& state,const double delta_seconds) const {
@@ -1074,7 +1275,7 @@ std::string SpriteAssetLibrary::observe_json(const SpritePlaybackState& state) c
     Json out={{"schemaVersion","noemancer.sprite-playback-observation/0.1"},{"assetId",state.asset_id},
         {"clipId",state.clip_id},{"frameIndex",state.frame_index},{"elapsedInFrameMs",state.elapsed_in_frame_ms},
         {"playing",state.playing},{"completedLoops",state.completed_loops},{"lastEvent",state.last_event},
-        {"valid",false},{"code","sprite.asset-not-found"},{"frame",nullptr}};
+        {"valid",false},{"code","sprite.asset-not-found"},{"frame",nullptr},{"pageBinding",nullptr}};
     const auto* asset=find(state.asset_id);if(asset==nullptr)return out.dump();
     const auto clip=std::ranges::find(asset->clips,state.clip_id,&SpriteClip::id);
     if(clip==asset->clips.end()){out["code"]="sprite.clip-not-found";return out.dump();}
@@ -1094,7 +1295,78 @@ std::string SpriteAssetLibrary::observe_json(const SpritePlaybackState& state) c
     out["valid"]=true;out["code"]="ok";out["frame"]={{"id",frame.id},{"rect",Json::array({frame.x,frame.y,frame.width,frame.height})},
         {"trimOffset",Json::array({frame.trim_x,frame.trim_y})},{"sourceSize",Json::array({frame.source_width,frame.source_height})},
         {"pivot",Json::array({frame.pivot_x,frame.pivot_y})},{"collisionProfile",frame.collision_profile},
-        {"durationMs",resolved->duration_ms},{"event",resolved->event}};return out.dump();
+        {"durationMs",resolved->duration_ms},{"event",resolved->event}};
+    if (const auto* binding = find_page_binding(state.asset_id, frame.id); binding != nullptr) {
+        out["pageBinding"] = {
+            {"spriteAssetId", binding->sprite_asset_id},
+            {"frameId", binding->frame_id},
+            {"derivedTextureAssetId", binding->derived_texture_asset_id},
+            {"pageIndex", binding->page_index},
+            {"pageSize", Json::array({binding->page_width, binding->page_height})},
+            {"rect", Json::array({binding->x, binding->y, binding->width, binding->height})},
+            {"layoutFingerprint", binding->layout_fingerprint},
+            {"pageFingerprint", binding->page_fingerprint}};
+    }
+    return out.dump();
+}
+
+std::string SpriteAssetLibrary::observe_page_bindings_json(const std::string_view asset_id) const {
+    Json out={{"schemaVersion","noemancer.sprite-page-binding-observation/0.1"},
+        {"assetId",asset_id},{"valid",false},{"code","sprite.asset-not-found"},
+        {"revision",0U},{"bindingCount",0U},{"bindings",{{"total",0U},
+            {"maxItems",sprite_runtime_binding_max_observation_entries},{"emitted",0U},
+            {"truncated",false},{"items",Json::array()}}},
+        {"diagnostics",Json::array()},
+        {"scope","runtime-only renderer-neutral page bindings; not persisted authoring data or GPU performance"}};
+    if (find(asset_id) == nullptr) {
+        out["diagnostics"] = Json::array({{{"code","sprite.asset-not-found"},
+            {"path","/assetId"},{"message","Cannot observe bindings for an unregistered SpriteAsset."}}});
+        return out.dump();
+    }
+    const auto state = page_bindings_.find(std::string(asset_id));
+    if (state == page_bindings_.end()) {
+        out["valid"] = true;
+        out["code"] = "ok";
+        out["bindings"] = {
+            {"total",0U}, {"maxItems",sprite_runtime_binding_max_observation_entries},
+            {"emitted",0U}, {"truncated",false}, {"items",Json::array()}};
+        return out.dump();
+    }
+
+    std::vector<const SpriteRuntimePageBinding*> ordered;
+    ordered.reserve(state->second.bindings.size());
+    for (const auto& [unused_frame_id, binding] : state->second.bindings) {
+        static_cast<void>(unused_frame_id);
+        ordered.push_back(&binding);
+    }
+    std::ranges::sort(ordered, [](const auto* left, const auto* right) {
+        return left->frame_id < right->frame_id;
+    });
+    const auto emit_count = std::min(ordered.size(), sprite_runtime_binding_max_observation_entries);
+    Json items = Json::array();
+    for (std::size_t index = 0U; index < emit_count; ++index) {
+        const auto& binding = *ordered[index];
+        items.push_back({
+            {"spriteAssetId", binding.sprite_asset_id},
+            {"frameId", binding.frame_id},
+            {"derivedTextureAssetId", binding.derived_texture_asset_id},
+            {"pageIndex", binding.page_index},
+            {"pageSize", Json::array({binding.page_width, binding.page_height})},
+            {"rect", Json::array({binding.x, binding.y, binding.width, binding.height})},
+            {"layoutFingerprint", binding.layout_fingerprint},
+            {"pageFingerprint", binding.page_fingerprint}});
+    }
+    out["valid"] = true;
+    out["code"] = "ok";
+    out["revision"] = state->second.revision;
+    out["bindingCount"] = state->second.bindings.size();
+    out["bindings"] = {
+        {"total", state->second.bindings.size()},
+        {"maxItems", sprite_runtime_binding_max_observation_entries},
+        {"emitted", emit_count},
+        {"truncated", ordered.size() > emit_count},
+        {"items", std::move(items)}};
+    return out.dump();
 }
 
 } // namespace noemancer

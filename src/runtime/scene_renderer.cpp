@@ -10,6 +10,7 @@
 #include "engine/linear_dirty_ranges.hpp"
 #include "engine/mesh_runtime_artifact.hpp"
 #include "engine/sprite_asset.hpp"
+#include "engine/sprite_atlas_artifact.hpp"
 #include "engine/temporal_aa.hpp"
 #include "engine/visibility_culling.hpp"
 #include "runtime/runtime_texture_upload.hpp"
@@ -1100,6 +1101,26 @@ bool SceneRenderer::create_sprite_resources() {
             if(!parsed.document->material->emissive_mask_texture_asset.empty())linear_assets.insert(parsed.document->material->emissive_mask_texture_asset);
             if(!parsed.document->material->depth_texture_asset.empty())linear_assets.insert(parsed.document->material->depth_texture_asset);
         }
+    }
+    for(const auto& asset:asset_registry_.records()) {
+        if(!asset.available||asset.kind!="SpriteAtlas")continue;
+        const auto source=read_binary(asset_registry_.source_path(asset));if(source.empty())continue;
+        const auto manifest=nlohmann::json::parse(std::string_view(
+            reinterpret_cast<const char*>(source.data()),source.size()),nullptr,false);
+        if(manifest.is_object()&&manifest.contains("authoringDocument")&&
+            manifest.at("authoringDocument").is_object()) {
+            const auto authoring=SpriteAssetCodec::parse_json(manifest.at("authoringDocument").dump());
+            if(authoring&&authoring.document->material) {
+                const auto& material=*authoring.document->material;
+                if(!material.normal_texture_asset.empty())linear_assets.insert(material.normal_texture_asset);
+                if(!material.emissive_mask_texture_asset.empty())linear_assets.insert(material.emissive_mask_texture_asset);
+                if(!material.depth_texture_asset.empty())linear_assets.insert(material.depth_texture_asset);
+            }
+        }
+        const auto parsed=parse_sprite_atlas_artifact_json(std::string_view(
+            reinterpret_cast<const char*>(source.data()),source.size()));
+        if(!parsed||!parsed.artifact)continue;
+        for(const auto& page:parsed.artifact->pages)srgb_assets.insert(page.asset_id);
     }
     for(const auto& asset:asset_registry_.records()) {
         const bool needs_srgb=srgb_assets.contains(asset.id);const bool needs_linear=linear_assets.contains(asset.id);

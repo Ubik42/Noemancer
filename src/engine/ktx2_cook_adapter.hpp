@@ -48,6 +48,9 @@ struct TextureCookExecutionOptions final {
     std::uint32_t requested_worker_count{1U};
 };
 
+[[nodiscard]] std::uint32_t resolve_texture_cook_worker_count(
+    std::uint32_t requested_worker_count) noexcept;
+
 struct TextureCookStageTiming final {
     std::string name;
     std::uint64_t microseconds{};

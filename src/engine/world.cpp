@@ -1074,6 +1074,12 @@ bool World::register_sprite_asset(SpriteAssetDocument document) {
     return sprite_assets_.register_asset(std::move(document));
 }
 
+SpritePageBindingUpdateResult World::register_sprite_page_bindings(
+    const std::string_view asset_id, const std::vector<SpriteRuntimePageBinding>& bindings,
+    const std::optional<std::uint64_t> expected_revision) {
+    return sprite_assets_.replace_page_bindings(asset_id, bindings, expected_revision);
+}
+
 bool World::register_tile_palette(TilePaletteDocument document){return tilemap_assets_.register_palette(std::move(document));}
 bool World::register_tilemap_asset(TilemapDocument document){return tilemap_assets_.register_tilemap(std::move(document));}
 

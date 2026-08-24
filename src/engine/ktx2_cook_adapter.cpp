@@ -303,6 +303,11 @@ bool ktx2_available() noexcept {
 #endif
 }
 
+std::uint32_t resolve_texture_cook_worker_count(
+    const std::uint32_t requested_worker_count) noexcept {
+    return resolve_worker_count(requested_worker_count);
+}
+
 TextureCookProduct execute_texture_cook(const CookSource& source, const TextureCookInput& input,
                                         const CookPlatformProfile& profile,
                                         const TextureCookSettings& settings,

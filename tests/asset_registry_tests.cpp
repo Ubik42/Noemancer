@@ -368,15 +368,52 @@ int main() {
         sprite_plan_json.at("inputs").front().at("cacheUri").get<std::string>().find_last_of('/')+1U);
     nlohmann::json sprite_metadata;
     {std::ifstream stream(sprite_test_root/"generated"/"cook-cache"/sprite_cache_hash/"asset.json");stream>>sprite_metadata;}
-    if(sprite_metadata.at("dependencies")!=sprite_dependencies||
-       sprite_metadata.at("importedMetadata").at("dependencies")!=sprite_dependencies||
-       sprite_metadata.at("importedMetadata").at("runtimeContract").at("dependencies")!=sprite_dependencies||
+    const auto sprite_runtime_dependencies=nlohmann::json({"sprite.courier.atlas.page.0","texture.courier.depth",
+        "texture.courier.emissive","texture.courier.normal"});
+    const auto sprite_material_dependencies=nlohmann::json({"texture.courier.depth",
+        "texture.courier.emissive","texture.courier.normal"});
+    if(sprite_metadata.at("dependencies")!=sprite_runtime_dependencies||
+       sprite_metadata.at("importedMetadata").at("dependencies")!=sprite_runtime_dependencies||
+       sprite_metadata.at("importedMetadata").at("runtimeContract").at("dependencies")!=sprite_runtime_dependencies||
        sprite_metadata.at("importedMetadata").at("runtimeContract").at("material").at("shadingModel")!="unlit"||
        sprite_metadata.at("importedMetadata").at("runtimeContract").at("material").at("metallic")!=0.35F||
        sprite_metadata.at("importedMetadata").at("runtimeContract").at("material").at("roughness")!=0.45F||
        sprite_metadata.at("importedMetadata").at("runtimeContract").at("material").at("receivesShadows")!=false||
        sprite_metadata.at("importedMetadata").at("runtimeContract").at("material").at("castsShadows")!=true) {
         std::cerr<<"Sprite Cook metadata did not preserve material contract and dependency closure\n"<<sprite_metadata.dump()<<'\n';return 153;
+    }
+    const auto& sprite_atlas_manifest=sprite_metadata.at("importedMetadata").at("atlasArtifact");
+    const auto& sprite_page_artifacts=sprite_atlas_manifest.at("pageArtifacts");
+    if(sprite_metadata.at("payloadFormat")!="noemancer.sprite-atlas-artifact/0.1"||
+       sprite_atlas_manifest.at("sourceAssetId")!="sprite.courier"||
+       sprite_atlas_manifest.at("license")!="CC0-1.0"||
+       sprite_atlas_manifest.at("redistribution")!="public"||
+       sprite_atlas_manifest.at("dependencies")!=sprite_runtime_dependencies||
+       sprite_atlas_manifest.at("authoringDocument").at("assetId")!="sprite.courier"||
+       !sprite_atlas_manifest.at("required").get<bool>()||
+       !sprite_page_artifacts.is_array()||sprite_page_artifacts.size()!=1U) {
+        std::cerr<<"Sprite atlas binding manifest did not preserve source metadata and page closure\n"
+                 <<sprite_atlas_manifest.dump()<<'\n';return 155;
+    }
+    for(const auto& page:sprite_page_artifacts) {
+        if(page.at("sourceAssetId")!="sprite.courier"||page.at("kind")!="SpriteAtlasPage"||
+           page.at("license")!="CC0-1.0"||page.at("redistribution")!="public"||
+           page.at("dependencies")!=sprite_material_dependencies||page.at("payloadFormat")!="ktx2") {
+            std::cerr<<"Sprite atlas page record did not preserve package metadata\n"<<page.dump()<<'\n';return 156;
+        }
+        const auto page_uri=page.at("payloadUri").get<std::string>();
+        const auto page_relative=page_uri.substr(std::string("generated://").size());
+        const auto page_path=sprite_test_root/"generated"/page_relative;
+        if(!page_uri.starts_with("generated://")||!std::filesystem::is_regular_file(page_path)) {
+            std::cerr<<"Sprite atlas page payload was not committed under the registry generated root\n"<<page_uri<<'\n';return 157;
+        }
+        std::ifstream page_stream(page_path,std::ios::binary);
+        const std::vector<char> page_bytes{std::istreambuf_iterator<char>(page_stream),{}};
+        const auto page_decoded=noemancer::decode_ktx2_rgba8(std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>(page_bytes.data()),page_bytes.size()));
+        if(!page_decoded.valid||page_decoded.width!=1024U||page_decoded.height!=1024U) {
+            std::cerr<<"Sprite atlas page was not a valid bounded KTX2 payload\n"<<page.dump()<<'\n';return 158;
+        }
     }
     const auto shared_plan=nlohmann::json::parse(
         sprite_registry.cook_plan_json({"sprite.courier","sprite.courier.copy"},"windows-x64-debug"));
@@ -411,6 +448,15 @@ int main() {
         for(const auto& output:manifest.at("outputs"))if(output.at("assetId")==asset_id)return output;
         return nlohmann::json{};
     };
+    const auto sprite_output=find_output(sprite_manifest,"sprite.courier");
+    const auto page_output=find_output(sprite_manifest,"sprite.courier.atlas.page.0");
+    if(sprite_output.empty()||page_output.empty()||sprite_output.at("kind")!="SpriteAtlas"||
+       sprite_output.at("dependencies")!=sprite_runtime_dependencies||
+       page_output.at("kind")!="SpriteAtlasPage"||page_output.at("sourceAssetId")!="sprite.courier"||
+       page_output.at("dependencies")!=sprite_material_dependencies) {
+        std::cerr<<"Cook manifest did not expose Sprite Atlas parent/page closure metadata\n"
+                 <<sprite_manifest.dump()<<'\n';return 159;
+    }
     bool shared_dependency_outputs_stable=true;
     for(const auto& dependency:sprite_dependencies) {
         const auto original=find_output(sprite_manifest,dependency);const auto shared=find_output(shared_manifest,dependency);
@@ -420,13 +466,13 @@ int main() {
     if(!shared_plan.at("valid").get<bool>()||shared_plan!=shared_plan_repeat||shared_plan.at("inputs").size()!=6U||
        shared_sprite_inputs!=2U||!shared_sprite_dependencies_valid||!shared_textures_unique||
        !shared_receipt.at("success").get<bool>()||shared_receipt.at("cacheHits")!=5U||shared_receipt.at("cacheMisses")!=1U||
-       shared_manifest.at("outputs").size()!=6U||!shared_outputs_unique||!shared_dependency_outputs_stable) {
+       shared_manifest.at("outputs").size()!=8U||!shared_outputs_unique||!shared_dependency_outputs_stable) {
         std::cerr<<"Shared Sprite material dependencies did not produce one stable Cook closure without duplicate outputs\n"
                  <<shared_plan.dump()<<'\n'<<shared_receipt.dump()<<'\n';return 154;
     }
     std::size_t verified_ktx{};
     for(const auto& output:sprite_manifest.at("outputs")) {
-        if(output.at("payloadFormat")!="ktx2")continue;
+        if(output.at("payloadFormat")!="ktx2"||output.value("kind",std::string{})=="SpriteAtlasPage")continue;
         auto relative=output.at("payloadUri").get<std::string>().substr(std::string("generated://").size());
         std::ifstream stream(sprite_test_root/"generated"/relative,std::ios::binary);
         const std::vector<char> bytes{std::istreambuf_iterator<char>(stream),{}};
