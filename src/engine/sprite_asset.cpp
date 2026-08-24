@@ -5,6 +5,7 @@
 #include <functional>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <numeric>
 #include <utility>
 #include <unordered_set>
 
@@ -188,6 +189,39 @@ std::uint64_t layout_hash(const SpriteAssetDocument& document) {
         }
     }
     return hash;
+}
+
+bool planning_limits_are_valid(const SpriteAtlasPlanningLimits& limits) noexcept {
+    return limits.max_frames > 0U && limits.max_pages > 0U && limits.max_page_width > 0U &&
+        limits.max_page_height > 0U && limits.max_estimated_cook_bytes > 0U &&
+        limits.estimated_bytes_per_pixel > 0U;
+}
+
+bool checked_multiply(const std::uint64_t left, const std::uint64_t right,
+                      std::uint64_t& output) noexcept {
+    if (left != 0U && right > std::numeric_limits<std::uint64_t>::max() / left) return false;
+    output = left * right;
+    return true;
+}
+
+constexpr std::uint64_t atlas_hash_offset = 14695981039346656037ULL;
+constexpr std::uint64_t atlas_hash_prime = 1099511628211ULL;
+
+void hash_bytes(std::uint64_t& hash, std::uint64_t value, const std::size_t byte_count) noexcept {
+    for (std::size_t index = 0U; index < byte_count; ++index) {
+        hash ^= static_cast<unsigned char>(value & 0xFFU);
+        hash *= atlas_hash_prime;
+        value >>= 8U;
+    }
+}
+
+void hash_text(std::uint64_t& hash, const std::string_view value) noexcept {
+    for (const auto byte : value) {
+        hash ^= static_cast<unsigned char>(byte);
+        hash *= atlas_hash_prime;
+    }
+    hash ^= 0xFFU;
+    hash *= atlas_hash_prime;
 }
 
 } // namespace
@@ -559,15 +593,365 @@ SpriteAssetProductionReport SpriteAssetCodec::production_report(
     return report;
 }
 
+SpriteAtlasPlanningReport SpriteAssetCodec::plan_atlas_pages(
+    const SpriteAssetDocument& document, const SpriteAtlasPlanningOptions& options) {
+    static const std::vector<std::string> no_changed_frames;
+    return plan_atlas_pages(document, options, no_changed_frames);
+}
+
+SpriteAtlasPlanningReport SpriteAssetCodec::plan_atlas_pages(
+    const SpriteAssetDocument& document, const SpriteAtlasPlanningOptions& options,
+    const std::vector<std::string>& changed_frame_ids) {
+    SpriteAtlasPlanningReport report;
+    report.page_width = options.page_width;
+    report.page_height = options.page_height;
+    report.padding = options.padding;
+    report.frame_count = document.frames.size();
+
+    const auto fail = [&](const std::string_view code, const std::string_view path,
+                          const std::string_view message) {
+        error(report.diagnostics, std::string(code), std::string(path), std::string(message));
+        report.code = std::string(code);
+        report.valid = false;
+    };
+
+    if (!planning_limits_are_valid(options.limits)) {
+        fail("sprite.atlas-invalid-planning-limits", "/planning/limits",
+             "Atlas planning limits must all be positive.");
+        return report;
+    }
+    if (options.page_width == 0U || options.page_height == 0U) {
+        fail("sprite.atlas-invalid-page-size", "/planning/pageSize",
+             "Atlas page dimensions must be positive.");
+        return report;
+    }
+    if (options.page_width > options.limits.max_page_width ||
+        options.page_height > options.limits.max_page_height) {
+        fail("sprite.atlas-page-size-limit", "/planning/pageSize",
+             "Atlas page dimensions exceed the bounded planning limit.");
+        return report;
+    }
+    if (static_cast<std::uint64_t>(options.padding) * 2U + 1U > options.page_width ||
+        static_cast<std::uint64_t>(options.padding) * 2U + 1U > options.page_height) {
+        fail("sprite.atlas-padding-too-large", "/planning/padding",
+             "Padding leaves no room for a positive frame on the requested page.");
+        return report;
+    }
+    if (document.frames.size() > options.limits.max_frames) {
+        fail("sprite.atlas-frame-limit", "/frames",
+             "Frame count exceeds the bounded atlas planning limit.");
+        return report;
+    }
+
+    const auto page_area_result = [&]() -> std::optional<std::uint64_t> {
+        std::uint64_t value{};
+        if (!checked_multiply(options.page_width, options.page_height, value)) return std::nullopt;
+        return value;
+    }();
+    if (!page_area_result) {
+        fail("sprite.atlas-area-overflow", "/planning/pageSize",
+             "Atlas page area cannot be represented by the planning report.");
+        return report;
+    }
+    const auto page_area = *page_area_result;
+    std::uint64_t page_bytes{};
+    if (!checked_multiply(page_area, options.limits.estimated_bytes_per_pixel, page_bytes)) {
+        fail("sprite.atlas-cook-size-overflow", "/planning/estimatedBytesPerPixel",
+             "Atlas page byte estimate cannot be represented by the planning report.");
+        return report;
+    }
+
+    const auto validation_errors = validate(document);
+    if (!validation_errors.empty()) {
+        report.diagnostics = validation_errors;
+        report.code = validation_errors.front().code;
+        return report;
+    }
+
+    if (!checked_multiply(document.texture_width, document.texture_height,
+                          report.single_atlas_cook_pixels) ||
+        !checked_multiply(report.single_atlas_cook_pixels,
+                          options.limits.estimated_bytes_per_pixel,
+                          report.single_atlas_cook_bytes)) {
+        fail("sprite.atlas-cook-size-overflow", "/textureSize",
+             "Single-atlas byte estimate cannot be represented by the planning report.");
+        return report;
+    }
+
+    // The planner uses a stable frame-ID order and a deterministic shelf pack.
+    // It is intentionally a planning model, not a claim about an encoder or a
+    // particular renderer's atlas allocator.
+    std::vector<std::size_t> order(document.frames.size());
+    std::iota(order.begin(), order.end(), 0U);
+    std::ranges::sort(order, [&document](const std::size_t left, const std::size_t right) {
+        if (document.frames[left].id != document.frames[right].id)
+            return document.frames[left].id < document.frames[right].id;
+        return left < right;
+    });
+
+    struct PageAccum final {
+        std::uint64_t occupied_area{};
+        std::vector<std::size_t> placement_indices;
+    };
+    std::vector<PageAccum> pages;
+    pages.emplace_back();
+    report.placements.reserve(document.frames.size());
+
+    std::uint32_t cursor_x = options.padding;
+    std::uint32_t cursor_y = options.padding;
+    std::uint32_t row_height{};
+    std::size_t page_index{};
+    for (const auto frame_index : order) {
+        const auto& frame = document.frames[frame_index];
+        const auto padded_width = static_cast<std::uint64_t>(frame.width) +
+            static_cast<std::uint64_t>(options.padding) * 2U;
+        const auto padded_height = static_cast<std::uint64_t>(frame.height) +
+            static_cast<std::uint64_t>(options.padding) * 2U;
+        if (padded_width > options.page_width || padded_height > options.page_height) {
+            fail("sprite.atlas-frame-too-large", "/frames/" + std::to_string(frame_index) + "/rect",
+                 "Frame plus padding does not fit within one atlas page.");
+            return report;
+        }
+
+        if (static_cast<std::uint64_t>(cursor_x) + frame.width + options.padding > options.page_width) {
+            cursor_x = options.padding;
+            const auto next_y = static_cast<std::uint64_t>(cursor_y) + row_height + options.padding;
+            cursor_y = static_cast<std::uint32_t>(next_y);
+            row_height = 0U;
+        }
+        if (static_cast<std::uint64_t>(cursor_y) + frame.height + options.padding > options.page_height) {
+            if (pages.size() >= options.limits.max_pages) {
+                fail("sprite.atlas-page-limit", "/planning/maxPages",
+                     "Frame placement would exceed the bounded atlas page limit.");
+                return report;
+            }
+            pages.emplace_back();
+            ++page_index;
+            cursor_x = options.padding;
+            cursor_y = options.padding;
+            row_height = 0U;
+        }
+
+        const auto placement_index = report.placements.size();
+        report.placements.push_back(SpriteAtlasFramePlacement{
+            .frame_id = frame.id,
+            .page_index = static_cast<std::uint32_t>(page_index),
+            .x = cursor_x,
+            .y = cursor_y,
+            .width = frame.width,
+            .height = frame.height});
+        pages[page_index].placement_indices.push_back(placement_index);
+        const auto frame_area = static_cast<std::uint64_t>(frame.width) * frame.height;
+        if (!add_area_checked(pages[page_index].occupied_area, frame_area,
+                              pages[page_index].occupied_area)) {
+            fail("sprite.atlas-area-overflow", "/frames",
+                 "Page occupancy cannot be represented by the planning report.");
+            return report;
+        }
+        cursor_x = static_cast<std::uint32_t>(static_cast<std::uint64_t>(cursor_x) +
+                                              frame.width + options.padding);
+        row_height = std::max(row_height, frame.height);
+    }
+
+    report.page_count = pages.size();
+    report.pages.reserve(pages.size());
+    for (std::size_t index = 0U; index < pages.size(); ++index) {
+        const auto& accumulated = pages[index];
+        SpriteAtlasPageReport page;
+        page.page_index = static_cast<std::uint32_t>(index);
+        page.width = options.page_width;
+        page.height = options.page_height;
+        page.frame_count = accumulated.placement_indices.size();
+        page.occupied_area = accumulated.occupied_area;
+        page.free_area = page_area >= page.occupied_area ? page_area - page.occupied_area : 0U;
+        // The shelf pack places non-overlapping rectangles by construction.
+        // Keeping this value explicit makes the no-overlap invariant visible
+        // to downstream diagnostics without coupling the plan to a renderer.
+        page.overlap_area = 0U;
+        page.estimated_cook_pixels = page_area;
+        page.estimated_cook_bytes = page_bytes;
+        page.layout_fingerprint = atlas_hash_offset;
+        hash_bytes(page.layout_fingerprint, page.page_index, sizeof(page.page_index));
+        hash_bytes(page.layout_fingerprint, page.width, sizeof(page.width));
+        hash_bytes(page.layout_fingerprint, page.height, sizeof(page.height));
+        for (const auto placement_index : accumulated.placement_indices) {
+            const auto& placement = report.placements[placement_index];
+            hash_text(page.layout_fingerprint, placement.frame_id);
+            hash_bytes(page.layout_fingerprint, placement.x, sizeof(placement.x));
+            hash_bytes(page.layout_fingerprint, placement.y, sizeof(placement.y));
+            hash_bytes(page.layout_fingerprint, placement.width, sizeof(placement.width));
+            hash_bytes(page.layout_fingerprint, placement.height, sizeof(placement.height));
+        }
+        report.pages.push_back(page);
+    }
+    if (!checked_multiply(report.page_count, page_area, report.planned_cook_pixels) ||
+        !checked_multiply(report.planned_cook_pixels, options.limits.estimated_bytes_per_pixel,
+                          report.planned_cook_bytes)) {
+        fail("sprite.atlas-cook-size-overflow", "/planning",
+             "Planned atlas byte estimate cannot be represented by the planning report.");
+        return report;
+    }
+    if (report.planned_cook_bytes > options.limits.max_estimated_cook_bytes) {
+        fail("sprite.atlas-cook-budget", "/planning/maxEstimatedCookBytes",
+             "Planned atlas byte estimate exceeds the bounded cook budget.");
+        return report;
+    }
+
+    std::vector<std::string> unique_changed = changed_frame_ids;
+    std::ranges::sort(unique_changed);
+    unique_changed.erase(std::unique(unique_changed.begin(), unique_changed.end()), unique_changed.end());
+    report.changed_frame_count = unique_changed.size();
+    for (const auto& changed_id : unique_changed) {
+        const auto placement = std::ranges::find(report.placements, changed_id,
+                                                   &SpriteAtlasFramePlacement::frame_id);
+        if (placement == report.placements.end()) {
+            fail("sprite.atlas-unknown-frame", "/planning/changedFrameIds",
+                 "Changed frame IDs must refer to frames in the current document.");
+            return report;
+        }
+        if (std::ranges::find(report.affected_page_indices, placement->page_index) ==
+            report.affected_page_indices.end()) {
+            report.affected_page_indices.push_back(placement->page_index);
+        }
+    }
+    if (!checked_multiply(report.affected_page_indices.size(), page_area,
+                          report.incremental_cook_pixels) ||
+        !checked_multiply(report.incremental_cook_pixels, options.limits.estimated_bytes_per_pixel,
+                          report.incremental_cook_bytes)) {
+        fail("sprite.atlas-cook-size-overflow", "/planning/changedFrameIds",
+             "Incremental atlas byte estimate cannot be represented by the planning report.");
+        return report;
+    }
+
+    report.layout_fingerprint = atlas_hash_offset;
+    hash_bytes(report.layout_fingerprint, options.page_width, sizeof(options.page_width));
+    hash_bytes(report.layout_fingerprint, options.page_height, sizeof(options.page_height));
+    hash_bytes(report.layout_fingerprint, options.padding, sizeof(options.padding));
+    for (const auto& placement : report.placements) {
+        hash_text(report.layout_fingerprint, placement.frame_id);
+        hash_bytes(report.layout_fingerprint, placement.page_index, sizeof(placement.page_index));
+        hash_bytes(report.layout_fingerprint, placement.x, sizeof(placement.x));
+        hash_bytes(report.layout_fingerprint, placement.y, sizeof(placement.y));
+        hash_bytes(report.layout_fingerprint, placement.width, sizeof(placement.width));
+        hash_bytes(report.layout_fingerprint, placement.height, sizeof(placement.height));
+    }
+    for (const auto& page : report.pages) {
+        hash_bytes(report.layout_fingerprint, page.page_index, sizeof(page.page_index));
+        hash_bytes(report.layout_fingerprint, page.occupied_area, sizeof(page.occupied_area));
+        hash_bytes(report.layout_fingerprint, page.free_area, sizeof(page.free_area));
+        hash_bytes(report.layout_fingerprint, page.overlap_area, sizeof(page.overlap_area));
+        hash_bytes(report.layout_fingerprint, page.layout_fingerprint, sizeof(page.layout_fingerprint));
+    }
+    report.valid = true;
+    report.code = "ok";
+    return report;
+}
+
+std::string sprite_atlas_plan_json(
+    const SpriteAssetDocument& document, const SpriteAtlasPlanningOptions& options,
+    const std::vector<std::string>& changed_frame_ids) {
+    const auto report = SpriteAssetCodec::plan_atlas_pages(document, options, changed_frame_ids);
+
+    Json page_items = Json::array();
+    const auto page_emit_count = std::min(report.pages.size(), sprite_atlas_plan_max_projected_pages);
+    for (std::size_t index = 0U; index < page_emit_count; ++index) {
+        const auto& page = report.pages[index];
+        page_items.push_back({
+            {"index", page.page_index},
+            {"size", Json::array({page.width, page.height})},
+            {"frameCount", page.frame_count},
+            {"occupiedArea", page.occupied_area},
+            {"freeArea", page.free_area},
+            {"overlapArea", page.overlap_area},
+            {"estimatedCookPixels", page.estimated_cook_pixels},
+            {"estimatedCookBytes", page.estimated_cook_bytes},
+            {"layoutFingerprint", page.layout_fingerprint}});
+    }
+
+    Json placement_items = Json::array();
+    const auto placement_emit_count = std::min(report.placements.size(),
+                                               sprite_atlas_plan_max_projected_placements);
+    for (std::size_t index = 0U; index < placement_emit_count; ++index) {
+        const auto& placement = report.placements[index];
+        placement_items.push_back({
+            {"frameId", placement.frame_id},
+            {"pageIndex", placement.page_index},
+            {"rect", Json::array({placement.x, placement.y, placement.width, placement.height})}});
+    }
+
+    Json diagnostics = Json::array();
+    for (const auto& issue : report.diagnostics) {
+        diagnostics.push_back({
+            {"code", issue.code}, {"path", issue.path}, {"message", issue.message}});
+    }
+
+    const auto planned_placement_count = report.placements.size();
+    const auto placement_truncated = planned_placement_count > placement_emit_count;
+    const auto page_truncated = report.pages.size() > page_emit_count;
+    const Json output{
+        {"schemaVersion", "noemancer.sprite-atlas-plan/0.1"},
+        {"valid", report.valid},
+        {"code", report.code},
+        {"frameCount", report.frame_count},
+        {"changedFrameCount", report.changed_frame_count},
+        {"options", {
+            {"pageSize", Json::array({options.page_width, options.page_height})},
+            {"padding", options.padding},
+            {"estimatedBytesPerPixel", options.limits.estimated_bytes_per_pixel},
+            {"limits", {
+                {"maxFrames", options.limits.max_frames},
+                {"maxPages", options.limits.max_pages},
+                {"maxPageSize", Json::array({options.limits.max_page_width, options.limits.max_page_height})},
+                {"maxEstimatedCookBytes", options.limits.max_estimated_cook_bytes}}}}},
+        {"pages", {
+            {"total", report.page_count},
+            {"available", report.pages.size()},
+            {"maxItems", sprite_atlas_plan_max_projected_pages},
+            {"emitted", page_emit_count},
+            {"truncated", page_truncated},
+            {"items", std::move(page_items)}}},
+        {"placements", {
+            {"total", report.frame_count},
+            {"planned", planned_placement_count},
+            {"maxItems", sprite_atlas_plan_max_projected_placements},
+            {"emitted", placement_emit_count},
+            {"omitted", report.frame_count > placement_emit_count
+                ? report.frame_count - placement_emit_count : 0U},
+            {"truncated", placement_truncated || report.frame_count > placement_emit_count},
+            {"items", std::move(placement_items)}}},
+        {"affectedPages", report.affected_page_indices},
+        {"cookEstimate", {
+            {"fullPlan", {
+                {"pixels", report.planned_cook_pixels},
+                {"bytes", report.planned_cook_bytes}}},
+            {"incremental", {
+                {"affectedPageCount", report.affected_page_indices.size()},
+                {"pixels", report.incremental_cook_pixels},
+                {"bytes", report.incremental_cook_bytes}}},
+            {"singleAtlasBaseline", {
+                {"pageCount", 1U},
+                {"pixels", report.single_atlas_cook_pixels},
+                {"bytes", report.single_atlas_cook_bytes}}}}},
+        {"layoutFingerprint", report.layout_fingerprint},
+        {"diagnostics", std::move(diagnostics)},
+        {"scope", "deterministic atlas planning estimates only; not encoded file size, GPU upload cost, or runtime rendering performance"}};
+    return output.dump();
+}
+
 std::string sprite_pressure_report_json(const std::uint32_t frame_count,const std::uint32_t clip_count,
-    const std::uint32_t frames_per_clip,const std::uint32_t atlas_columns,const std::uint32_t frame_edge) {
+    const std::uint32_t frames_per_clip,const std::uint32_t atlas_columns,const std::uint32_t frame_edge,
+    const std::uint32_t planned_page_edge,const std::uint32_t planned_padding,
+    const std::uint32_t changed_frame_index) {
     constexpr std::uint64_t maximum_references=1000000U;
     const auto reference_count=static_cast<std::uint64_t>(clip_count)*frames_per_clip;
     if(frame_count==0||frame_count>16384||clip_count==0||clip_count>256||frames_per_clip==0||
-       reference_count>maximum_references||atlas_columns==0||atlas_columns>256||frame_edge==0||frame_edge>256) {
+       reference_count>maximum_references||atlas_columns==0||atlas_columns>256||frame_edge==0||frame_edge>256||
+       planned_page_edge==0||planned_page_edge>8192||planned_padding>256||
+       (changed_frame_index!=std::numeric_limits<std::uint32_t>::max()&&changed_frame_index>=frame_count)) {
         return Json{{"schemaVersion","noemancer.sprite-production-pressure/0.1"},{"valid",false},
             {"code","sprite.pressure.invalid-budget"},{"limits",{{"maximumFrames",16384},{"maximumClips",256},
-            {"maximumClipFrameReferences",maximum_references},{"maximumAtlasColumns",256},{"maximumFrameEdge",256}}}}.dump();
+            {"maximumClipFrameReferences",maximum_references},{"maximumAtlasColumns",256},{"maximumFrameEdge",256},
+            {"maximumPlannedPageEdge",8192},{"maximumPlannedPadding",256}}}}.dump();
     }
     const auto atlas_rows=(static_cast<std::uint64_t>(frame_count)+atlas_columns-1U)/atlas_columns;
     const auto atlas_width=static_cast<std::uint64_t>(atlas_columns)*frame_edge;
@@ -592,8 +976,22 @@ std::string sprite_pressure_report_json(const std::uint32_t frame_count,const st
         document.clips.push_back(std::move(clip));
     }
     const auto report=SpriteAssetCodec::production_report(document);
+    SpriteAtlasPlanningOptions planning_options;
+    planning_options.page_width=planned_page_edge;planning_options.page_height=planned_page_edge;
+    planning_options.padding=planned_padding;
+    std::vector<std::string> changed_frames;
+    if(changed_frame_index!=std::numeric_limits<std::uint32_t>::max())
+        changed_frames.push_back("frame."+std::to_string(changed_frame_index));
+    const auto plan=SpriteAssetCodec::plan_atlas_pages(document,planning_options,changed_frames);
     Json diagnostics=Json::array();for(const auto& issue:report.diagnostics)
         diagnostics.push_back({{"code",issue.code},{"path",issue.path},{"message",issue.message}});
+    constexpr std::size_t maximum_pressure_page_summaries=128U;
+    Json page_summaries=Json::array();for(std::size_t index=0;
+        index<std::min(plan.pages.size(),maximum_pressure_page_summaries);++index) {
+        const auto& page=plan.pages[index];page_summaries.push_back({{"index",page.page_index},{"frameCount",page.frame_count},
+            {"occupiedArea",page.occupied_area},{"freeArea",page.free_area},
+            {"layoutFingerprint",page.layout_fingerprint}});
+    }
     return Json{{"schemaVersion","noemancer.sprite-production-pressure/0.1"},{"valid",report.valid},{"code",report.code},
         {"workload",{{"frames",report.frame_count},{"clips",report.clip_count},
             {"totalClipFrameReferences",report.total_clip_frame_references},{"uniqueReferencedFrames",report.unique_referenced_frame_count},
@@ -601,7 +999,15 @@ std::string sprite_pressure_report_json(const std::uint32_t frame_count,const st
         {"atlas",{{"policy","single-texture-atlas"},{"pageCount",report.atlas_page_count},{"width",document.texture_width},
             {"height",document.texture_height},{"area",report.atlas_area},{"frameArea",report.frame_area_sum},
             {"occupiedArea",report.occupied_area},{"freeArea",report.free_area},{"overlapArea",report.overlap_area},
-            {"layoutFingerprint",report.layout_fingerprint}}},{"diagnostics",std::move(diagnostics)},
+            {"layoutFingerprint",report.layout_fingerprint}}},
+        {"pagePlan",{{"valid",plan.valid},{"code",plan.code},{"pageEdge",planned_page_edge},
+            {"padding",planned_padding},{"pageCount",plan.page_count},{"pages",std::move(page_summaries)},
+            {"pageSummariesEmitted",std::min(plan.pages.size(),maximum_pressure_page_summaries)},
+            {"pageSummariesTruncated",plan.pages.size()>maximum_pressure_page_summaries},
+            {"affectedPages",plan.affected_page_indices},
+            {"fullCookBytes",plan.planned_cook_bytes},{"incrementalCookBytes",plan.incremental_cook_bytes},
+            {"singleAtlasBaselineBytes",plan.single_atlas_cook_bytes},
+            {"layoutFingerprint",plan.layout_fingerprint}}},{"diagnostics",std::move(diagnostics)},
         {"scope","deterministic-source-layout-and-reference-pressure-not-gpu-timing"}}.dump();
 }
 

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 #include <span>
 #include <sstream>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -35,9 +37,27 @@ constexpr std::array<std::uint8_t, 12> kKtx2Identifier{
 
 std::uint64_t fnv1a(std::span<const std::byte> bytes);
 std::string hex_u64(std::uint64_t value);
+std::string texture_input_fingerprint(const TextureCookInput& input);
+std::uint32_t resolve_worker_count(std::uint32_t requested) noexcept;
 void populate_product(TextureCookProduct& result, const CookSource& source,
                       const CookPlatformProfile& profile, const TextureCookSettings& settings,
                       TextureCookCompression compression);
+
+using CookClock = std::chrono::steady_clock;
+
+std::uint64_t elapsed_microseconds(const CookClock::time_point started,
+                                   const CookClock::time_point finished) noexcept {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        finished - started).count());
+}
+
+void record_stage(TextureCookProduct& product, const std::string_view name,
+                  const CookClock::time_point started) {
+    product.stage_timings.push_back(TextureCookStageTiming{
+        .name = std::string(name),
+        .microseconds = elapsed_microseconds(started, CookClock::now())
+    });
+}
 
 // Texture compression is intentionally kept out of the public cache/artifact
 // contract.  A Cook plan is immutable, and its cache key already captures the
@@ -53,17 +73,14 @@ std::unordered_map<std::string, TextureCookProduct> texture_cook_cache;
 std::size_t texture_cook_cache_bytes{};
 
 std::string texture_input_cache_key(const CookArtifactContract& plan,
-                                    const TextureCookInput& input,
-                                    const TextureCookCompression compression) {
+                                    const TextureCookCompression compression,
+                                    const std::uint32_t worker_count,
+                                    const std::string_view input_fingerprint) {
     std::ostringstream material;
     material << plan.cache_key << '|'
              << (compression == TextureCookCompression::basis_lz ? "basis-lz" : "uastc") << '|'
-             << input.width << 'x' << input.height << '|'
-             << hex_u64(fnv1a(std::span<const std::byte>(input.rgba8.data(), input.rgba8.size())));
-    for (const auto& mip : input.mip_levels) {
-        material << '|' << mip.width << 'x' << mip.height << ':'
-                 << hex_u64(fnv1a(std::span<const std::byte>(mip.rgba8.data(), mip.rgba8.size())));
-    }
+             << "workers=" << worker_count << '|'
+             << input_fingerprint;
     return material.str();
 }
 
@@ -111,6 +128,30 @@ std::string hex_u64(const std::uint64_t value) {
     std::ostringstream stream;
     stream << std::hex << std::setfill('0') << std::setw(16) << value;
     return stream.str();
+}
+
+std::string texture_input_fingerprint(const TextureCookInput& input) {
+    std::ostringstream material;
+    material << input.width << 'x' << input.height << ':'
+             << hex_u64(fnv1a(std::span<const std::byte>(input.rgba8.data(), input.rgba8.size())));
+    for (const auto& mip : input.mip_levels) {
+        material << '|' << mip.width << 'x' << mip.height << ':'
+                 << hex_u64(fnv1a(std::span<const std::byte>(mip.rgba8.data(), mip.rgba8.size())));
+    }
+    // Construct a stable copy before taking the byte span used for the final
+    // digest; stringstream::str() returns a temporary.
+    const auto canonical = material.str();
+    return "fnv1a64:" + hex_u64(fnv1a(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(canonical.data()), canonical.size())));
+}
+
+std::uint32_t resolve_worker_count(const std::uint32_t requested) noexcept {
+    if (requested == 0U) {
+        const auto hardware = std::thread::hardware_concurrency();
+        const auto available = hardware == 0U ? 1U : hardware;
+        return std::min(available, kTextureCookMaxWorkerCount);
+    }
+    return std::clamp(requested, 1U, kTextureCookMaxWorkerCount);
 }
 
 void populate_product(TextureCookProduct& result, const CookSource& source,
@@ -265,23 +306,38 @@ bool ktx2_available() noexcept {
 TextureCookProduct execute_texture_cook(const CookSource& source, const TextureCookInput& input,
                                         const CookPlatformProfile& profile,
                                         const TextureCookSettings& settings,
-                                        const TextureCookCompression compression) {
+                                        const TextureCookCompression compression,
+                                        const TextureCookExecutionOptions execution_options) {
+    const auto total_started = CookClock::now();
     TextureCookProduct result;
     result.ktx_available = ktx2_available();
+    result.requested_worker_count = execution_options.requested_worker_count;
+    const auto worker_count = resolve_worker_count(execution_options.requested_worker_count);
+    result.worker_count = worker_count;
     populate_product(result, source, profile, settings, compression);
 
+    const auto fingerprint_started = CookClock::now();
+    result.input_fingerprint = texture_input_fingerprint(input);
+    record_stage(result, "input-fingerprint", fingerprint_started);
+    const auto finish = [&]() -> TextureCookProduct {
+        result.total_microseconds = elapsed_microseconds(total_started, CookClock::now());
+        return result;
+    };
+
+    const auto plan_started = CookClock::now();
     const auto plan = plan_texture_cook(source, profile, settings);
+    record_stage(result, "cook-plan", plan_started);
     if (!plan.valid) {
         result.code = plan.code;
         result.detail = plan.detail;
         result.diagnostics = plan.diagnostics;
-        return result;
+        return finish();
     }
     if (!result.ktx_available) {
         result.code = "asset.ktx2-unavailable";
         result.detail = "ktx.h was not available to the Texture Cook target.";
         result.diagnostics.push_back(result.detail);
-        return result;
+        return finish();
     }
 
     if (settings.max_dimension != 0U &&
@@ -289,16 +345,30 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
         result.code = "asset.ktx2-dimensions-exceed-max";
         result.detail = "Texture dimensions exceed the max_dimension Cook setting.";
         result.diagnostics.push_back(result.detail);
-        return result;
+        return finish();
     }
 
     // Lookup happens before mip generation and any libktx allocation.  The
     // key includes the planned immutable recipe plus every authored RGBA/mip
     // fingerprint, so a direct caller cannot accidentally reuse a different
     // in-memory texture that happens to share only a source label.
-    const auto cache_key = texture_input_cache_key(plan, input, compression);
-    if (texture_cache_lookup(cache_key, result, source, profile, settings, compression))
-        return result;
+    const auto cache_key = texture_input_cache_key(
+        plan, compression, worker_count, result.input_fingerprint);
+    const auto request_stage_timings = result.stage_timings;
+    const auto cache_lookup_started = CookClock::now();
+    if (texture_cache_lookup(cache_key, result, source, profile, settings, compression)) {
+        // A cache hit reports this request's observation, not the timings of
+        // the original producer. The map copy above is included in the
+        // cache-lookup measurement, so the resulting contract is concise and
+        // never presents stale first-cook timings as current work.
+        result.stage_timings = request_stage_timings;
+        result.cache_hit = true;
+        result.requested_worker_count = execution_options.requested_worker_count;
+        result.worker_count = worker_count;
+        record_stage(result, "cache-lookup", cache_lookup_started);
+        return finish();
+    }
+    record_stage(result, "cache-lookup", cache_lookup_started);
 
     // The platform profile is part of the Cook contract. A target may disable
     // generated mips even when an authoring setting requests them; supplied
@@ -306,10 +376,13 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
     TextureCookSettings execution_settings = settings;
     execution_settings.generate_mipmaps = settings.generate_mipmaps && profile.generate_mipmaps;
     std::vector<TextureCookMip> levels;
+    const auto mip_started = CookClock::now();
     if (!build_mip_chain(input, execution_settings, levels, result.code, result.detail)) {
+        record_stage(result, "mip-generation", mip_started);
         result.diagnostics.push_back(result.detail);
-        return result;
+        return finish();
     }
+    record_stage(result, "mip-generation", mip_started);
 
 #if NOEMANCER_HAS_KTX2
     // Vulkan's core enum values are stable API values and are used here only
@@ -330,10 +403,12 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
     create_info.generateMipmaps = KTX_FALSE;
 
     ktxTexture2* texture = nullptr;
+    const auto ktx_load_started = CookClock::now();
     auto error = ktxTexture2_Create(&create_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &texture);
     if (error != KTX_SUCCESS || texture == nullptr) {
+        record_stage(result, "ktx-load", ktx_load_started);
         set_ktx_error(result, "ktxTexture2_Create", error);
-        return result;
+        return finish();
     }
     const auto destroy_texture = [&]() { if (texture != nullptr) ktxTexture2_Destroy(texture); };
     if (ktxTexture2_SetTransferFunction(texture,
@@ -341,8 +416,9 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
         result.code = "asset.ktx2-transfer-function-failed";
         result.detail = "libktx rejected the requested texture transfer function.";
         result.diagnostics.push_back(result.detail);
+        record_stage(result, "ktx-load", ktx_load_started);
         destroy_texture();
-        return result;
+        return finish();
     }
     for (std::size_t level = 0; level < levels.size(); ++level) {
         const auto& mip = levels[level];
@@ -351,48 +427,58 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
             reinterpret_cast<const ktx_uint8_t*>(mip.rgba8.data()),
             static_cast<ktx_size_t>(mip.rgba8.size()));
         if (error != KTX_SUCCESS) {
+            record_stage(result, "ktx-load", ktx_load_started);
             set_ktx_error(result, "ktxTexture_SetImageFromMemory", error);
             destroy_texture();
-            return result;
+            return finish();
         }
     }
+    record_stage(result, "ktx-load", ktx_load_started);
 
     ktxBasisParams basis_params{};
     basis_params.structSize = sizeof(basis_params);
     basis_params.uastc = compression == TextureCookCompression::uastc ? KTX_TRUE : KTX_FALSE;
-    basis_params.threadCount = 1U;
+    basis_params.threadCount = static_cast<ktx_uint32_t>(result.worker_count);
     basis_params.compressionLevel = std::min(6U, settings.quality);
     basis_params.qualityLevel = std::clamp(settings.quality * 51U + 1U, 1U, 255U);
     basis_params.normalMap = settings.semantic == TextureSemantic::normal ? KTX_TRUE : KTX_FALSE;
     basis_params.uastcFlags = std::min(settings.quality, 4U);
     basis_params.uastcRDONoMultithreading = KTX_TRUE;
+    const auto basis_started = CookClock::now();
     error = ktxTexture2_CompressBasisEx(texture, &basis_params);
     if (error != KTX_SUCCESS) {
+        record_stage(result, "basis-encode", basis_started);
         set_ktx_error(result, "ktxTexture2_CompressBasisEx", error);
         destroy_texture();
-        return result;
+        return finish();
     }
+    record_stage(result, "basis-encode", basis_started);
 
     ktx_uint8_t* encoded = nullptr;
     ktx_size_t encoded_size = 0U;
+    const auto write_started = CookClock::now();
     error = ktxTexture2_WriteToMemory(texture, &encoded, &encoded_size);
     if (error != KTX_SUCCESS || encoded == nullptr || encoded_size == 0U) {
+        record_stage(result, "write-output", write_started);
         set_ktx_error(result, "ktxTexture2_WriteToMemory", error);
         destroy_texture();
         if (encoded != nullptr) std::free(encoded);
-        return result;
+        return finish();
     }
     result.payload.assign(reinterpret_cast<const std::byte*>(encoded),
                           reinterpret_cast<const std::byte*>(encoded) + encoded_size);
     std::free(encoded);
     destroy_texture();
+    record_stage(result, "write-output", write_started);
 
+    const auto verify_started = CookClock::now();
     if (!has_ktx2_identifier(result.payload)) {
         result.code = "asset.ktx2-identifier-invalid";
         result.detail = "libktx emitted a payload without the KTX2 identifier.";
         result.diagnostics.push_back(result.detail);
         result.payload.clear();
-        return result;
+        record_stage(result, "verify-output", verify_started);
+        return finish();
     }
 
     ktxTexture2* verification = nullptr;
@@ -400,10 +486,11 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
         reinterpret_cast<const ktx_uint8_t*>(result.payload.data()),
         static_cast<ktx_size_t>(result.payload.size()), KTX_TEXTURE_CREATE_NO_FLAGS, &verification);
     if (error != KTX_SUCCESS || verification == nullptr) {
+        record_stage(result, "verify-output", verify_started);
         set_ktx_error(result, "ktxTexture2_CreateFromMemory", error);
         if (verification != nullptr) ktxTexture2_Destroy(verification);
         result.payload.clear();
-        return result;
+        return finish();
     }
     const auto expected_supercompression = compression == TextureCookCompression::basis_lz
         ? "basis-lz"
@@ -417,8 +504,10 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
         result.detail = "KTX2 verification did not preserve dimensions, mip levels or the requested Basis encoding metadata.";
         result.diagnostics.push_back(result.detail);
         result.payload.clear();
-        return result;
+        record_stage(result, "verify-output", verify_started);
+        return finish();
     }
+    record_stage(result, "verify-output", verify_started);
 
     result.width = input.width;
     result.height = input.height;
@@ -435,13 +524,16 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
         (execution_settings.generate_mipmaps ? "provided-plus-generated" : "provided-only")));
     result.diagnostics.push_back("levels:" + std::to_string(result.level_count));
     result.diagnostics.push_back("target:" + plan.payload_target);
+    const auto cache_store_started = CookClock::now();
     texture_cache_store(cache_key, result);
+    record_stage(result, "cache-store", cache_store_started);
     result.diagnostics.push_back("cache:miss");
-    return result;
+    return finish();
 #else
     static_cast<void>(input);
     static_cast<void>(compression);
-    return result;
+    static_cast<void>(execution_options);
+    return finish();
 #endif
 }
 
@@ -450,6 +542,23 @@ std::string texture_cook_product_json(const TextureCookProduct& product) {
         {"schema", product.schema},
         {"valid", product.valid},
         {"ktxAvailable", product.ktx_available},
+        {"cacheHit", product.cache_hit},
+        {"requestedWorkerCount", product.requested_worker_count},
+        {"workerCount", product.worker_count},
+        {"inputFingerprint", product.input_fingerprint},
+        {"timing", {
+            {"totalMicroseconds", product.total_microseconds},
+            {"stages", [&product] {
+                Json stages = Json::array();
+                for (const auto& stage : product.stage_timings) {
+                    stages.push_back(Json{
+                        {"name", stage.name},
+                        {"microseconds", stage.microseconds}
+                    });
+                }
+                return stages;
+            }()}
+        }},
         {"code", product.code},
         {"detail", product.detail},
         {"source", {

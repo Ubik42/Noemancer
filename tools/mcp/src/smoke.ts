@@ -161,7 +161,9 @@ const networkProfile = await client.callTool({ name: "network.profile.describe",
 const networkSnapshot = await client.callTool({ name: "network.snapshot.preview", arguments: { tick: 42, maxEntities: 2 } });
 const networkLoopback = await client.callTool({ name: "network.loopback.verify", arguments: {} });
 const networkTransport = await client.callTool({ name: "network.transport.verify", arguments: { payloadBytes: 384 } });
-if (spritePressure.isError || !textContent(spritePressure, "asset.sprite.pressure").includes("noemancer.sprite-production-pressure/0.1")) {
+if (spritePressure.isError ||
+    !textContent(spritePressure, "asset.sprite.pressure").includes("noemancer.sprite-production-pressure/0.1") ||
+    !textContent(spritePressure, "asset.sprite.pressure").includes('"pagePlan"')) {
   throw new Error("asset.sprite.pressure did not expose the bounded long-sequence production report");
 }
 if (inputResult.isError || !textContent(inputResult, "input.actions.observe").includes("gameplay.jump") ||

@@ -443,6 +443,7 @@ int main() {
     if(!sprite_pressure.at("valid")||sprite_pressure.at("workload").at("frames")!=1024||
        sprite_pressure.at("workload").at("totalClipFrameReferences")!=2048||
        sprite_pressure.at("atlas").at("pageCount")!=1||sprite_pressure.at("atlas").at("overlapArea")!=0||
+       !sprite_pressure.at("pagePlan").at("valid")||sprite_pressure.at("pagePlan").at("pageCount").get<std::size_t>()<1||
        sprite_pressure.at("scope")!="deterministic-source-layout-and-reference-pressure-not-gpu-timing")return 20;
     return 0;
 }

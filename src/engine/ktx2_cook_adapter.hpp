@@ -36,9 +36,32 @@ struct TextureCookInput final {
     std::vector<TextureCookMip> mip_levels;
 };
 
+// Basis encoding is deterministic by default: one worker keeps artifact
+// identity stable across machines. Callers that explicitly opt in to more
+// workers, or request bounded automatic selection with zero, are still capped
+// by kTextureCookMaxWorkerCount before the value reaches libktx.
+inline constexpr std::uint32_t kTextureCookMaxWorkerCount = 8U;
+
+struct TextureCookExecutionOptions final {
+    // 1 is the identity-preserving default. Zero selects bounded automatic
+    // hardware sizing; positive values are clamped to the public cap.
+    std::uint32_t requested_worker_count{1U};
+};
+
+struct TextureCookStageTiming final {
+    std::string name;
+    std::uint64_t microseconds{};
+};
+
 struct TextureCookProduct final {
     bool valid{};
     bool ktx_available{};
+    bool cache_hit{};
+    std::uint32_t requested_worker_count{1U};
+    std::uint32_t worker_count{1U};
+    std::string input_fingerprint;
+    std::uint64_t total_microseconds{};
+    std::vector<TextureCookStageTiming> stage_timings;
     std::string code;
     std::string detail;
     std::string schema{"noemancer.texture-artifact/0.1"};
@@ -104,7 +127,8 @@ struct DecodedKtx2MipChain final {
     const TextureCookInput& input,
     const CookPlatformProfile& profile,
     const TextureCookSettings& settings = {},
-    TextureCookCompression compression = TextureCookCompression::basis_lz);
+    TextureCookCompression compression = TextureCookCompression::basis_lz,
+    TextureCookExecutionOptions execution_options = {});
 
 [[nodiscard]] std::string texture_cook_compression_name(TextureCookCompression compression);
 [[nodiscard]] std::string texture_cook_product_json(const TextureCookProduct& product);

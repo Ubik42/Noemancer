@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <fstream>
 #include <filesystem>
 #include <iterator>
@@ -485,13 +486,15 @@ void CommandRegistry::register_commands() {
 
     commands_.push_back(CommandDefinition{
         .name="asset.sprite.pressure",
-        .description="Generate a bounded deterministic long-sequence Sprite workload and report the current single-atlas layout and clip-reference costs without claiming GPU timing.",
+        .description="Generate a bounded deterministic long-sequence Sprite workload and compare the current single atlas with a deterministic multi-page incremental Cook plan without claiming encoded or GPU timing.",
         .access="read",.idempotent=true,.supports_dry_run=false,.runtime_state="offline",.task_kind="bounded",
-        .input_schema_json=R"({"type":"object","properties":{"frameCount":{"type":"integer","minimum":1,"maximum":16384,"default":1024},"clipCount":{"type":"integer","minimum":1,"maximum":256,"default":8},"framesPerClip":{"type":"integer","minimum":1,"maximum":16384,"default":256},"atlasColumns":{"type":"integer","minimum":1,"maximum":256,"default":64},"frameEdge":{"type":"integer","minimum":1,"maximum":256,"default":16}},"additionalProperties":false})",
-        .output_schema_json=R"({"type":"object","required":["schemaVersion","valid","code","workload","atlas","scope"]})",
+        .input_schema_json=R"({"type":"object","properties":{"frameCount":{"type":"integer","minimum":1,"maximum":16384,"default":1024},"clipCount":{"type":"integer","minimum":1,"maximum":256,"default":8},"framesPerClip":{"type":"integer","minimum":1,"maximum":16384,"default":256},"atlasColumns":{"type":"integer","minimum":1,"maximum":256,"default":64},"frameEdge":{"type":"integer","minimum":1,"maximum":256,"default":16},"plannedPageEdge":{"type":"integer","minimum":1,"maximum":8192,"default":1024},"plannedPadding":{"type":"integer","minimum":0,"maximum":256,"default":1},"changedFrameIndex":{"type":"integer","minimum":0,"maximum":16383,"description":"Optional frame index used to estimate page-local incremental Cook."}},"additionalProperties":false})",
+        .output_schema_json=R"({"type":"object","required":["schemaVersion","valid","code","workload","atlas","pagePlan","scope"]})",
         .handler=[](const std::string_view arguments) {const auto input=parse_object(arguments);
             return sprite_pressure_report_json(input.value("frameCount",1024U),input.value("clipCount",8U),
-                input.value("framesPerClip",256U),input.value("atlasColumns",64U),input.value("frameEdge",16U));}
+                input.value("framesPerClip",256U),input.value("atlasColumns",64U),input.value("frameEdge",16U),
+                input.value("plannedPageEdge",1024U),input.value("plannedPadding",1U),
+                input.value("changedFrameIndex",std::numeric_limits<std::uint32_t>::max()));}
     });
 
     commands_.push_back(CommandDefinition{

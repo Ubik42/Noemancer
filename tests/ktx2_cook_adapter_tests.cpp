@@ -4,14 +4,18 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -32,10 +36,76 @@ bool has_diagnostic(const noemancer::TextureCookProduct& product, const std::str
         product.diagnostics.end();
 }
 
-int run_4k_pressure() {
+bool has_stage(const noemancer::TextureCookProduct& product, const std::string_view value) {
+    return std::find_if(product.stage_timings.begin(), product.stage_timings.end(),
+                        [&](const auto& stage) { return stage.name == value; }) !=
+        product.stage_timings.end();
+}
+
+bool parse_pressure_worker_selector(
+    const std::string_view selector, noemancer::TextureCookExecutionOptions& options) {
+    if (selector == "auto") {
+        options.requested_worker_count = 0U;
+        return true;
+    }
+    if (selector.empty()) return false;
+    std::uint32_t parsed{};
+    const auto parsed_result = std::from_chars(selector.data(), selector.data() + selector.size(),
+                                               parsed, 10);
+    if (parsed_result.ec != std::errc{} || parsed_result.ptr != selector.data() + selector.size() ||
+        parsed == 0U) {
+        return false;
+    }
+    options.requested_worker_count = parsed;
+    return true;
+}
+
+nlohmann::json timing_json(const noemancer::TextureCookProduct& product) {
+    nlohmann::json stages = nlohmann::json::array();
+    for (const auto& stage : product.stage_timings) {
+        stages.push_back(nlohmann::json{
+            {"name", stage.name},
+            {"microseconds", stage.microseconds}
+        });
+    }
+    return nlohmann::json{
+        {"totalMicroseconds", product.total_microseconds},
+        {"stages", std::move(stages)}
+    };
+}
+
+int verify_pressure_worker_selector_parser() {
+    using noemancer::TextureCookExecutionOptions;
+    TextureCookExecutionOptions options;
+    if (!parse_pressure_worker_selector("1", options) || options.requested_worker_count != 1U ||
+        !parse_pressure_worker_selector("8", options) || options.requested_worker_count != 8U ||
+        !parse_pressure_worker_selector("auto", options) || options.requested_worker_count != 0U ||
+        parse_pressure_worker_selector("0", options) ||
+        parse_pressure_worker_selector("not-a-worker-count", options)) {
+        std::cerr << "KTX2 pressure worker selector parser contract failed.\n";
+        return 18;
+    }
+    return 0;
+}
+
+int run_4k_pressure(const noemancer::TextureCookExecutionOptions execution_options) {
     using namespace noemancer;
     if (!ktx2_available()) {
-        std::cout << "ktx2_cook_adapter_tests: KTX unavailable; 4K pressure skipped\n";
+        std::cout << nlohmann::json{
+            {"schemaVersion", "noemancer.ktx2-cook-pressure/0.1"},
+            {"valid", false},
+            {"workerCount", 0U},
+            {"requestedWorkerCount", execution_options.requested_worker_count},
+            {"cacheHit", false},
+            {"totalMicroseconds", 0U},
+            {"timing", nlohmann::json{
+                {"first", nlohmann::json{{"totalMicroseconds", 0U}, {"stages", nlohmann::json::array()}}},
+                {"repeat", nlohmann::json{{"totalMicroseconds", 0U}, {"stages", nlohmann::json::array()}}}
+            }},
+            {"payloadFingerprint", ""},
+            {"payloadBytes", 0U},
+            {"error", "asset.ktx2-unavailable"}
+        }.dump() << "\n";
         return 0;
     }
     constexpr std::uint32_t width = 4096U;
@@ -62,22 +132,45 @@ int run_4k_pressure() {
     };
     const auto first_started = std::chrono::steady_clock::now();
     const auto first = execute_texture_cook(source, input, profile, settings,
-        TextureCookCompression::basis_lz);
+        TextureCookCompression::basis_lz, execution_options);
     const auto first_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - first_started).count();
     const auto repeat_started = std::chrono::steady_clock::now();
     const auto repeat = execute_texture_cook(source, input, profile, settings,
-        TextureCookCompression::basis_lz);
+        TextureCookCompression::basis_lz, execution_options);
     const auto repeat_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - repeat_started).count();
+    const auto expected_worker_count = execution_options.requested_worker_count == 0U
+        ? first.worker_count
+        : std::min(execution_options.requested_worker_count, kTextureCookMaxWorkerCount);
     if (!first.valid || !repeat.valid || first.payload != repeat.payload ||
+        first.cache_hit || !repeat.cache_hit || first.worker_count != expected_worker_count ||
+        repeat.worker_count != first.worker_count || first.worker_count == 0U ||
+        first.worker_count > kTextureCookMaxWorkerCount ||
+        repeat.requested_worker_count != execution_options.requested_worker_count ||
         !has_diagnostic(repeat, "cache:hit")) {
         std::cerr << "4K KTX2 pressure did not preserve payload identity or cache reuse\n";
         return 20;
     }
-    std::cout << "ktx2_cook_adapter_tests: 4k first_ms=" << first_milliseconds
-              << " repeat_ms=" << repeat_milliseconds
-              << " payload_bytes=" << first.payload.size() << "\n";
+    const auto report = nlohmann::json{
+        {"schemaVersion", "noemancer.ktx2-cook-pressure/0.1"},
+        {"valid", true},
+        {"workerCount", first.worker_count},
+        {"requestedWorkerCount", execution_options.requested_worker_count},
+        {"cacheHit", repeat.cache_hit},
+        {"firstCacheHit", first.cache_hit},
+        {"repeatCacheHit", repeat.cache_hit},
+        {"firstWallMilliseconds", first_milliseconds},
+        {"repeatWallMilliseconds", repeat_milliseconds},
+        {"totalMicroseconds", first.total_microseconds},
+        {"timing", {
+            {"first", timing_json(first)},
+            {"repeat", timing_json(repeat)}
+        }},
+        {"payloadFingerprint", first.payload_fingerprint},
+        {"payloadBytes", first.payload.size()}
+    };
+    std::cout << report.dump() << "\n";
     return 0;
 }
 
@@ -85,7 +178,20 @@ int run_4k_pressure() {
 
 int main(const int argc,char** argv) {
     using namespace noemancer;
-    if (argc == 2 && std::string_view(argv[1]) == "--pressure-4k") return run_4k_pressure();
+    if (const auto parser_status = verify_pressure_worker_selector_parser(); parser_status != 0)
+        return parser_status;
+    if (argc >= 2 && std::string_view(argv[1]) == "--pressure-4k") {
+        if (argc > 3) {
+            std::cerr << "Usage: ktx2_cook_adapter_tests --pressure-4k [1|8|auto]\n";
+            return 64;
+        }
+        TextureCookExecutionOptions execution_options;
+        if (argc == 3 && !parse_pressure_worker_selector(argv[2], execution_options)) {
+            std::cerr << "Usage: ktx2_cook_adapter_tests --pressure-4k [1|8|auto]\n";
+            return 64;
+        }
+        return run_4k_pressure(execution_options);
+    }
     if(argc==2) {
         std::ifstream stream(argv[1],std::ios::binary);
         const std::vector<char> bytes{std::istreambuf_iterator<char>(stream),{}};
@@ -141,6 +247,14 @@ int main(const int argc,char** argv) {
         std::cerr << "BasisLZ KTX2 output did not preserve verified dimensions and metadata.\n";
         return 2;
     }
+    if (basis.cache_hit || basis.requested_worker_count != 1U || basis.worker_count != 1U ||
+        basis.input_fingerprint.empty() || basis.total_microseconds == 0U ||
+        !has_stage(basis, "input-fingerprint") || !has_stage(basis, "mip-generation") ||
+        !has_stage(basis, "ktx-load") || !has_stage(basis, "basis-encode") ||
+        !has_stage(basis, "write-output") || !has_stage(basis, "verify-output")) {
+        std::cerr << "KTX2 product did not expose measured execution stages or bounded default workers.\n";
+        return 13;
+    }
     const auto rgba_chain=decode_ktx2_mip_chain(basis.payload,RuntimeTextureFormat::rgba8);
     if(!rgba_chain.valid||rgba_chain.format!=RuntimeTextureFormat::rgba8||rgba_chain.width!=2U||
        rgba_chain.height!=2U||rgba_chain.levels.size()!=2U||rgba_chain.levels[0].bytes.size()!=16U||
@@ -163,7 +277,10 @@ int main(const int argc,char** argv) {
         std::chrono::steady_clock::now() - repeat_started).count();
     if (!basis_repeat.valid || basis.payload != basis_repeat.payload ||
         basis.payload_fingerprint != basis_repeat.payload_fingerprint ||
-        basis.level_count != basis_repeat.level_count || !has_diagnostic(basis_repeat, "cache:hit")) {
+        basis.level_count != basis_repeat.level_count || !basis_repeat.cache_hit ||
+        basis_repeat.worker_count != basis.worker_count || !has_diagnostic(basis_repeat, "cache:hit") ||
+        !has_stage(basis_repeat, "input-fingerprint") || !has_stage(basis_repeat, "cook-plan") ||
+        !has_stage(basis_repeat, "cache-lookup") || has_stage(basis_repeat, "basis-encode")) {
         std::cerr << "BasisLZ KTX2 output was not deterministic.\n";
         return 3;
     }
@@ -172,9 +289,53 @@ int main(const int argc,char** argv) {
         basis_json.at("payload").at("format") != "ktx2" ||
         basis_json.at("dimensions").at("levels") != 2U ||
         basis_json.at("compression") != "basis-lz" ||
-        basis_json.at("source").at("hash") != source.source_hash) {
+        basis_json.at("source").at("hash") != source.source_hash ||
+        basis_json.at("cacheHit") != false || basis_json.at("workerCount") != 1U ||
+        basis_json.at("requestedWorkerCount") != 1U ||
+        basis_json.at("inputFingerprint") != basis.input_fingerprint ||
+        !basis_json.at("timing").at("stages").is_array() ||
+        basis_json.at("timing").at("stages").size() < 7U) {
         std::cerr << "KTX2 product JSON did not expose stable engine-owned metadata.\n";
         return 4;
+    }
+
+    TextureCookExecutionOptions parallel_options;
+    parallel_options.requested_worker_count = 2U;
+    const auto parallel = execute_texture_cook(source, input, profile, settings,
+        TextureCookCompression::basis_lz, parallel_options);
+    if (!parallel.valid || parallel.cache_hit || parallel.worker_count != 2U ||
+        parallel.requested_worker_count != 2U) {
+        std::cerr << "Explicit KTX2 worker selection was not applied within the bounded policy.\n";
+        return 14;
+    }
+    const auto parallel_repeat = execute_texture_cook(source, input, profile, settings,
+        TextureCookCompression::basis_lz, parallel_options);
+    if (!parallel_repeat.valid || !parallel_repeat.cache_hit ||
+        parallel.payload != parallel_repeat.payload ||
+        parallel.payload_fingerprint != parallel_repeat.payload_fingerprint) {
+        std::cerr << "Explicit parallel KTX2 output did not preserve same-worker identity.\n";
+        return 15;
+    }
+
+    TextureCookExecutionOptions automatic_options;
+    automatic_options.requested_worker_count = 0U;
+    const auto automatic = execute_texture_cook(source, input, profile, settings,
+        TextureCookCompression::basis_lz, automatic_options);
+    if (!automatic.valid || automatic.worker_count == 0U ||
+        automatic.worker_count > kTextureCookMaxWorkerCount ||
+        automatic.requested_worker_count != 0U) {
+        std::cerr << "Automatic KTX2 worker selection escaped its bounded contract.\n";
+        return 16;
+    }
+
+    TextureCookExecutionOptions oversized_options;
+    oversized_options.requested_worker_count = std::numeric_limits<std::uint32_t>::max();
+    const auto oversized = execute_texture_cook(source, input, profile, settings,
+        TextureCookCompression::basis_lz, oversized_options);
+    if (!oversized.valid || oversized.worker_count != kTextureCookMaxWorkerCount ||
+        oversized.requested_worker_count != std::numeric_limits<std::uint32_t>::max()) {
+        std::cerr << "Oversized KTX2 worker selection was not clamped to the public cap.\n";
+        return 17;
     }
 
     const auto uastc = execute_texture_cook(source, input, profile, settings, TextureCookCompression::uastc);

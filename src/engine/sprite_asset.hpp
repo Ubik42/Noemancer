@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -115,6 +116,77 @@ struct SpriteAssetProductionReport final {
     std::vector<SpriteAssetError> diagnostics;
 };
 
+// Renderer-neutral planning limits for an in-memory multi-page atlas plan.
+// SpriteAssetDocument deliberately remains the 0.2 single-texture persistence
+// format; these limits only bound a production planning request.
+struct SpriteAtlasPlanningLimits final {
+    std::size_t max_frames{65536U};
+    std::size_t max_pages{4096U};
+    std::uint32_t max_page_width{8192U};
+    std::uint32_t max_page_height{8192U};
+    std::uint64_t max_estimated_cook_bytes{8ULL * 1024ULL * 1024ULL * 1024ULL};
+    std::uint32_t estimated_bytes_per_pixel{4U};
+};
+
+struct SpriteAtlasPlanningOptions final {
+    std::uint32_t page_width{1024U};
+    std::uint32_t page_height{1024U};
+    std::uint32_t padding{1U};
+    SpriteAtlasPlanningLimits limits{};
+};
+
+struct SpriteAtlasFramePlacement final {
+    std::string frame_id;
+    std::uint32_t page_index{};
+    std::uint32_t x{};
+    std::uint32_t y{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+};
+
+struct SpriteAtlasPageReport final {
+    std::uint32_t page_index{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::size_t frame_count{};
+    std::uint64_t occupied_area{};
+    std::uint64_t free_area{};
+    std::uint64_t overlap_area{};
+    // These are deterministic full-page planning estimates, not encoded file
+    // sizes and not GPU upload or rendering measurements.
+    std::uint64_t estimated_cook_pixels{};
+    std::uint64_t estimated_cook_bytes{};
+    std::uint64_t layout_fingerprint{};
+};
+
+struct SpriteAtlasPlanningReport final {
+    bool valid{};
+    std::string code{"sprite.atlas-plan-invalid"};
+    std::uint32_t page_width{};
+    std::uint32_t page_height{};
+    std::uint32_t padding{};
+    std::size_t frame_count{};
+    std::size_t page_count{};
+    std::size_t changed_frame_count{};
+    std::uint64_t planned_cook_pixels{};
+    std::uint64_t planned_cook_bytes{};
+    std::uint64_t incremental_cook_pixels{};
+    std::uint64_t incremental_cook_bytes{};
+    std::uint64_t single_atlas_cook_pixels{};
+    std::uint64_t single_atlas_cook_bytes{};
+    std::uint64_t layout_fingerprint{};
+    std::vector<std::uint32_t> affected_page_indices;
+    std::vector<SpriteAtlasFramePlacement> placements;
+    std::vector<SpriteAtlasPageReport> pages;
+    std::vector<SpriteAssetError> diagnostics;
+};
+
+// JSON observation is deliberately bounded so a long animation cannot turn a
+// single Agent read into an unbounded 65k-placement payload.  The projection
+// reports total counts and truncation state alongside this stable prefix.
+inline constexpr std::size_t sprite_atlas_plan_max_projected_placements{4096U};
+inline constexpr std::size_t sprite_atlas_plan_max_projected_pages{4096U};
+
 struct SpriteAssetParseResult final {
     std::optional<SpriteAssetDocument> document;
     std::vector<SpriteAssetError> errors;
@@ -133,6 +205,11 @@ public:
         const SpriteAssetDocument& document);
     [[nodiscard]] static SpriteAssetProductionReport production_report(
         const SpriteAssetDocument& document, const SpriteAssetValidationLimits& limits);
+    [[nodiscard]] static SpriteAtlasPlanningReport plan_atlas_pages(
+        const SpriteAssetDocument& document, const SpriteAtlasPlanningOptions& options);
+    [[nodiscard]] static SpriteAtlasPlanningReport plan_atlas_pages(
+        const SpriteAssetDocument& document, const SpriteAtlasPlanningOptions& options,
+        const std::vector<std::string>& changed_frame_ids);
     [[nodiscard]] static std::string write_canonical_json(const SpriteAssetDocument& document);
     [[nodiscard]] static std::vector<std::string> asset_dependencies(const SpriteAssetDocument& document);
 };
@@ -190,6 +267,15 @@ private:
 // Deterministic synthetic long-sequence probe used by CLI/Agent acceptance.
 // It measures the existing single-atlas contract and never claims GPU timing.
 [[nodiscard]] std::string sprite_pressure_report_json(std::uint32_t frame_count,std::uint32_t clip_count,
-    std::uint32_t frames_per_clip,std::uint32_t atlas_columns=64,std::uint32_t frame_edge=16);
+    std::uint32_t frames_per_clip,std::uint32_t atlas_columns=64,std::uint32_t frame_edge=16,
+    std::uint32_t planned_page_edge=1024,std::uint32_t planned_padding=1,
+    std::uint32_t changed_frame_index=std::numeric_limits<std::uint32_t>::max());
+
+// Serialize a bounded Agent-facing observation of an in-memory atlas plan.
+// The output is a planning estimate only; it does not claim encoded sizes,
+// GPU upload cost, or runtime rendering performance.
+[[nodiscard]] std::string sprite_atlas_plan_json(
+    const SpriteAssetDocument& document, const SpriteAtlasPlanningOptions& options,
+    const std::vector<std::string>& changed_frame_ids);
 
 } // namespace noemancer
