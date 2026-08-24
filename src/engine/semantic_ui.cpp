@@ -1,4 +1,5 @@
 #include "engine/semantic_ui.hpp"
+#include "engine/project_ui_authoring.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -284,12 +285,17 @@ std::string semantic_ui_project_runtime_document(const std::string_view project_
                                                   const std::string_view input_state_json,
                                                   const std::string_view gameplay_state_json,
                                                   const std::string_view locale) {
-    auto document=Json::parse(project_document_json,nullptr,false);
+    auto document=Json::parse(project_ui_resolved_document_json(project_document_json),nullptr,false);
     const auto scripting=Json::parse(scripting_state_json,nullptr,false);
     const auto input=Json::parse(input_state_json,nullptr,false);
     const auto gameplay=Json::parse(gameplay_state_json,nullptr,false);
     if(document.is_discarded()||!document.is_object())return Json{{"schemaVersion","noemancer.ui-document/0.1"},
         {"valid",false},{"code","ui.invalid-project-document"},{"documentId","project.hud.invalid"},{"nodes",Json::array()}}.dump();
+    if(!document.value("valid",false)) {
+        document["sourceCode"]=document.value("code",std::string{"ui.invalid-document"});
+        document["code"]="ui.invalid-project-document";
+        return document.dump();
+    }
     document["locale"]=std::string(locale);document["surface"]="game";document["kind"]="hud";
     const auto script_instances=scripting.is_object()?scripting.value("instances",Json::array()):Json::array();
     const auto input_actions=input.is_object()?input.value("actions",Json::array()):Json::array();

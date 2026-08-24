@@ -699,7 +699,10 @@ void Application::apply_project_ui_request(const ProjectUiAuthoringPanelRequest&
             .role=request.role,.label=request.label};
         if(actions)add.actions_json=*actions;
         if(!actions&&binding.is_object()&&!binding.empty())add.binding_json=binding.dump();
-        add.state_json=R"({"visible":true,"enabled":true,"editable":false})";
+        add.state_json=request.state_json;
+        add.presentation_json=request.presentation_json;
+        add.value_json=request.value_json;
+        if(!request.component_ref.empty())add.component_ref=request.component_ref;
         receipt=project_ui_session_->add_node(std::move(add),options);
         break;
     }
@@ -710,6 +713,10 @@ void Application::apply_project_ui_request(const ProjectUiAuthoringPanelRequest&
         ProjectUiUpdateNodeRequest update{.node_id=request.node_id,.label=request.label,.role=request.role};
         if(actions)update.actions_json=*actions;
         if(!actions&&binding.is_object())update.binding_json=binding.empty()?std::string("null"):binding.dump();
+        update.state_json=request.state_json;
+        update.presentation_json=request.presentation_json;
+        update.value_json=request.value_json;
+        update.component_ref=request.component_ref.empty()?std::string("null"):request.component_ref;
         receipt=project_ui_session_->update_node(std::move(update),options);
         break;
     }
@@ -721,6 +728,20 @@ void Application::apply_project_ui_request(const ProjectUiAuthoringPanelRequest&
         break;
     case ProjectUiAuthoringPanelRequestKind::redo:
         receipt=project_ui_session_->redo(options);
+        break;
+    case ProjectUiAuthoringPanelRequestKind::update_design_tokens:
+        receipt=project_ui_session_->update_design_tokens(request.design_tokens_json,options);
+        break;
+    case ProjectUiAuthoringPanelRequestKind::add_component_declaration:
+        receipt=project_ui_session_->add_declaration(
+            ProjectUiAddDeclarationRequest{request.component_id,request.component_json},options);
+        break;
+    case ProjectUiAuthoringPanelRequestKind::update_component_declaration:
+        receipt=project_ui_session_->update_declaration(
+            request.component_id,request.component_json,options);
+        break;
+    case ProjectUiAuthoringPanelRequestKind::remove_component_declaration:
+        receipt=project_ui_session_->remove_declaration(request.component_id,options);
         break;
     }
     const auto evidence=receipt.to_json();

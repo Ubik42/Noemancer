@@ -1,6 +1,9 @@
 #include "engine/command_registry.hpp"
+#include "engine/asset_registry.hpp"
 #include "engine/process_diagnostics.hpp"
 #include "engine/network_transport.hpp"
+#include "engine/project_document.hpp"
+#include "engine/project_ui_authoring.hpp"
 #include "engine/project_workspace.hpp"
 #include "engine/world.hpp"
 #include "runtime/application.hpp"
@@ -16,6 +19,7 @@
 #include <filesystem>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -80,7 +84,7 @@ void print_usage() {
         << "  noemancer bindings csharp\n"
         << "  noemancer tools list [--format json]\n"
         << "  noemancer tool call <name> [--input JSON]\n"
-        << "  noemancer serve --format jsonl\n"
+        << "  noemancer serve [--project PATH] --format jsonl\n"
         << "  noemancer project create --path PATH --name NAME [--format json]\n"
         << "  noemancer network-server --port PORT [--sessions N] [--timeout-ms N] --format json\n"
         << "  noemancer network-client --host IPv4 --port PORT [--peer-id ID] [--payload-bytes N] --format json\n"
@@ -213,12 +217,54 @@ int run_agent_interface(const int argc, char** argv) {
 }
 
 int run_agent_server(const int argc, char** argv) {
-    if (argc != 4 || std::string_view(argv[2]) != "--format" ||
-        std::string_view(argv[3]) != "jsonl") {
-        std::cerr << "Expected: noemancer serve --format jsonl\n";
+    std::filesystem::path project_path;
+    bool jsonl{};
+    for(int index=2;index<argc;++index) {
+        const std::string_view argument=argv[index];
+        if(argument=="--project"&&index+1<argc)project_path=argv[++index];
+        else if(argument=="--format"&&index+1<argc&&std::string_view(argv[++index])=="jsonl")jsonl=true;
+        else {
+            std::cerr << "Expected: noemancer serve [--project PATH] --format jsonl\n";
+            return 2;
+        }
+    }
+    if(!jsonl) {
+        std::cerr << "Expected: noemancer serve [--project PATH] --format jsonl\n";
         return 2;
     }
-    noemancer::CommandRegistry registry;
+    std::unique_ptr<noemancer::World> project_world;
+    std::unique_ptr<noemancer::AssetRegistry> project_assets;
+    std::unique_ptr<noemancer::ProjectUiAuthoringSession> project_ui;
+    std::unique_ptr<noemancer::CommandRegistry> registry;
+    if(project_path.empty())registry=std::make_unique<noemancer::CommandRegistry>();
+    else {
+        const auto loaded=noemancer::load_project(project_path);
+        if(!loaded) {std::cerr<<noemancer::project_load_errors_json(loaded)<<'\n';return 30;}
+        project_world=std::make_unique<noemancer::World>();
+        const auto scene=project_world->load_scene(*loaded.startup_scene);
+        if(!scene.success||!project_world->configure_input_actions(loaded.project->input_actions)||
+           !project_world->configure_project_hud(loaded.project->hud_document_json)) {
+            std::cerr<<"Project could not initialize the attached Agent World.\n";return 30;
+        }
+        if(loaded.project->asset_roots.empty())project_assets=std::make_unique<noemancer::AssetRegistry>();
+        else {
+            project_assets=std::make_unique<noemancer::AssetRegistry>(
+                loaded.project->root/loaded.project->asset_roots.front());
+            for(std::size_t index=1;index<loaded.project->asset_roots.size();++index)
+                static_cast<void>(project_assets->add_root(loaded.project->root/loaded.project->asset_roots[index]));
+        }
+        if(loaded.project->script_project)
+            static_cast<void>(project_world->scripting_project_configure_json(
+                loaded.project->root,loaded.project->root/ *loaded.project->script_project));
+        registry=std::make_unique<noemancer::CommandRegistry>(*project_world,*project_assets);
+        if(loaded.project->hud_document) {
+            project_ui=std::make_unique<noemancer::ProjectUiAuthoringSession>(
+                loaded.project->hud_document_json,loaded.project->root/ *loaded.project->hud_document,
+                nlohmann::json::parse(loaded.project->hud_document_json).value("revision",1ULL));
+            if(!project_ui->valid()) {std::cerr<<project_ui->observation_json()<<'\n';return 30;}
+            registry->attach_project_ui_authoring(*project_ui);
+        }
+    }
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
@@ -231,7 +277,7 @@ int run_agent_server(const int argc, char** argv) {
                 throw std::invalid_argument("Request must contain a string name");
             }
             const auto arguments = request.value("arguments", nlohmann::json::object());
-            const auto invocation = registry.invoke(
+            const auto invocation = registry->invoke(
                 request.at("name").get<std::string>(),
                 arguments.dump());
             response = {

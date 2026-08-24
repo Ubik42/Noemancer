@@ -1,10 +1,12 @@
 #include "engine/command_registry.hpp"
+#include "engine/project_ui_authoring.hpp"
 #include "engine/retained_ui_runtime.hpp"
 #include "engine/world.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 
 namespace {
@@ -71,5 +73,31 @@ int main() {
        !succeeded(agent_receipt.value("result",Json::object()))) {
         std::cerr<<agent.exit_code<<' '<<agent.output_json<<'\n';return 7;
     }
+    const auto authoring_path=std::filesystem::temp_directory_path()/"noemancer-project-ui-action-test.ui.json";
+    {std::ofstream output(authoring_path,std::ios::binary|std::ios::trunc);output<<document.dump();}
+    auto authoring=noemancer::ProjectUiAuthoringSession::from_file(authoring_path);
+    registry.attach_project_ui_authoring(authoring);
+    const auto source_observe=registry.invoke("ui.project.source.observe","{}");
+    const auto source_edit=registry.invoke("ui.project.source.edit",
+        R"({"operation":"update","baseRevision":7,"dryRun":true,"nodeId":"project.hud.resume","label":"Continue"})");
+    const auto source_commit=registry.invoke("ui.project.source.edit",
+        R"({"operation":"update","baseRevision":7,"nodeId":"project.hud.resume","label":"Continue"})");
+    const auto observe_envelope=Json::parse(source_observe.output_json);
+    const auto edit_envelope=Json::parse(source_edit.output_json);
+    const auto commit_envelope=Json::parse(source_commit.output_json);
+    if(source_observe.exit_code!=0||source_edit.exit_code!=0||source_commit.exit_code!=0||
+       observe_envelope.at("result").value("revision",0U)!=7U||
+       !edit_envelope.at("result").value("success",false)||
+       !edit_envelope.at("result").value("changed",false)||
+       edit_envelope.at("result").value("runtimeHotApplyAttempted",true)||
+       edit_envelope.at("result").value("runtimeHotApplied",true)||
+       !commit_envelope.at("result").value("success",false)||
+       !commit_envelope.at("result").value("runtimeHotApplyAttempted",false)||
+       !commit_envelope.at("result").value("runtimeHotApplied",false)||authoring.revision()!=8U) {
+        std::cerr<<source_observe.output_json<<'\n'<<source_edit.output_json<<'\n'
+                 <<source_commit.output_json<<'\n';return 8;
+    }
+    std::error_code cleanup_error;
+    std::filesystem::remove(authoring_path,cleanup_error);
     return 0;
 }

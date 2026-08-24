@@ -110,6 +110,8 @@ const expected = [
   "ui.observe",
   "ui.project.action.invoke",
   "ui.project.observe",
+  "ui.project.source.edit",
+  "ui.project.source.observe",
   "ui.resources.inspect",
   "ui.retained.preview",
   "ui.text.inspect",

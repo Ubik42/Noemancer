@@ -160,6 +160,96 @@ int main() {
         return 13;
     }
 
+    noemancer::ProjectUiAddDeclarationRequest declaration;
+    declaration.id = "ui.button.base";
+    declaration.declaration_json = R"({"role":"button","label":"Button","presentation":{"control":"button","constraints":{"width":120},"layout":{"flow":"row"}},"state":{"visible":true,"enabled":true},"actions":[{"id":"ui.invoke","binding":{"kind":"command","command":"demo"}}]})";
+    receipt = session.add_declaration(std::move(declaration), {.expected_revision = 7U});
+    if (!receipt || receipt.revision != 8U ||
+        !Json::parse(session.source_json()).contains("components") ||
+        Json::parse(session.source_json()).at("components").size() != 1U) {
+        std::cerr << "add_declaration did not commit a presentation-based declaration\n";
+        return 14;
+    }
+    noemancer::ProjectUiAddNodeRequest instance;
+    instance.id = "ui.button.instance";
+    instance.parent_id = "ui.root";
+    instance.role = "button";
+    instance.label = "Play";
+    instance.component_ref = "ui.button.base";
+    receipt = session.add_node(std::move(instance), {.expected_revision = 8U});
+    if (!receipt || receipt.revision != 9U ||
+        Json::parse(session.source_json()).at("nodes").back().at("componentRef") != "ui.button.base") {
+        std::cerr << "componentRef node instance did not commit\n";
+        return 15;
+    }
+    const auto resolved_button = Json::parse(session.resolved_node_json("ui.button.instance"));
+    if (!resolved_button.at("valid").get<bool>() ||
+        resolved_button.at("componentChain").at(0) != "ui.button.base" ||
+        resolved_button.at("node").at("id") != "ui.button.instance" ||
+        resolved_button.at("node").at("label") != "Play" ||
+        resolved_button.at("node").at("presentation").at("control") != "button" ||
+        resolved_button.at("node").at("presentation").at("constraints").at("width") != 120) {
+        std::cerr << "componentRef materialization did not use declaration defaults and node overrides\n";
+        return 16;
+    }
+    const auto resolved_document = Json::parse(
+        noemancer::project_ui_resolved_document_json(session.source_json()));
+    if (!resolved_document.at("valid").get<bool>() ||
+        resolved_document.at("schemaVersion") != "noemancer.ui-document/0.1" ||
+        resolved_document.at("resolution").at("componentRefProvenance") != true ||
+        resolved_document.at("nodes").back().at("componentChain").at(0) != "ui.button.base" ||
+        resolved_document.at("nodes").back().at("presentation").at("control") != "button") {
+        std::cerr << "Resolved full document did not materialize component references\n";
+        return 17;
+    }
+    const auto invalid_projection = Json::parse(
+        noemancer::project_ui_resolved_document_json("not-json"));
+    if (invalid_projection.at("valid").get<bool>() ||
+        invalid_projection.at("code") != "ui.invalid-document") {
+        std::cerr << "Invalid resolved-document input did not produce a stable failure projection\n";
+        return 18;
+    }
+    receipt = session.remove_declaration("ui.button.base", {.expected_revision = 9U});
+    if (receipt || !has_code(receipt, "ui.component-in-use")) {
+        std::cerr << "in-use component declaration was removed\n";
+        return 19;
+    }
+    receipt = session.update_declaration("ui.button.base",
+        R"({"role":"button","label":"Updated","presentation":{"control":"button","constraints":{"width":160}}})",
+        {.expected_revision = 9U});
+    if (!receipt || receipt.revision != 10U ||
+        Json::parse(session.source_json()).at("components").at(0).at("label") != "Updated") {
+        std::cerr << "update_declaration did not preserve the declaration id\n";
+        return 20;
+    }
+    receipt = session.remove_subtree("ui.button.instance", {.expected_revision = 10U});
+    if (!receipt || receipt.revision != 11U) {
+        std::cerr << "component instance subtree was not removed\n";
+        return 21;
+    }
+    receipt = session.remove_declaration("ui.button.base", {.expected_revision = 11U});
+    if (!receipt || receipt.revision != 12U || !Json::parse(session.source_json()).at("components").empty()) {
+        std::cerr << "unused component declaration was not removed\n";
+        return 22;
+    }
+    noemancer::ProjectUiAddDeclarationRequest base;
+    base.id = "ui.base";
+    base.declaration_json = R"({"role":"group","presentation":{"control":"group"}})";
+    receipt = session.add_declaration(std::move(base), {.expected_revision = 12U});
+    if (!receipt || receipt.revision != 13U) return 23;
+    noemancer::ProjectUiAddDeclarationRequest derived;
+    derived.id = "ui.derived";
+    derived.declaration_json = R"({"role":"button","extends":"ui.base","presentation":{"control":"button"}})";
+    receipt = session.add_declaration(std::move(derived), {.expected_revision = 13U});
+    if (!receipt || receipt.revision != 14U) return 24;
+    receipt = session.update_declaration("ui.base",
+        R"({"role":"group","extends":"ui.derived","presentation":{"control":"group"}})",
+        {.expected_revision = 14U});
+    if (receipt || !has_code(receipt, "ui.component-cycle")) {
+        std::cerr << "component extends cycle was not rejected\n";
+        return 25;
+    }
+
     auto cyclic = noemancer::ProjectUiAuthoringSession::from_json(
         R"({"schemaVersion":"noemancer.ui-document/0.1","documentId":"ui.cycle","nodes":[{"id":"ui.a","parentId":"ui.b","role":"group"},{"id":"ui.b","parentId":"ui.a","role":"group"}]})");
     if (cyclic.valid() || cyclic.validate().empty()) {

@@ -10,6 +10,8 @@ namespace noemancer {
 
 class World;
 class AssetRegistry;
+class ProjectUiAuthoringSession;
+class ProjectUiAuthoringCommandService;
 
 struct CommandInvocation final {
     int exit_code{};
@@ -31,6 +33,7 @@ public:
     [[nodiscard]] CommandInvocation invoke(
         std::string_view name,
         std::string_view arguments_json) const;
+    void attach_project_ui_authoring(ProjectUiAuthoringSession& session);
 
 private:
     void register_commands();
@@ -52,6 +55,7 @@ private:
     World* world_{};
     std::unique_ptr<AssetRegistry> owned_assets_;
     AssetRegistry* assets_{};
+    std::unique_ptr<ProjectUiAuthoringCommandService> project_ui_authoring_;
     std::vector<CommandDefinition> commands_;
 };
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,6 +33,51 @@ enum class ProjectUiAuthoringNodeKind : std::uint8_t {
 
 [[nodiscard]] const char* project_ui_authoring_node_kind_name(ProjectUiAuthoringNodeKind kind) noexcept;
 
+// The editor exposes status per authored field so a human or Agent can tell
+// whether a value is invalid, locally dirty, blocked by another request, or
+// conflicted with a newer document revision.  These are editor observations;
+// they are never persisted into the project UI source document.
+enum class ProjectUiAuthoringFieldKind : std::uint8_t {
+    label,
+    role,
+    parent,
+    action_id,
+    binding,
+    state,
+    presentation,
+    value,
+    component_ref,
+    component_declaration,
+    design_tokens
+};
+
+[[nodiscard]] const char* project_ui_authoring_field_kind_name(ProjectUiAuthoringFieldKind kind) noexcept;
+
+enum class ProjectUiAuthoringJsonKind : std::uint8_t {
+    absent,
+    object,
+    array,
+    scalar,
+    invalid
+};
+
+struct ProjectUiAuthoringFieldState final {
+    ProjectUiAuthoringFieldKind field{ProjectUiAuthoringFieldKind::label};
+    bool valid{true};
+    bool dirty{};
+    bool disabled{};
+    bool pending{};
+    bool conflict{};
+    std::string error;
+};
+
+struct ProjectUiAuthoringJsonDraft final {
+    std::string json;
+    bool present{};
+    ProjectUiAuthoringJsonKind kind{ProjectUiAuthoringJsonKind::absent};
+    ProjectUiAuthoringFieldState status;
+};
+
 struct ProjectUiAuthoringDiagnostic final {
     std::string code;
     std::string path;
@@ -46,10 +92,30 @@ struct ProjectUiAuthoringNode final {
     std::string label;
     std::string action_id;
     std::string binding_json{"{}"};
+    std::string state_json{"{}"};
+    std::string presentation_json{"{}"};
+    std::string value_json{"null"};
+    std::string component_ref;
     ProjectUiAuthoringNodeKind kind{ProjectUiAuthoringNodeKind::unknown};
     std::size_t depth{};
     std::size_t child_count{};
     bool binding_valid{true};
+    bool state_valid{true};
+    bool presentation_valid{true};
+    bool value_valid{true};
+    ProjectUiAuthoringJsonKind state_kind{ProjectUiAuthoringJsonKind::object};
+    ProjectUiAuthoringJsonKind presentation_kind{ProjectUiAuthoringJsonKind::object};
+    ProjectUiAuthoringJsonKind value_kind{ProjectUiAuthoringJsonKind::absent};
+    std::vector<ProjectUiAuthoringFieldState> fields;
+};
+
+struct ProjectUiAuthoringComponentDeclaration final {
+    std::string id;
+    std::string root_node_id;
+    std::string label;
+    std::string component_json{"{}"};
+    bool valid{true};
+    ProjectUiAuthoringFieldState status;
 };
 
 struct ProjectUiAuthoringView final {
@@ -58,6 +124,11 @@ struct ProjectUiAuthoringView final {
     bool valid{};
     std::vector<std::string> root_ids;
     std::vector<ProjectUiAuthoringNode> nodes;
+    std::string design_tokens_json{"{}"};
+    bool design_tokens_valid{true};
+    ProjectUiAuthoringJsonKind design_tokens_kind{ProjectUiAuthoringJsonKind::object};
+    ProjectUiAuthoringFieldState design_tokens_status;
+    std::vector<ProjectUiAuthoringComponentDeclaration> components;
     std::vector<ProjectUiAuthoringDiagnostic> diagnostics;
 };
 
@@ -68,6 +139,10 @@ struct ProjectUiAuthoringNodeDraft final {
     std::string label;
     std::string action_id;
     std::string binding_json{"{}"};
+    std::string state_json{"{}"};
+    std::string presentation_json{"{}"};
+    std::string value_json{"null"};
+    std::string component_ref;
 };
 
 enum class ProjectUiAuthoringPanelRequestKind : std::uint8_t {
@@ -76,7 +151,11 @@ enum class ProjectUiAuthoringPanelRequestKind : std::uint8_t {
     update_node,
     reparent_node,
     undo,
-    redo
+    redo,
+    update_design_tokens,
+    add_component_declaration,
+    update_component_declaration,
+    remove_component_declaration
 };
 
 [[nodiscard]] const char* project_ui_authoring_request_kind_name(
@@ -95,6 +174,13 @@ struct ProjectUiAuthoringPanelRequest final {
     std::string label;
     std::string action_id;
     std::string binding_json{"{}"};
+    std::string state_json{"{}"};
+    std::string presentation_json{"{}"};
+    std::string value_json{"null"};
+    std::string design_tokens_json{"{}"};
+    std::string component_id;
+    std::string component_ref;
+    std::string component_json{"{}"};
 };
 
 struct ProjectUiAuthoringPanelState final {
@@ -104,6 +190,9 @@ struct ProjectUiAuthoringPanelState final {
     ProjectUiAuthoringNodeDraft selected_draft;
     ProjectUiAuthoringNodeDraft add_draft;
     ProjectUiAuthoringNodeKind add_kind{ProjectUiAuthoringNodeKind::container};
+    std::string design_tokens_json{"{}"};
+    ProjectUiAuthoringFieldState design_tokens_status;
+    std::vector<ProjectUiAuthoringFieldState> selected_fields;
     bool can_undo{};
     bool can_redo{};
     bool has_pending_request{};
@@ -134,9 +223,17 @@ public:
     [[nodiscard]] bool set_parent(std::string parent_id);
     [[nodiscard]] bool set_action_id(std::string action_id);
     [[nodiscard]] bool set_binding_json(std::string binding_json);
+    [[nodiscard]] bool set_state_json(std::string state_json);
+    [[nodiscard]] bool set_presentation_json(std::string presentation_json);
+    [[nodiscard]] bool set_value_json(std::string value_json);
+    [[nodiscard]] bool set_component_ref(std::string component_ref);
+    [[nodiscard]] bool set_component_declaration_json(std::string component_id,
+                                                      std::string component_json);
+    [[nodiscard]] bool set_design_tokens_json(std::string design_tokens_json);
     void set_add_node_draft(ProjectUiAuthoringNodeKind kind, std::string id,
                             std::string role, std::string label, std::string parent_id = {},
                             std::string action_id = {}, std::string binding_json = "{}");
+    void set_add_node_component_ref(std::string component_ref);
 
     [[nodiscard]] bool request_add_node();
     [[nodiscard]] bool request_remove_node();
@@ -144,6 +241,10 @@ public:
     [[nodiscard]] bool request_reparent_node();
     [[nodiscard]] bool request_undo();
     [[nodiscard]] bool request_redo();
+    [[nodiscard]] bool request_update_design_tokens();
+    [[nodiscard]] bool request_add_component_declaration(std::string component_id = {});
+    [[nodiscard]] bool request_update_component_declaration(std::string component_id = {});
+    [[nodiscard]] bool request_remove_component_declaration(std::string component_id = {});
 
     // Agent-facing, bounded semantic projection.  The returned JSON contains
     // plain fields and diagnostics and is independent of the ImGui lifecycle.
@@ -156,7 +257,26 @@ private:
     [[nodiscard]] const ProjectUiAuthoringNode* selected_node() const noexcept;
     [[nodiscard]] bool queue_request(ProjectUiAuthoringPanelRequest request);
     [[nodiscard]] std::string make_request_id(const ProjectUiAuthoringPanelRequest& request) const;
-    [[nodiscard]] bool validate_binding_json(std::string_view binding_json);
+    [[nodiscard]] bool validate_binding_json(std::string_view binding_json, std::string_view field = "binding");
+    [[nodiscard]] bool validate_object_json(std::string_view json, std::string_view field);
+    [[nodiscard]] bool validate_any_json(std::string_view json, std::string_view field);
+    [[nodiscard]] ProjectUiAuthoringFieldState field_state(
+        const ProjectUiAuthoringNode& node, ProjectUiAuthoringFieldKind field) const;
+    [[nodiscard]] bool field_is_dirty(const ProjectUiAuthoringNode& node,
+                                      ProjectUiAuthoringFieldKind field) const;
+    [[nodiscard]] bool field_is_pending(const ProjectUiAuthoringNode& node,
+                                        ProjectUiAuthoringFieldKind field) const;
+    [[nodiscard]] bool field_is_conflicted(std::string_view node_id,
+                                           ProjectUiAuthoringFieldKind field) const;
+    [[nodiscard]] std::string field_key(std::string_view node_id,
+                                        ProjectUiAuthoringFieldKind field) const;
+    void mark_conflict_for_request(const ProjectUiAuthoringPanelRequest& request);
+    void mark_dirty_conflicts(std::uint64_t next_revision);
+    void set_field_error(std::string_view node_id, ProjectUiAuthoringFieldKind field,
+                         std::string error);
+    void clear_field_error(std::string_view node_id, ProjectUiAuthoringFieldKind field);
+    void set_design_tokens_error(std::string error);
+    void clear_design_tokens_error();
     void parse_document();
     void retain_selection();
     void sync_selected_draft();
@@ -169,6 +289,11 @@ private:
     ProjectUiAuthoringNodeDraft add_draft_;
     std::map<std::string, ProjectUiAuthoringNodeDraft> drafts_;
     std::optional<ProjectUiAuthoringPanelRequest> pending_request_;
+    std::map<std::string, std::string> field_errors_;
+    std::set<std::string> conflicted_fields_;
+    std::map<std::string, std::string> component_drafts_;
+    std::string design_tokens_draft_{"{}"};
+    std::string design_tokens_error_;
     std::string last_error_;
 };
 

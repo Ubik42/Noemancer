@@ -6,6 +6,7 @@
 #include "engine/engine_host.hpp"
 #include "engine/network_replication.hpp"
 #include "engine/network_transport.hpp"
+#include "engine/project_ui_authoring_commands.hpp"
 #include "engine/render_graph.hpp"
 #include "engine/render_world.hpp"
 #include "engine/retained_ui_runtime.hpp"
@@ -290,6 +291,10 @@ CommandRegistry::CommandRegistry(World& world, AssetRegistry& assets)
 }
 
 CommandRegistry::~CommandRegistry() = default;
+
+void CommandRegistry::attach_project_ui_authoring(ProjectUiAuthoringSession& session) {
+    project_ui_authoring_=std::make_unique<ProjectUiAuthoringCommandService>(session);
+}
 
 void CommandRegistry::register_commands() {
     commands_.push_back(CommandDefinition{
@@ -1314,6 +1319,50 @@ void CommandRegistry::register_commands() {
             query.depth=input.value("depth",2U);query.byte_budget=input.value("byteBudget",16U*1024U);
             query.cursor=input.value("cursor",0U);query.include_values=input.value("includeValues",true);
             return semantic_ui_query_json(world_->semantic_ui_project_document_json(input.value("locale",std::string("en-US"))),query);
+        }
+    });
+
+    commands_.push_back(CommandDefinition{
+        .name = "ui.project.source.observe",
+        .description = "Observe the project-attached canonical HUD source, reusable components, revision, diagnostics and authoring history without materializing runtime binding state.",
+        .access = "read", .idempotent = true, .supports_dry_run = false,
+        .runtime_state = "project-attached", .task_kind = "immediate",
+        .input_schema_json = R"({"type":"object","additionalProperties":false})",
+        .output_schema_json = R"({"type":"object","required":["schemaVersion","valid","code","revision","fingerprint","document","diagnostics"]})",
+        .handler = [this](const std::string_view arguments) {
+            static_cast<void>(parse_object(arguments));
+            if(project_ui_authoring_)return project_ui_authoring_->observe_json();
+            return Json{{"schemaVersion",project_ui_authoring_schema},{"valid",false},
+                {"code","ui.project-session-detached"},{"revision",0},{"fingerprint",""},
+                {"document",nullptr},{"diagnostics",Json::array({Json{{"severity","error"},
+                    {"code","ui.project-session-detached"},{"path","/"},
+                    {"message","Start the Agent session with --project to attach a Project UI source authority."}}})}}.dump();
+        }
+    });
+
+    commands_.push_back(CommandDefinition{
+        .name = "ui.project.source.edit",
+        .description = "Apply one bounded revision-checked Project UI source edit through the project-attached transactional authority; supports nodes, reusable components, design tokens and undo/redo.",
+        .access = "write", .idempotent = false, .supports_dry_run = true,
+        .runtime_state = "project-attached", .task_kind = "immediate",
+        .input_schema_json = R"({"type":"object","required":["operation","baseRevision"],"properties":{"operation":{"type":"string","enum":["add","update","remove","reparent","reorder","design-tokens","add-reusable","update-reusable","remove-reusable","undo","redo"]},"baseRevision":{"type":"integer","minimum":1},"dryRun":{"type":"boolean","default":false},"id":{"type":"string","maxLength":128},"nodeId":{"type":"string","maxLength":128},"parentId":{"type":"string","maxLength":128},"role":{"type":"string","maxLength":128},"label":{"type":"string","maxLength":4096},"siblingIndex":{"type":"integer","minimum":0,"maximum":4096},"componentRef":{},"binding":{},"actions":{},"state":{},"presentation":{},"value":{},"designTokens":{},"declarationId":{"type":"string","maxLength":128},"declaration":{}},"additionalProperties":false})",
+        .output_schema_json = R"({"type":"object","required":["schemaVersion","success","changed","persisted","operation","code","detail","revision","fingerprint","document","observation","diagnostics"]})",
+        .handler = [this](const std::string_view arguments) {
+            if(!project_ui_authoring_)return Json{{"schemaVersion",project_ui_authoring_schema},
+                {"success",false},{"changed",false},{"persisted",false},{"operation","command"},
+                {"code","ui.project-session-detached"},{"detail","Start the Agent session with --project before authoring Project UI."},
+                {"revision",0},{"fingerprint",""},{"candidateFingerprint",""},{"document",nullptr},
+                {"observation",nullptr},{"canUndo",false},{"canRedo",false},{"diagnostics",Json::array()}}.dump();
+            auto result=Json::parse(project_ui_authoring_->dispatch_json(arguments),nullptr,false);
+            if(result.is_discarded()||!result.is_object())
+                throw std::runtime_error("Project UI authoring returned an invalid receipt");
+            const auto input=Json::parse(arguments,nullptr,false);
+            const auto committed=result.value("success",false)&&result.value("changed",false)&&
+                !input.value("dryRun",false);
+            result["runtimeHotApplyAttempted"]=committed;
+            result["runtimeHotApplied"]=committed&&
+                world_->configure_project_hud(project_ui_authoring_->session().source_json());
+            return result.dump();
         }
     });
 

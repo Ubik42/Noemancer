@@ -14,6 +14,7 @@ const engineExecutable = resolve(
   repositoryRoot,
   "build/windows-msvc-debug/src/runtime/Debug/noemancer.exe",
 );
+const attachedProject = process.env.NOEMANCER_PROJECT?.trim();
 
 type ToolDescriptor = {
   name: string;
@@ -68,7 +69,14 @@ async function runEngine(
 }
 
 class EngineSession {
-  readonly #child = spawn(engineExecutable, ["serve", "--format", "jsonl"], {
+  readonly #child = spawn(engineExecutable, [
+    "serve",
+    ...(attachedProject === undefined || attachedProject.length === 0
+      ? []
+      : ["--project", attachedProject]),
+    "--format",
+    "jsonl",
+  ], {
     cwd: repositoryRoot,
     shell: false,
     windowsHide: true,

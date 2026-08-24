@@ -37,6 +37,8 @@ constexpr std::size_t max_node_count = 4096U;
 constexpr std::size_t max_depth = 128U;
 constexpr std::size_t max_id_bytes = 128U;
 constexpr std::size_t history_limit = 128U;
+constexpr std::size_t max_component_count = 256U;
+constexpr std::size_t max_component_depth = 16U;
 
 const std::set<std::string> runtime_document_fields{
     // Legacy 0.1 project documents authored `valid:true` and `code:"ok"`.
@@ -45,10 +47,10 @@ const std::set<std::string> runtime_document_fields{
     // remains forbidden from source persistence.
     "validation", "resources", "resourceRevision",
     "localizationDiagnostics", "themeId", "textDirection", "bindingState",
-    "renderPacket", "runtime"};
+    "renderPacket", "runtime", "resolution"};
 const std::set<std::string> runtime_node_fields{
     "fingerprint", "bindingState", "layout", "renderPacket", "runtime",
-    "resolved", "resolvedLocale", "editableValue", "computed"};
+    "resolved", "resolvedLocale", "editableValue", "computed", "componentChain"};
 
 void add_diagnostic(std::vector<ProjectUiDiagnostic>& diagnostics,
                     const ProjectUiDiagnosticSeverity severity,
@@ -263,6 +265,213 @@ std::vector<std::string> direct_children(const Json& document, const std::string
     return output;
 }
 
+std::size_t json_depth(const Json& value, const std::size_t depth = 0U) {
+    if (!value.is_array() && !value.is_object()) return depth;
+    std::size_t maximum = depth;
+    if (value.is_array()) {
+        for (const auto& item : value) maximum = std::max(maximum, json_depth(item, depth + 1U));
+    } else {
+        for (const auto& [key, item] : value.items()) {
+            static_cast<void>(key);
+            maximum = std::max(maximum, json_depth(item, depth + 1U));
+        }
+    }
+    return maximum;
+}
+
+const Json* find_component(const Json& document, const std::string_view id) {
+    if (!document.is_object() || !document.contains("components") || !document.at("components").is_array()) return nullptr;
+    for (const auto& component : document.at("components")) {
+        if (component.is_object() && component.value("id", "") == id) return &component;
+    }
+    return nullptr;
+}
+
+std::vector<ProjectUiDiagnostic> validate_components(const Json& document) {
+    std::vector<ProjectUiDiagnostic> diagnostics;
+    if (!document.contains("components")) return diagnostics;
+    const auto& components = document.at("components");
+    if (!components.is_array()) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.invalid-components", "/components", "components must be an array when present.");
+        return diagnostics;
+    }
+    if (components.size() > max_component_count) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.component-limit-exceeded", "/components", "The source exceeds the reusable component limit.");
+    }
+    std::unordered_map<std::string, std::size_t> indexes;
+    for (std::size_t index = 0U; index < components.size(); ++index) {
+        const auto& component = components.at(index);
+        const auto path = "/components/" + std::to_string(index);
+        if (!component.is_object()) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.invalid-component", path, "Every reusable component declaration must be an object.");
+            continue;
+        }
+        const auto id = component.value("id", "");
+        if (!safe_id(id)) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.unsafe-component-id", path + "/id", "Component ids must be stable path-safe identifiers.");
+        } else if (!indexes.emplace(id, index).second) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.duplicate-component-id", path + "/id", "Component ids must be unique.");
+        }
+        const auto role = component.value("role", "");
+        if (role.empty() || role.size() > max_id_bytes) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.invalid-component-role", path + "/role", "Component role must be a bounded non-empty string.");
+        }
+        std::string derived;
+        if (contains_key(component, runtime_node_fields, derived)) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.runtime-derived-field", path + "/" + derived,
+                "Runtime-derived component fields must not be persisted in source.");
+        }
+        if (component.contains("componentRef")) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.component-nested-reference", path + "/componentRef",
+                "Reusable declarations cannot reference component instances; use node componentRef instead.");
+        }
+        const auto validate_object_field = [&](const std::string_view field) {
+            if (component.contains(field) && !component.at(field).is_null() && !component.at(field).is_object()) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.invalid-component-field", path + "/" + std::string(field),
+                    std::string(field) + " must be an object when present.");
+            } else if (component.contains(field) && json_depth(component.at(field)) > max_component_depth) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.component-depth-limit-exceeded", path + "/" + std::string(field),
+                    "Reusable component layout/control data exceeds the depth limit.");
+            }
+        };
+        for (const auto legacy_field : {std::string_view("layout"), std::string_view("control"), std::string_view("defaults")}) {
+            if (component.contains(legacy_field)) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.component-legacy-field", path + "/" + std::string(legacy_field),
+                    "Use the existing presentation node field; component declarations do not introduce a second control/layout schema.");
+            }
+        }
+        validate_object_field("presentation");
+        validate_object_field("binding");
+        validate_object_field("state");
+        if (component.contains("actions") && !component.at("actions").is_null() && !component.at("actions").is_array()) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.invalid-component-field", path + "/actions", "actions must be an array when present.");
+        }
+        if (component.contains("label") && (!component.at("label").is_string() || component.at("label").get<std::string>().size() > max_id_bytes)) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.invalid-component-field", path + "/label", "label must be a bounded string when present.");
+        }
+        if (component.contains("extends")) {
+            if (!component.at("extends").is_string() || !safe_id(component.at("extends").get<std::string>())) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.invalid-component-extends", path + "/extends", "extends must be a stable component id.");
+            }
+        }
+    }
+    for (const auto& [id, index] : indexes) {
+        static_cast<void>(id);
+        const auto& component = components.at(index);
+        if (!component.contains("extends") || !component.at("extends").is_string()) continue;
+        if (!indexes.contains(component.at("extends").get<std::string>())) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.component-extends-not-found", "/components/" + std::to_string(index) + "/extends",
+                "extends must name another declaration in the same document.");
+        }
+    }
+    for (const auto& [id, index] : indexes) {
+        static_cast<void>(index);
+        std::unordered_set<std::string> visited;
+        std::string current = id;
+        std::size_t depth = 0U;
+        while (!current.empty()) {
+            if (!visited.insert(current).second) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.component-cycle", "/components", "Component extends links must be acyclic.");
+                break;
+            }
+            const auto found = indexes.find(current);
+            if (found == indexes.end()) break;
+            const auto& component = components.at(found->second);
+            if (!component.contains("extends") || !component.at("extends").is_string()) break;
+            current = component.at("extends").get<std::string>();
+            ++depth;
+            if (depth > max_component_depth) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.component-depth-limit-exceeded", "/components", "Component extends depth exceeds the limit.");
+                break;
+            }
+        }
+    }
+    return diagnostics;
+}
+
+void merge_component_fields(Json& target, const Json& source, const bool skip_identity = true) {
+    if (!source.is_object()) return;
+    for (const auto& [key, value] : source.items()) {
+        if (skip_identity && (key == "id" || key == "extends")) continue;
+        if (value.is_object() && target.contains(key) && target.at(key).is_object()) {
+            merge_component_fields(target[key], value, false);
+        } else {
+            // Arrays (notably actions) intentionally replace the inherited
+            // array as one stable declaration unit. Scalars and objects use
+            // the derived value after the recursive object merge above.
+            target[key] = value;
+        }
+    }
+}
+
+bool resolve_component(const Json& document, const std::string_view id,
+                       Json& output, std::vector<std::string>& chain,
+                       std::unordered_set<std::string>& visited,
+                       std::vector<ProjectUiDiagnostic>& diagnostics) {
+    if (!visited.insert(std::string(id)).second) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.component-cycle", "/components", "Component extends links must be acyclic.");
+        return false;
+    }
+    const auto* component = find_component(document, id);
+    if (!component) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.component-reference-not-found", "/componentRef",
+            "The referenced component declaration does not exist.");
+        return false;
+    }
+    Json inherited = Json::object();
+    if (component->contains("extends") && component->at("extends").is_string()) {
+        if (!resolve_component(document, component->at("extends").get<std::string>(),
+                               inherited, chain, visited, diagnostics)) return false;
+    }
+    merge_component_fields(inherited, *component);
+    output = std::move(inherited);
+    chain.push_back(std::string(id));
+    return true;
+}
+
+bool resolve_source_node(const Json& document, const Json& source_node,
+                         Json& resolved, std::vector<std::string>& chain,
+                         std::vector<ProjectUiDiagnostic>& diagnostics) {
+    resolved = Json::object();
+    std::unordered_set<std::string> visited;
+    if (source_node.contains("componentRef")) {
+        if (!source_node.at("componentRef").is_string() ||
+            !resolve_component(document, source_node.at("componentRef").get<std::string>(),
+                               resolved, chain, visited, diagnostics)) return false;
+    }
+    // The node is the final override layer.  id/parentId and all authored
+    // fields are kept; componentRef remains as source provenance.
+    for (const auto& [key, value] : source_node.items()) {
+        if (key == "componentRef") continue;
+        if (value.is_object() && resolved.contains(key) && resolved.at(key).is_object()) {
+            merge_component_fields(resolved[key], value, false);
+        } else {
+            resolved[key] = value;
+        }
+    }
+    if (source_node.contains("componentRef")) resolved["componentRef"] = source_node.at("componentRef");
+    return diagnostics.empty();
+}
+
 std::size_t insertion_position(const Json& document, const std::string_view parent,
                                const std::size_t sibling_index) {
     const auto children = direct_children(document, parent);
@@ -289,7 +498,25 @@ void refresh_roots(Json& document) {
 std::vector<ProjectUiDiagnostic> validate_document(const Json& document,
                                                     const std::string_view serialized) {
     std::vector<ProjectUiDiagnostic> diagnostics;
-    const auto semantic = Json::parse(semantic_ui_validation_json(serialized), nullptr, false);
+    // Semantic UI validates the materialized node contract.  Source nodes may
+    // intentionally inherit role/presentation/state from componentRef, so
+    // validating the unexpanded source would reject a valid reusable node.
+    auto semantic_document = document;
+    std::vector<ProjectUiDiagnostic> resolution_diagnostics;
+    if (semantic_document.is_object() && semantic_document.contains("nodes") &&
+        semantic_document.at("nodes").is_array()) {
+        for (std::size_t index = 0U; index < semantic_document.at("nodes").size(); ++index) {
+            const auto& source_node = document.at("nodes").at(index);
+            if (!source_node.is_object()) continue;
+            Json resolved_node;
+            std::vector<std::string> chain;
+            if (resolve_source_node(document, source_node, resolved_node, chain,
+                                    resolution_diagnostics))
+                semantic_document["nodes"][index] = std::move(resolved_node);
+        }
+    }
+    const auto semantic = Json::parse(
+        semantic_ui_validation_json(canonical_dump(semantic_document)), nullptr, false);
     if (semantic.is_discarded() || !semantic.value("valid", false)) {
         if (!semantic.is_discarded() && semantic.contains("errors") && semantic.at("errors").is_array()) {
             for (const auto& error : semantic.at("errors")) {
@@ -302,6 +529,7 @@ std::vector<ProjectUiDiagnostic> validate_document(const Json& document,
                 "ui.invalid-document", "/", "The UI document could not be validated.");
         }
     }
+    diagnostics.insert(diagnostics.end(), resolution_diagnostics.begin(), resolution_diagnostics.end());
     if (serialized.size() > max_source_bytes) {
         add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
             "ui.source-too-large", "/", "The source UI document exceeds the 1 MiB authoring limit.");
@@ -320,6 +548,8 @@ std::vector<ProjectUiDiagnostic> validate_document(const Json& document,
             "ui.runtime-derived-field", "/" + derived,
             "Runtime-derived UI fields must not be persisted in the source document.");
     }
+    const auto component_diagnostics = validate_components(document);
+    diagnostics.insert(diagnostics.end(), component_diagnostics.begin(), component_diagnostics.end());
 
     if (!document.contains("nodes") || !document.at("nodes").is_array()) return diagnostics;
     const auto& nodes = document.at("nodes");
@@ -348,7 +578,10 @@ std::vector<ProjectUiDiagnostic> validate_document(const Json& document,
             add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
                 "ui.duplicate-node-id", path + "/id", "Node IDs must be unique.");
         }
-        const auto role = node.value("role", "");
+        const auto role = semantic_document.is_object() && semantic_document.contains("nodes") &&
+            semantic_document.at("nodes").is_array() && index < semantic_document.at("nodes").size() &&
+            semantic_document.at("nodes").at(index).is_object()
+            ? semantic_document.at("nodes").at(index).value("role", "") : node.value("role", "");
         if (role.empty() || role.size() > max_id_bytes) {
             add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
                 "ui.invalid-node-role", path + "/role", "Node role must be a bounded non-empty string.");
@@ -369,6 +602,17 @@ std::vector<ProjectUiDiagnostic> validate_document(const Json& document,
         if (node.contains("actions") && !node.at("actions").is_null() && !node.at("actions").is_array()) {
             add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
                 "ui.invalid-actions", path + "/actions", "actions must be an array or null.");
+        }
+        if (node.contains("componentRef")) {
+            if (!node.at("componentRef").is_string() || node.at("componentRef").get<std::string>().empty()) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.invalid-component-reference", path + "/componentRef",
+                    "componentRef must be a non-empty component id.");
+            } else if (!find_component(document, node.at("componentRef").get<std::string>())) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.component-reference-not-found", path + "/componentRef",
+                    "componentRef must name a declaration in the same document.");
+            }
         }
     }
 
@@ -597,6 +841,45 @@ ProjectUiEditReceipt make_receipt(const bool success, const bool changed, const 
 
 } // namespace
 
+std::string project_ui_resolved_document_json(const std::string_view source_json) {
+    std::vector<ProjectUiDiagnostic> diagnostics;
+    const auto document = parse_document(source_json, diagnostics);
+    if (diagnostics.empty()) {
+        const auto validation = validate_document(document, canonical_dump(document));
+        diagnostics.insert(diagnostics.end(), validation.begin(), validation.end());
+    }
+    if (!diagnostics.empty()) {
+        return Json{{"schemaVersion", "noemancer.ui-document/0.1"}, {"valid", false},
+            {"code", "ui.invalid-document"}, {"documentId", "ui.invalid"},
+            {"nodes", Json::array()}, {"diagnostics", diagnostics_json(diagnostics)}}.dump();
+    }
+
+    auto resolved_document = document;
+    for (std::size_t index = 0U; index < document.at("nodes").size(); ++index) {
+        Json resolved_node;
+        std::vector<std::string> chain;
+        if (!resolve_source_node(document, document.at("nodes").at(index),
+                                 resolved_node, chain, diagnostics)) {
+            return Json{{"schemaVersion", "noemancer.ui-document/0.1"}, {"valid", false},
+                {"code", "ui.component-resolution-failed"},
+                {"documentId", document.value("documentId", "ui.invalid")},
+                {"nodes", Json::array()}, {"diagnostics", diagnostics_json(diagnostics)}}.dump();
+        }
+        if (!chain.empty()) resolved_node["componentChain"] = std::move(chain);
+        resolved_document["nodes"].at(index) = std::move(resolved_node);
+    }
+    resolved_document["schemaVersion"] = "noemancer.ui-document/0.1";
+    resolved_document["valid"] = true;
+    resolved_document["code"] = "ok";
+    resolved_document["resolution"] = {
+        {"schemaVersion", "noemancer.ui-resolution/0.1"},
+        {"sourceFingerprint", fingerprint_of(document)},
+        {"merge", "base-to-derived-recursive-object-array-replace-node-overrides"},
+        {"componentRefProvenance", true}
+    };
+    return canonical_dump(resolved_document);
+}
+
 std::string ProjectUiEditReceipt::to_json() const {
     const auto document = nlohmann::json::parse(document_json, nullptr, false);
     const auto observation = nlohmann::json::parse(observation_json, nullptr, false);
@@ -663,6 +946,40 @@ std::vector<ProjectUiDiagnostic> ProjectUiAuthoringSession::validate() const {
 
 std::string ProjectUiAuthoringSession::observation_json() const {
     return observation_for(source_json_, document_path_, revision_, fingerprint_, can_undo(), can_redo());
+}
+
+std::string ProjectUiAuthoringSession::resolved_node_json(const std::string_view node_id) const {
+    std::vector<ProjectUiDiagnostic> diagnostics;
+    const auto document = parse_document(source_json_, diagnostics);
+    if (diagnostics.empty()) {
+        const auto source_validation = validate_document(document, canonical_dump(document));
+        diagnostics.insert(diagnostics.end(), source_validation.begin(), source_validation.end());
+    }
+    if (!diagnostics.empty()) {
+        return Json{{"schemaVersion", "noemancer.ui-node-resolution/0.1"}, {"valid", false},
+            {"code", "ui.invalid-document"}, {"nodeId", std::string(node_id)},
+            {"sourceRevision", revision_}, {"diagnostics", diagnostics_json(diagnostics)}}.dump();
+    }
+    const auto index = node_index(document, node_id);
+    if (!index) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.node-not-found", "/nodeId", "The requested source node does not exist.");
+        return Json{{"schemaVersion", "noemancer.ui-node-resolution/0.1"}, {"valid", false},
+            {"code", "ui.node-not-found"}, {"nodeId", std::string(node_id)},
+            {"sourceRevision", revision_}, {"diagnostics", diagnostics_json(diagnostics)}}.dump();
+    }
+    const auto& source_node = document.at("nodes").at(*index);
+    std::vector<std::string> chain;
+    Json resolved;
+    if (!resolve_source_node(document, source_node, resolved, chain, diagnostics)) {
+        return Json{{"schemaVersion", "noemancer.ui-node-resolution/0.1"}, {"valid", false},
+            {"code", "ui.component-resolution-failed"}, {"nodeId", std::string(node_id)},
+            {"sourceRevision", revision_}, {"diagnostics", diagnostics_json(diagnostics)}}.dump();
+    }
+    return Json{{"schemaVersion", "noemancer.ui-node-resolution/0.1"}, {"valid", true},
+        {"code", "ok"}, {"nodeId", std::string(node_id)}, {"sourceRevision", revision_},
+        {"componentChain", std::move(chain)}, {"node", canonicalize(resolved)},
+        {"diagnostics", Json::array()}}.dump();
 }
 
 ProjectUiEditReceipt ProjectUiAuthoringSession::failure(
@@ -820,6 +1137,9 @@ ProjectUiEditReceipt ProjectUiAuthoringSession::add_node(
     if (!request.parent_id.empty() && !safe_id(request.parent_id)) add_diagnostic(diagnostics,
         ProjectUiDiagnosticSeverity::error, "ui.unsafe-parent-id", "/request/parentId",
         "parentId must be a stable path-safe identifier.");
+    if (request.component_ref && !safe_id(*request.component_ref)) add_diagnostic(diagnostics,
+        ProjectUiDiagnosticSeverity::error, "ui.unsafe-component-id", "/request/componentRef",
+        "componentRef must be a stable path-safe identifier.");
     if (!parsed || !diagnostics.empty()) return invalid_request("add_node", "ui.invalid-request",
         "The add_node request is invalid.", std::move(diagnostics));
 
@@ -835,6 +1155,12 @@ ProjectUiEditReceipt ProjectUiAuthoringSession::add_node(
             "/request/parentId", "The requested parent node does not exist.");
         return invalid_request("add_node", "ui.parent-not-found", "The requested parent node does not exist.", std::move(diagnostics));
     }
+    if (request.component_ref && !find_component(document, *request.component_ref)) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error, "ui.component-reference-not-found",
+            "/request/componentRef", "componentRef must name an existing reusable declaration.");
+        return invalid_request("add_node", "ui.component-reference-not-found",
+            "The requested component declaration does not exist.", std::move(diagnostics));
+    }
     const auto sibling_index = request.sibling_index.value_or(
         direct_children(document, request.parent_id).size());
     const auto insertion = insertion_position(document, request.parent_id, sibling_index);
@@ -849,6 +1175,7 @@ ProjectUiEditReceipt ProjectUiAuthoringSession::add_node(
     if (request.binding_json) { if (binding.is_null()) {} else node["binding"] = binding; }
     if (request.presentation_json) { if (!presentation.is_null()) node["presentation"] = presentation; }
     if (request.value_json) { if (!value.is_null()) node["value"] = value; }
+    if (request.component_ref) node["componentRef"] = *request.component_ref;
     document["nodes"].insert(document["nodes"].begin() + static_cast<Json::difference_type>(insertion), std::move(node));
     refresh_roots(document);
     return commit_candidate(canonical_dump(document), options, "add_node", HistoryDirection::edit);
@@ -889,6 +1216,9 @@ ProjectUiEditReceipt ProjectUiAuthoringSession::update_node(
     if (request.role && (request.role->empty() || request.role->size() > max_id_bytes)) add_diagnostic(diagnostics,
         ProjectUiDiagnosticSeverity::error, "ui.invalid-node-role", "/request/role",
         "Node role must be a bounded non-empty string.");
+    if (request.component_ref && *request.component_ref != "null" && !safe_id(*request.component_ref)) add_diagnostic(diagnostics,
+        ProjectUiDiagnosticSeverity::error, "ui.unsafe-component-id", "/request/componentRef",
+        "componentRef must be a stable path-safe identifier or null.");
     Json binding, actions, state, presentation, value;
     const bool parsed = parse_object_value(request.binding_json, "/request/binding", "binding", binding, diagnostics) &&
         parse_array_value(request.actions_json, "/request/actions", "actions", actions, diagnostics) &&
@@ -905,6 +1235,13 @@ ProjectUiEditReceipt ProjectUiAuthoringSession::update_node(
             "/request/nodeId", "The requested node does not exist.");
         return invalid_request("update_node", "ui.node-not-found", "The requested node does not exist.", std::move(diagnostics));
     }
+    if (request.component_ref && *request.component_ref != "null" &&
+        !find_component(document, *request.component_ref)) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error, "ui.component-reference-not-found",
+            "/request/componentRef", "componentRef must name an existing reusable declaration.");
+        return invalid_request("update_node", "ui.component-reference-not-found",
+            "The requested component declaration does not exist.", std::move(diagnostics));
+    }
     auto& node = document["nodes"].at(*index);
     if (request.label) node["label"] = *request.label;
     if (request.role) node["role"] = *request.role;
@@ -913,6 +1250,10 @@ ProjectUiEditReceipt ProjectUiAuthoringSession::update_node(
     if (request.state_json) { if (state.is_null()) node.erase("state"); else node["state"] = state; }
     if (request.presentation_json) { if (presentation.is_null()) node.erase("presentation"); else node["presentation"] = presentation; }
     if (request.value_json) { if (value.is_null()) node.erase("value"); else node["value"] = value; }
+    if (request.component_ref) {
+        if (*request.component_ref == "null") node.erase("componentRef");
+        else node["componentRef"] = *request.component_ref;
+    }
     return commit_candidate(canonical_dump(document), options, "update_node", HistoryDirection::edit);
 }
 
@@ -1025,6 +1366,139 @@ ProjectUiEditReceipt ProjectUiAuthoringSession::update_design_tokens(
     if (!diagnostics.empty()) return failure("update_design_tokens", "ui.invalid-source", "The current source is invalid.", std::move(diagnostics));
     document["designTokens"] = tokens;
     return commit_candidate(canonical_dump(document), options, "update_design_tokens", HistoryDirection::edit);
+}
+
+ProjectUiEditReceipt ProjectUiAuthoringSession::add_declaration(
+    ProjectUiAddDeclarationRequest request, const ProjectUiEditOptions options) {
+    std::vector<ProjectUiDiagnostic> diagnostics;
+    if (!safe_id(request.id)) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.unsafe-component-id", "/request/id",
+            "Component id must be a stable path-safe identifier.");
+    }
+    auto declaration = Json::parse(request.declaration_json, nullptr, false);
+    if (declaration.is_discarded() || !declaration.is_object()) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.invalid-component", "/request/declaration",
+            "A reusable declaration must be a JSON object.");
+    } else if (declaration.contains("id") &&
+               (!declaration.at("id").is_string() || declaration.at("id").get<std::string>() != request.id)) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.component-id-mismatch", "/request/declaration/id",
+            "The declaration id must be absent or equal to the request id.");
+    }
+    if (!diagnostics.empty()) return invalid_request("add_declaration", "ui.invalid-request",
+        "The reusable declaration request is invalid.", std::move(diagnostics));
+    declaration["id"] = request.id;
+    auto document = parse_document(source_json_, diagnostics);
+    if (!diagnostics.empty()) return failure("add_declaration", "ui.invalid-source",
+        "The current source is invalid.", std::move(diagnostics));
+    if (!document.contains("components")) document["components"] = Json::array();
+    if (!document.at("components").is_array()) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.invalid-components", "/components", "components must be an array when present.");
+        return invalid_request("add_declaration", "ui.invalid-components",
+            "The current components collection is invalid.", std::move(diagnostics));
+    }
+    if (find_component(document, request.id)) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.duplicate-component-id", "/request/id", "A declaration with this id already exists.");
+        return invalid_request("add_declaration", "ui.duplicate-component-id",
+            "A declaration with this id already exists.", std::move(diagnostics));
+    }
+    document["components"].push_back(std::move(declaration));
+    return commit_candidate(canonical_dump(document), options, "add_declaration", HistoryDirection::edit);
+}
+
+ProjectUiEditReceipt ProjectUiAuthoringSession::update_declaration(
+    const std::string_view declaration_id, std::string declaration_json,
+    const ProjectUiEditOptions options) {
+    std::vector<ProjectUiDiagnostic> diagnostics;
+    if (!safe_id(declaration_id)) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.unsafe-component-id", "/request/id",
+            "Component id must be a stable path-safe identifier.");
+        return invalid_request("update_declaration", "ui.unsafe-component-id",
+            "The declaration id is not safe.", std::move(diagnostics));
+    }
+    auto declaration = Json::parse(declaration_json, nullptr, false);
+    if (declaration.is_discarded() || !declaration.is_object()) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.invalid-component", "/request/declaration",
+            "A reusable declaration must be a JSON object.");
+        return invalid_request("update_declaration", "ui.invalid-component",
+            "The reusable declaration is invalid.", std::move(diagnostics));
+    }
+    if (declaration.contains("id") &&
+        (!declaration.at("id").is_string() || declaration.at("id").get<std::string>() != declaration_id)) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.component-id-mismatch", "/request/declaration/id",
+            "The declaration id must be absent or equal to the target id.");
+        return invalid_request("update_declaration", "ui.component-id-mismatch",
+            "The declaration id does not match the target.", std::move(diagnostics));
+    }
+    declaration["id"] = std::string(declaration_id);
+    auto document = parse_document(source_json_, diagnostics);
+    if (!diagnostics.empty()) return failure("update_declaration", "ui.invalid-source",
+        "The current source is invalid.", std::move(diagnostics));
+    if (!document.contains("components") || !document.at("components").is_array()) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.component-not-found", "/request/id", "The target declaration does not exist.");
+        return invalid_request("update_declaration", "ui.component-not-found",
+            "The target declaration does not exist.", std::move(diagnostics));
+    }
+    const auto found = std::ranges::find_if(document["components"], [&](const auto& item) {
+        return item.is_object() && item.value("id", "") == declaration_id;
+    });
+    if (found == document["components"].end()) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.component-not-found", "/request/id", "The target declaration does not exist.");
+        return invalid_request("update_declaration", "ui.component-not-found",
+            "The target declaration does not exist.", std::move(diagnostics));
+    }
+    *found = std::move(declaration);
+    return commit_candidate(canonical_dump(document), options, "update_declaration", HistoryDirection::edit);
+}
+
+ProjectUiEditReceipt ProjectUiAuthoringSession::remove_declaration(
+    const std::string_view declaration_id, const ProjectUiEditOptions options) {
+    std::vector<ProjectUiDiagnostic> diagnostics;
+    auto document = parse_document(source_json_, diagnostics);
+    if (!diagnostics.empty()) return failure("remove_declaration", "ui.invalid-source",
+        "The current source is invalid.", std::move(diagnostics));
+    if (!find_component(document, declaration_id)) {
+        add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+            "ui.component-not-found", "/request/id", "The target declaration does not exist.");
+        return invalid_request("remove_declaration", "ui.component-not-found",
+            "The target declaration does not exist.", std::move(diagnostics));
+    }
+    if (document.contains("nodes") && document.at("nodes").is_array()) {
+        for (std::size_t index = 0U; index < document.at("nodes").size(); ++index) {
+            const auto& node = document.at("nodes").at(index);
+            if (node.is_object() && node.value("componentRef", "") == declaration_id) {
+                add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                    "ui.component-in-use", "/nodes/" + std::to_string(index) + "/componentRef",
+                    "A declaration cannot be removed while a node references it.");
+                return invalid_request("remove_declaration", "ui.component-in-use",
+                    "The declaration is still referenced by a node.", std::move(diagnostics));
+            }
+        }
+    }
+    for (std::size_t index = 0U; index < document.at("components").size(); ++index) {
+        const auto& component = document.at("components").at(index);
+        if (component.is_object() && component.value("extends", "") == declaration_id) {
+            add_diagnostic(diagnostics, ProjectUiDiagnosticSeverity::error,
+                "ui.component-in-use", "/components/" + std::to_string(index) + "/extends",
+                "A declaration cannot be removed while another declaration extends it.");
+            return invalid_request("remove_declaration", "ui.component-in-use",
+                "The declaration is still extended by another declaration.", std::move(diagnostics));
+        }
+    }
+    auto& components = document["components"];
+    components.erase(std::ranges::find_if(components, [&](const auto& item) {
+        return item.is_object() && item.value("id", "") == declaration_id;
+    }));
+    return commit_candidate(canonical_dump(document), options, "remove_declaration", HistoryDirection::edit);
 }
 
 ProjectUiEditReceipt ProjectUiAuthoringSession::undo(const ProjectUiEditOptions options) {

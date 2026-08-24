@@ -114,13 +114,19 @@ int main() {
         return 7;
     }
     const auto project_hud=noemancer::semantic_ui_project_runtime_document(
-        R"({"schemaVersion":"noemancer.ui-document/0.1","documentId":"project.hud","nodes":[{"id":"project.hud","parentId":null,"role":"hud","label":"Project"},{"id":"project.hud.score","parentId":"project.hud","role":"property","label":"Score","value":0,"binding":{"kind":"script-state","instanceId":"script.player","member":"Score","fallback":0},"state":{"visible":true,"enabled":true,"editable":false}}],"designTokens":{"accentColor":"#abcdef"}})",
+        R"({"schemaVersion":"noemancer.ui-document/0.1","documentId":"project.hud","revision":7,"components":[{"id":"control.readout","role":"property","presentation":{"control":"label","constraints":{"compact":true}},"state":{"visible":true,"enabled":true,"editable":false}}],"nodes":[{"id":"project.hud","parentId":null,"role":"hud","label":"Project"},{"id":"project.hud.score","parentId":"project.hud","componentRef":"control.readout","label":"Score","value":0,"binding":{"kind":"script-state","instanceId":"script.player","member":"Score","fallback":0}}],"designTokens":{"accentColor":"#abcdef"}})",
         R"({"revision":4,"instances":[{"id":"script.player","publicState":{"Score":12}}]})",
         R"({"revision":5,"actions":[]})",R"({"revision":3,"actors":[]})","en-US");
     const auto projected=nlohmann::json::parse(project_hud);
     if(!projected.at("valid")||projected.at("revision")!=5U||projected.at("nodes").at(1).at("value")!=12||
         !projected.at("nodes").at(1).at("bindingState").at("resolved")||
-        projected.at("designTokens").at("accentColor")!="#abcdef")return 17;
+        projected.at("designTokens").at("accentColor")!="#abcdef"||
+        projected.at("sourceDocumentRevision")!=7U||projected.at("nodes").at(1).at("role")!="property"||
+        projected.at("nodes").at(1).at("presentation").at("control")!="label"||
+        projected.at("nodes").at(1).at("componentChain").at(0)!="control.readout") {
+        std::cerr << "Resolved project UI projection mismatch: " << projected.dump(2) << '\n';
+        return 17;
+    }
 
     return 0;
 }

@@ -13,6 +13,11 @@ namespace noemancer {
 inline constexpr std::string_view project_ui_authoring_schema =
     "noemancer.project-ui-authoring/0.1";
 
+// Pure source-to-projection helper.  It preserves the UI document schema and
+// declarations while returning a separate resolved projection; no filesystem,
+// revision or session state is touched.
+[[nodiscard]] std::string project_ui_resolved_document_json(std::string_view source_json);
+
 enum class ProjectUiDiagnosticSeverity : std::uint8_t {
     error,
     warning
@@ -45,6 +50,10 @@ struct ProjectUiAddNodeRequest final {
     std::optional<std::string> state_json;
     std::optional<std::string> presentation_json;
     std::optional<std::string> value_json;
+    // Optional reusable control/layout declaration.  The node keeps its own
+    // stable id; componentRef is a source reference, not an expanded runtime
+    // tree and therefore does not duplicate declaration data.
+    std::optional<std::string> component_ref;
 };
 
 struct ProjectUiUpdateNodeRequest final {
@@ -58,6 +67,18 @@ struct ProjectUiUpdateNodeRequest final {
     std::optional<std::string> state_json;
     std::optional<std::string> presentation_json;
     std::optional<std::string> value_json;
+    // A JSON value of "null" removes componentRef.
+    std::optional<std::string> component_ref;
+};
+
+struct ProjectUiAddDeclarationRequest final {
+    std::string id;
+    // Object JSON with optional role, label, presentation, binding, state,
+    // actions, value and extends fields.  presentation is the same node
+    // field consumed by Retained UI (including control/constraints/layout
+    // hints); the declaration id is supplied separately so the authority
+    // owns identity and can validate it.
+    std::string declaration_json;
 };
 
 struct ProjectUiEditReceipt final {
@@ -124,6 +145,10 @@ public:
     [[nodiscard]] bool can_redo() const noexcept { return !redo_.empty(); }
     [[nodiscard]] std::vector<ProjectUiDiagnostic> validate() const;
     [[nodiscard]] std::string observation_json() const;
+    // Resolves one source node's optional componentRef for Runtime/GUI
+    // consumption without writing the expansion back to source.  The result
+    // is a deterministic plain-data projection with a base-to-derived chain.
+    [[nodiscard]] std::string resolved_node_json(std::string_view node_id) const;
 
     [[nodiscard]] ProjectUiEditReceipt add_node(
         ProjectUiAddNodeRequest request, ProjectUiEditOptions options = {});
@@ -142,6 +167,13 @@ public:
         ProjectUiEditOptions options = {});
     [[nodiscard]] ProjectUiEditReceipt update_design_tokens(
         std::string design_tokens_json, ProjectUiEditOptions options = {});
+    [[nodiscard]] ProjectUiEditReceipt add_declaration(
+        ProjectUiAddDeclarationRequest request, ProjectUiEditOptions options = {});
+    [[nodiscard]] ProjectUiEditReceipt update_declaration(
+        std::string_view declaration_id, std::string declaration_json,
+        ProjectUiEditOptions options = {});
+    [[nodiscard]] ProjectUiEditReceipt remove_declaration(
+        std::string_view declaration_id, ProjectUiEditOptions options = {});
     [[nodiscard]] ProjectUiEditReceipt undo(ProjectUiEditOptions options = {});
     [[nodiscard]] ProjectUiEditReceipt redo(ProjectUiEditOptions options = {});
 
