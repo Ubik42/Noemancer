@@ -5,11 +5,13 @@
 #include "runtime/asset_thumbnail_gpu_cache.hpp"
 #include "runtime/game_persistence_store.hpp"
 #include "runtime/input_source_adapter.hpp"
+#include "runtime/live_editor_transport.hpp"
 #include "runtime/performance_evidence.hpp"
 
 #include "engine/fbx_asset.hpp"
 #include "engine/gltf_mesh.hpp"
 #include "engine/animation_clip_asset.hpp"
+#include "engine/live_editor_session.hpp"
 #include "engine/mesh_runtime_artifact.hpp"
 #include "engine/render_world.hpp"
 #include "engine/render_reference_scene.hpp"
@@ -426,6 +428,8 @@ Application::Application(RunOptions options)
         const auto receipt=nlohmann::json::parse(loaded,nullptr,false);
         if(!receipt.is_object()||!receipt.value("success",false))startup_error_json_=loaded;
     } else {
+        project_id_ = "editor.bootstrap";
+        project_name_ = "Noemancer Editor";
         project_input_actions_=default_input_action_definitions();
         const auto scene = !options_.reference_scene_id.empty()
             ? make_commercial_raster_reference_scene_document()
@@ -483,7 +487,9 @@ Application::Application(RunOptions options)
     startup_telemetry_->finish_phase();
 }
 
-Application::~Application() = default;
+Application::~Application() {
+    stop_live_editor_session();
+}
 
 void Application::log_startup_telemetry(
     const std::string_view mode,
@@ -518,6 +524,7 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
     if(!world_.configure_project_hud(loaded.project->hud_document_json))return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",false},
         {"code","project.hud-document-invalid"},{"detail","Project HUD could not configure the Edit World."}}.dump();
     asset_registry_=std::move(next_registry);project_root_=loaded.project->root;
+    project_id_=loaded.project->project_id;project_name_=loaded.project->name;
     configure_persistence_store(loaded.project->project_id);
     project_input_actions_=loaded.project->input_actions;
     project_input_session_=std::make_unique<ProjectInputEditSession>(project_input_actions_,
@@ -589,8 +596,18 @@ void Application::apply_project_request(const EditorProjectRequest& request) {
     } else result=load_editor_project_json(request.path);
     editor_ui_.set_project_status(result);
     const auto receipt=Json::parse(result,nullptr,false);
-    if(receipt.is_object()&&receipt.value("success",false))logger_.info("project.editor",result);
-    else logger_.error("project.editor",result);
+    if(receipt.is_object()&&receipt.value("success",false)) {
+        logger_.info("project.editor",result);
+        if(!options_.headless&&!options_.player_mode) {
+            // ProjectUiAuthoringSession and AssetRegistry may have changed;
+            // rotate the published identity so discovery never observes the
+            // previous project's command authority.
+            const auto had_live_session=live_editor_session_active_;
+            if(had_live_session) stop_live_editor_session();
+            rebuild_live_editor_command_registry();
+            if(had_live_session) static_cast<void>(start_live_editor_session());
+        }
+    } else logger_.error("project.editor",result);
 }
 
 void Application::apply_project_input_map_request(
@@ -818,6 +835,174 @@ void Application::apply_script_build_completion(const EditorScriptBuildCompletio
     const auto encoded=status.dump();editor_ui_.set_play_script_reload_status(encoded);
     editor_ui_.set_last_action_status(status.value("detail",std::string{}));
     if(status.value("success",false))logger_.info("play.script_reload",encoded);else logger_.error("play.script_reload",encoded);
+}
+
+void Application::rebuild_live_editor_command_registry() {
+    if (options_.headless || options_.player_mode) {
+        live_editor_command_registry_.reset();
+        return;
+    }
+    // The interactive Editor owns exactly one Edit World and one Asset
+    // Registry.  CommandRegistry is rebuilt against those same objects after
+    // a project switch; it never creates a second World for the live bridge.
+    auto next = std::make_unique<CommandRegistry>(world_, asset_registry_);
+    if (project_ui_session_ && project_ui_session_->valid())
+        next->attach_project_ui_authoring(*project_ui_session_);
+    live_editor_command_registry_ = std::move(next);
+}
+
+bool Application::start_live_editor_session() {
+    if (options_.headless || options_.player_mode) return false;
+    if (live_editor_session_active_) return true;
+    rebuild_live_editor_command_registry();
+
+    const auto endpoint_name = std::string("editor-") +
+        std::to_string(LiveEditorSessionStore::current_process_id()) + "-" +
+        std::to_string(++live_editor_generation_);
+    const auto endpoint = default_live_editor_endpoint(endpoint_name);
+    // The named-pipe transport fails closed on platforms without its native
+    // implementation.  The Editor remains usable there without advertising
+    // a descriptor that cannot be served.
+    if (endpoint.empty()) {
+        logger_.info("live-editor.session", "Named-pipe Editor session is unavailable on this platform.");
+        return false;
+    }
+
+    LiveEditorSessionDescriptor descriptor;
+    descriptor.session_id = endpoint_name;
+    descriptor.process_id = LiveEditorSessionStore::current_process_id();
+    descriptor.process_identity = LiveEditorSessionStore::current_process_identity();
+    descriptor.project_id = project_id_.empty() ? "editor.bootstrap" : project_id_;
+    descriptor.project_name = project_name_;
+    descriptor.project_root = project_root_.generic_string();
+    descriptor.endpoint = endpoint;
+    descriptor.credential_file = endpoint_name + ".credential";
+    descriptor.capabilities = {"observe", "command.invoke", "world.edit", "asset.inspect", "project-ui"};
+    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    descriptor.created_unix_milliseconds = now;
+    descriptor.heartbeat_unix_milliseconds = now;
+    descriptor.revision = 1U;
+
+    const auto discovered = live_editor_session_store_.discover();
+    if (!discovered.success) {
+        logger_.error("live-editor.session-discovery", nlohmann::json{
+            {"success", false}, {"code", discovered.code}, {"detail", discovered.detail}}.dump());
+    } else if (discovered.stale_removed != 0U || !discovered.diagnostics.empty()) {
+        // Discovery diagnostics contain only bounded codes/paths; never emit
+        // sidecar contents or any credential value.
+        logger_.info("live-editor.session-discovery", nlohmann::json{
+            {"success", true}, {"staleRemoved", discovered.stale_removed},
+            {"activeCount", discovered.sessions.size()},
+            {"diagnosticCount", discovered.diagnostics.size()}}.dump());
+    }
+
+    const auto credential_path = (live_editor_session_store_.root() /
+        std::filesystem::path(descriptor.credential_file)).lexically_normal();
+    const auto credential = create_live_editor_credential(credential_path);
+    if (!credential.success) {
+        logger_.info("live-editor.session", nlohmann::json{
+            {"success", false}, {"code", credential.code}, {"detail", credential.detail}}.dump());
+        return false;
+    }
+
+    LiveEditorTransportDescriptor transport_descriptor;
+    transport_descriptor.endpoint = descriptor.endpoint;
+    transport_descriptor.credential_file = credential_path;
+    LiveEditorTransportLimits transport_limits;
+    transport_limits.max_connections = 4U;
+    transport_limits.max_request_bytes = 64U * 1024U;
+    transport_limits.max_response_bytes = 256U * 1024U;
+    transport_limits.max_queued_requests = 64U;
+    transport_limits.max_pending_requests = 32U;
+    transport_limits.handshake_timeout_milliseconds = 1000U;
+    transport_limits.request_timeout_milliseconds = 5000U;
+    const auto started = live_editor_transport_server_.start(transport_descriptor, transport_limits);
+    if (!started.success) {
+        std::error_code ignored;
+        std::filesystem::remove(credential_path, ignored);
+        logger_.info("live-editor.session", nlohmann::json{
+            {"success", false}, {"code", started.code}, {"detail", started.detail}}.dump());
+        return false;
+    }
+
+    const auto published = live_editor_session_store_.publish(descriptor);
+    if (!published.success) {
+        static_cast<void>(live_editor_transport_server_.stop());
+        std::error_code ignored;
+        std::filesystem::remove(credential_path, ignored);
+        logger_.error("live-editor.session", nlohmann::json{
+            {"success", false}, {"code", published.code}, {"detail", published.detail}}.dump());
+        return false;
+    }
+    live_editor_session_descriptor_ = std::move(descriptor);
+    live_editor_session_id_ = live_editor_session_descriptor_.session_id;
+    live_editor_process_identity_ = live_editor_session_descriptor_.process_identity;
+    live_editor_credential_path_ = credential_path;
+    live_editor_session_revision_ = published.revision;
+    live_editor_next_heartbeat_ = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    live_editor_session_active_ = true;
+    // descriptor_json and transport observation intentionally omit the token.
+    logger_.info("live-editor.session", LiveEditorSessionStore::descriptor_json(live_editor_session_descriptor_));
+    logger_.info("live-editor.transport", live_editor_transport_server_.observe_json());
+    return true;
+}
+
+void Application::stop_live_editor_session() noexcept {
+    const auto had_live_transport = live_editor_session_active_ || live_editor_transport_server_.running();
+    const auto stopped = live_editor_transport_server_.stop();
+    if (had_live_transport && !stopped.success) logger_.error("live-editor.transport", stopped.detail);
+    if (live_editor_session_active_) {
+        const auto revoked = live_editor_session_store_.revoke(
+            live_editor_session_id_, live_editor_process_identity_, live_editor_session_revision_);
+        if (!revoked.success) logger_.error("live-editor.session", nlohmann::json{
+            {"success", false}, {"code", revoked.code}, {"detail", revoked.detail}}.dump());
+    }
+    if (!live_editor_credential_path_.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(live_editor_credential_path_, ignored);
+    }
+    live_editor_session_active_ = false;
+    live_editor_session_descriptor_ = {};
+    live_editor_session_id_.clear();
+    live_editor_process_identity_.clear();
+    live_editor_credential_path_.clear();
+    live_editor_session_revision_ = 0U;
+    live_editor_next_heartbeat_ = {};
+    live_editor_command_registry_.reset();
+}
+
+void Application::refresh_live_editor_session() {
+    if (!live_editor_session_active_ || !live_editor_transport_server_.running()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < live_editor_next_heartbeat_) return;
+    const auto refreshed = live_editor_session_store_.refresh(
+        live_editor_session_id_, live_editor_process_identity_, live_editor_session_revision_);
+    if (refreshed.success) {
+        live_editor_session_revision_ = refreshed.revision;
+        live_editor_session_descriptor_.revision = refreshed.revision;
+        live_editor_next_heartbeat_ = now + std::chrono::seconds(10);
+    } else {
+        logger_.error("live-editor.session-heartbeat", nlohmann::json{
+            {"success", false}, {"code", refreshed.code}, {"detail", refreshed.detail}}.dump());
+        live_editor_next_heartbeat_ = now + std::chrono::seconds(5);
+    }
+}
+
+LiveEditorTransportDispatchResult Application::dispatch_live_editor_request(
+    const LiveEditorTransportRequest& request) {
+    if (options_.headless || options_.player_mode || !live_editor_command_registry_) {
+        return {false, "null", "live-editor.editor-unavailable",
+            "The live Editor command authority is not available in Player or headless mode."};
+    }
+    const auto invocation = live_editor_command_registry_->invoke(request.method, request.arguments_json);
+    if (invocation.exit_code == 0) editor_ui_.refresh_world_model();
+    // CommandRegistry already owns the stable protocol envelope (including
+    // the command result and failure code). Preserve it byte-for-byte for the
+    // live transport rather than introducing a second ABI. A valid dispatch
+    // remains transport-successful even when the command envelope is a
+    // structured non-zero exit response.
+    return {true, invocation.output_json, {}, {}};
 }
 
 void Application::apply_package_request(const EditorPackageRequest& request) {
@@ -1703,6 +1888,7 @@ int Application::run_interactive() {
         if(!performance_run||!options_.performance_hidden)SDL_ShowWindow(window);
     }
     startup_telemetry_->begin_phase("runtime.interactive-loop");
+    if (!options_.player_mode) static_cast<void>(start_live_editor_session());
     logger_.info("runtime.start", SDL_GetGPUDeviceDriver(device));
     logger_.info("runtime.native_dependencies",native_runtime_dependencies_json());
     if(!options_.player_mode)logger_.info("editor.semantic_snapshot", editor_ui_.semantic_snapshot_json());
@@ -1767,6 +1953,13 @@ int Application::run_interactive() {
     std::ranges::stable_sort(options_.input_events, {}, &RuntimeInputEvent::frame);
     std::size_t input_event_index{};
     while (running && (requested_frames == 0 || frame < requested_frames)) {
+        if (!options_.player_mode && live_editor_transport_server_.running()) {
+            static_cast<void>(live_editor_transport_server_.pump(
+                [this](const LiveEditorTransportRequest& request) {
+                    return dispatch_live_editor_request(request);
+                }, 16U));
+            refresh_live_editor_session();
+        }
         const auto performance_frame_start=std::chrono::steady_clock::now();
         double performance_swapchain_wait{};
         double performance_submit_wait{};

@@ -4,6 +4,7 @@ add_executable(noemancer
     game_persistence_store.cpp
     gpu_batch_resource_identity.cpp
     input_source_adapter.cpp
+    live_editor_transport.cpp
     audio_output_backend.cpp
     miniaudio_render_graph.cpp
     main.cpp
@@ -23,7 +24,7 @@ if(TARGET noemancer_managed_host)
 endif()
 
 if(WIN32)
-    target_link_libraries(noemancer PRIVATE shell32 psapi)
+    target_link_libraries(noemancer PRIVATE shell32 psapi bcrypt advapi32)
     set(NOEMANCER_DXC_VERSION "1.9.2607")
     set(NOEMANCER_DXC_ARCHIVE "${PROJECT_SOURCE_DIR}/_tools/dxc_2026_07_29.zip")
     set(NOEMANCER_DXC_ROOT "${PROJECT_SOURCE_DIR}/_tools/dxc-${NOEMANCER_DXC_VERSION}")

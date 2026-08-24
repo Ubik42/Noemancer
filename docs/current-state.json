@@ -3,7 +3,7 @@
   "updated": "2026-08-24",
   "status": "active-development",
   "currentSlice": "agent.open-editor-live-session-transport",
-  "currentStep": "define-session-discovery-authentication-and-shared-authority-contract",
+  "currentStep": "bind-editor-chrome-selection-and-semantic-context",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",

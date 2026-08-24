@@ -2,12 +2,16 @@
 
 #include "editor/editor_ui.hpp"
 #include "engine/asset_registry.hpp"
+#include "engine/command_registry.hpp"
 #include "engine/engine_host.hpp"
 #include "engine/hybrid_pixel_profile.hpp"
+#include "engine/live_editor_session.hpp"
 #include "engine/log.hpp"
 #include "engine/world.hpp"
 #include "runtime/performance_evidence.hpp"
+#include "runtime/live_editor_transport.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <future>
@@ -103,6 +107,12 @@ private:
     void apply_project_ui_request(const ProjectUiAuthoringPanelRequest& request);
     void apply_source_open_request(const EditorSourceOpenRequest& request);
     void apply_script_build_completion(const EditorScriptBuildCompletion& completion);
+    [[nodiscard]] bool start_live_editor_session();
+    void stop_live_editor_session() noexcept;
+    void refresh_live_editor_session();
+    void rebuild_live_editor_command_registry();
+    [[nodiscard]] LiveEditorTransportDispatchResult dispatch_live_editor_request(
+        const LiveEditorTransportRequest& request);
     [[nodiscard]] std::string load_editor_project_json(const std::filesystem::path& project_path);
     void poll_package_job();
     void register_sprite_assets(World& world);
@@ -135,10 +145,23 @@ private:
     std::filesystem::path script_project_root_;
     std::filesystem::path script_project_path_;
     std::filesystem::path project_root_;
+    std::string project_id_;
+    std::string project_name_;
     std::vector<InputActionDefinition> project_input_actions_;
     std::unique_ptr<ProjectInputEditSession> project_input_session_;
     std::unique_ptr<ProjectHybridPixelAuthoring> project_hybrid_pixel_session_;
     std::unique_ptr<ProjectUiAuthoringSession> project_ui_session_;
+    std::unique_ptr<CommandRegistry> live_editor_command_registry_;
+    LiveEditorSessionStore live_editor_session_store_;
+    LiveEditorTransportServer live_editor_transport_server_;
+    LiveEditorSessionDescriptor live_editor_session_descriptor_;
+    std::string live_editor_session_id_;
+    std::string live_editor_process_identity_;
+    std::filesystem::path live_editor_credential_path_;
+    std::uint64_t live_editor_session_revision_{};
+    std::uint64_t live_editor_generation_{};
+    std::chrono::steady_clock::time_point live_editor_next_heartbeat_{};
+    bool live_editor_session_active_{};
     std::string project_hud_document_json_;
     std::optional<HybridPixelProfile> hybrid_pixel_profile_;
     std::uint64_t hybrid_pixel_profile_revision_{1U};

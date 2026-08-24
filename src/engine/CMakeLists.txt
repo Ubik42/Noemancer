@@ -27,6 +27,7 @@ add_library(noemancer_engine STATIC
     image_decoder.cpp
     ktx2_cook_adapter.cpp
     linear_dirty_ranges.cpp
+    live_editor_session.cpp
     ${lodepng_SOURCE_DIR}/lodepng.cpp
     log.cpp
     managed_debug_protocol.cpp

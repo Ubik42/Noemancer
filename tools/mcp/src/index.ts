@@ -8,6 +8,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { fromJSONSchema } from "zod";
 
+import {
+  openPreferredLiveEditorSession,
+  type LiveEditorSession,
+} from "./live-session.js";
+
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(currentDirectory, "../../..");
 const engineExecutable = resolve(
@@ -126,6 +131,24 @@ class EngineSession {
   }
 }
 
+class LiveEditorEngineSession {
+  readonly #session: LiveEditorSession;
+
+  constructor(session: LiveEditorSession) {
+    this.#session = session;
+  }
+
+  async invoke(name: string, arguments_: unknown): Promise<string> {
+    const result = await this.#session.invoke(name, arguments_);
+    if (typeof result === "string") return result;
+    return JSON.stringify(result) ?? "null";
+  }
+
+  async close(): Promise<void> {
+    await this.#session.close();
+  }
+}
+
 const server = new McpServer({
   name: "noemancer",
   version: "0.2.0",
@@ -151,7 +174,10 @@ server.registerResource(
 const manifest = JSON.parse(
   await runEngine(["tools", "list", "--format", "json"]),
 ) as ToolManifest;
-const engineSession = new EngineSession();
+const selectedEditorSession = await openPreferredLiveEditorSession();
+const engineSession = selectedEditorSession === undefined
+  ? new EngineSession()
+  : new LiveEditorEngineSession(selectedEditorSession);
 
 if (!Array.isArray(manifest.tools)) {
   throw new Error("Engine tool manifest is missing the tools array");

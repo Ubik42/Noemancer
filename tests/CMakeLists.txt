@@ -27,6 +27,20 @@ add_executable(noemancer_startup_hub_tests startup_hub_tests.cpp)
 target_link_libraries(noemancer_startup_hub_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.startup_hub COMMAND noemancer_startup_hub_tests)
 
+add_executable(noemancer_live_editor_session_tests live_editor_session_tests.cpp)
+target_link_libraries(noemancer_live_editor_session_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.live_editor_session COMMAND noemancer_live_editor_session_tests)
+
+add_executable(noemancer_live_editor_transport_tests
+    live_editor_transport_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/live_editor_transport.cpp)
+target_include_directories(noemancer_live_editor_transport_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_live_editor_transport_tests PRIVATE nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(noemancer_live_editor_transport_tests PRIVATE bcrypt advapi32)
+endif()
+add_test(NAME noemancer.live_editor_transport COMMAND noemancer_live_editor_transport_tests)
+
 add_executable(noemancer_project_ui_action_tests project_ui_action_tests.cpp)
 target_link_libraries(noemancer_project_ui_action_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 target_compile_definitions(noemancer_project_ui_action_tests PRIVATE NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
