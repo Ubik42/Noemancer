@@ -4,6 +4,7 @@
 #include "editor/editor_model.hpp"
 #include "editor/hybrid_pixel_profile_panel.hpp"
 #include "editor/project_settings_input_map_panel.hpp"
+#include "editor/project_ui_authoring_panel.hpp"
 #include "engine/render_world.hpp"
 #include "engine/hybrid_pixel_profile.hpp"
 
@@ -49,6 +50,11 @@ struct EditorProjectContext final {
     std::uint64_t hybrid_pixel_profile_revision{1};
     bool hybrid_pixel_profile_can_undo{};
     bool hybrid_pixel_profile_can_redo{};
+    std::string project_ui_document_json;
+    std::uint64_t project_ui_revision{1};
+    std::string project_ui_fingerprint;
+    bool project_ui_can_undo{};
+    bool project_ui_can_redo{};
 };
 
 struct EditorAssetThumbnailArtifact final {
@@ -108,9 +114,12 @@ public:
     void set_project_input_actions(std::vector<InputActionDefinition> actions,std::uint64_t revision);
     void set_project_hybrid_pixel_profile(std::optional<HybridPixelProfile> profile,
                                           std::uint64_t revision,bool can_undo,bool can_redo);
+    void set_project_ui_document(std::string document_json,std::uint64_t revision,
+                                 std::string fingerprint,bool can_undo,bool can_redo);
     void set_project_settings_open(bool open) noexcept { project_settings_open_ = open; }
     [[nodiscard]] std::optional<ProjectSettingsInputMapPanelRequest> consume_project_input_request();
     [[nodiscard]] std::optional<HybridPixelProfilePanelRequest> consume_hybrid_pixel_profile_request();
+    [[nodiscard]] std::optional<ProjectUiAuthoringPanelRequest> consume_project_ui_request();
     void set_asset_thumbnail_texture(std::string asset_id,std::uintptr_t texture_id);
     [[nodiscard]] std::vector<EditorAssetThumbnailArtifact> asset_thumbnail_artifacts() const;
     void set_project_context(EditorProjectContext context);
@@ -179,6 +188,7 @@ private:
     std::string input_status_json_{R"({"schemaVersion":"noemancer.input-sources/0.1","devices":[],"sources":[]})"};
     std::optional<ProjectSettingsInputMapPanel> project_input_panel_;
     std::optional<HybridPixelProfilePanel> hybrid_pixel_profile_panel_;
+    std::optional<ProjectUiAuthoringPanel> project_ui_panel_;
     bool project_settings_open_{};
     std::string last_script_compile_json_;
     std::string script_source_location_json_;

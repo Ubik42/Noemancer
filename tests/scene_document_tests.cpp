@@ -33,7 +33,14 @@ int main() {
         std::cerr << "Canonical bootstrap scene did not parse\n";
         return 2;
     }
-    if (noemancer::SceneDocumentCodec::write_canonical_json(*parsed.document) != source) {
+    // Git may materialize this fixture with CRLF on Windows while the codec
+    // deliberately emits platform-neutral LF.  Line endings are transport
+    // details, not part of the canonical scene contract.
+    auto normalized_source = source;
+    normalized_source.erase(
+        std::remove(normalized_source.begin(), normalized_source.end(), '\r'),
+        normalized_source.end());
+    if (noemancer::SceneDocumentCodec::write_canonical_json(*parsed.document) != normalized_source) {
         std::cerr << "Bootstrap scene is not in canonical form\n";
         return 3;
     }

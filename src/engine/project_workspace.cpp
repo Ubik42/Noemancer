@@ -66,7 +66,7 @@ Json starter_input_actions() {
 
 Json starter_hud_document(const std::string_view name) {
     const std::string root_id="game.hud.main";
-    return {{"schemaVersion","noemancer.ui-document/0.1"},{"valid",true},{"code","ok"},
+    return {{"schemaVersion","noemancer.ui-document/0.1"},
         {"documentId",root_id},{"surface","game"},{"kind","hud"},{"revision",1},
         {"locale","en-US"},{"roots",Json::array({root_id})},
         {"designTokens",{{"surfaceColor","#0b1018dc"},{"groupColor","#182334e8"},{"textColor","#e8edf5"},

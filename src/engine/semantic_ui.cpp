@@ -295,7 +295,9 @@ std::string semantic_ui_project_runtime_document(const std::string_view project_
     const auto input_actions=input.is_object()?input.value("actions",Json::array()):Json::array();
     const auto gameplay_actors=gameplay.is_object()?gameplay.value("actors",Json::array()):Json::array();
     const auto revision=[](const Json& source){return source.is_object()?source.value("revision",0ULL):0ULL;};
+    const auto source_document_revision=document.value("revision",0ULL);
     const auto source_revision=std::max({revision(scripting),revision(input),revision(gameplay)});
+    document["sourceDocumentRevision"]=source_document_revision;
     document["revision"]=source_revision;
     if(!document.contains("nodes")||!document["nodes"].is_array())document["nodes"]=Json::array();
     for(auto& node:document["nodes"]) {
@@ -404,6 +406,7 @@ std::string semantic_ui_query_json(const std::string_view document_json, const S
     return Json{{"schemaVersion", "noemancer.ui-observation/0.1"}, {"valid", true},
                 {"code", minimum_required > 0 ? "ui.byte-budget-too-small" : "ok"},
                 {"document", {{"id", document.at("documentId")}, {"revision", document.value("revision", 0ULL)},
+                               {"sourceDocumentRevision",document.value("sourceDocumentRevision",document.value("revision",0ULL))},
                                {"surface", document.value("surface", "unknown")}, {"kind", document.value("kind", "unknown")},
                                {"locale", document.value("locale", "und")},{"themeId",document.value("themeId","unknown")},
                                {"contentFingerprint", content_fingerprint},

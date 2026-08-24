@@ -430,11 +430,11 @@ void ManagedScriptRuntime::ensure_host() const {
 std::string ManagedScriptRuntime::abi_json() const {
     ensure_host();
     const auto probe = hostfxr_probe();
-    return Json{{"schemaVersion", "noemancer.managed-script-abi/0.4"}, {"backend", "coreclr-hostfxr/1.0"},
+    return Json{{"schemaVersion", "noemancer.managed-script-abi/0.5"}, {"backend", "coreclr-hostfxr/1.0"},
         {"language", "C#"}, {"targetFramework", "net10.0"}, {"isolation", "default-bootstrap+collectible-project-alc"},
         {"valueBoundary", Json::array({"bool", "i32", "i64", "f32", "f64", "utf8", "entity-id", "asset-id", "json-value"})},
         {"callbacks", Json::array({"OnCreate", "OnFixedUpdate", "OnUpdate", "OnContactEnter", "OnContactStay", "OnContactExit",
-            "OnTriggerEnter", "OnTriggerStay", "OnTriggerExit", "OnDestroy"})},
+            "OnTriggerEnter", "OnTriggerStay", "OnTriggerExit", "OnUiAction", "OnDestroy"})},
         {"commandBuffer", Json::array({"scene.transform.set-position","scene.property.set","sprite.playback.set","audio.voice.play","gameplay.persistence.request","gameplay.event.emit","gameplay.prefab.spawn","gameplay.entity.despawn","gameplay.tag.set"})},
         {"queryBoundary",{{"entityLimit",256},{"stableIds",true},{"nativeHandles",false},{"truncationReported",true}}},
         {"forbiddenAcrossAbi", Json::array({"Flecs entity handle", "SDL handle", "GPU handle", "Jolt BodyID", "native pointer"})},
@@ -473,8 +473,8 @@ std::string ManagedScriptRuntime::attach_json(const std::string_view instance_id
 
 std::string ManagedScriptRuntime::invoke_json(const std::string_view instance_id, const std::string_view callback,
                                                const std::string_view arguments_json,const std::string_view context_json) {
-    static constexpr std::array<std::string_view, 10> callbacks{"OnCreate", "OnFixedUpdate", "OnUpdate",
-        "OnContactEnter", "OnContactStay", "OnContactExit", "OnTriggerEnter", "OnTriggerStay", "OnTriggerExit", "OnDestroy"};
+    static constexpr std::array<std::string_view, 11> callbacks{"OnCreate", "OnFixedUpdate", "OnUpdate",
+        "OnContactEnter", "OnContactStay", "OnContactExit", "OnTriggerEnter", "OnTriggerStay", "OnTriggerExit", "OnUiAction", "OnDestroy"};
     auto instance = std::ranges::find(instances_, instance_id, &ManagedScriptInstance::id);
     const auto arguments = Json::parse(arguments_json, nullptr, false);
     const auto context = Json::parse(context_json, nullptr, false);

@@ -83,7 +83,7 @@ public static class EntryPoint
     private static readonly string[] LifecycleCallbacks =
     [
         "OnCreate", "OnFixedUpdate", "OnUpdate", "OnContactEnter", "OnContactStay", "OnContactExit",
-        "OnTriggerEnter", "OnTriggerStay", "OnTriggerExit", "OnDestroy"
+        "OnTriggerEnter", "OnTriggerStay", "OnTriggerExit", "OnUiAction", "OnDestroy"
     ];
 
     private static byte[] InvokeLifecycle(JsonElement root, string sessionId, SessionState session)
@@ -134,6 +134,7 @@ public static class EntryPoint
                 case "OnTriggerEnter": instance.OnTriggerEnter(in context); break;
                 case "OnTriggerStay": instance.OnTriggerStay(in context); break;
                 case "OnTriggerExit": instance.OnTriggerExit(in context); break;
+                case "OnUiAction": instance.OnUiAction(in context); break;
                 case "OnDestroy": instance.OnDestroy(in context); session.Instances.Remove(instanceId); break;
                 default: throw new InvalidOperationException($"Unsupported lifecycle callback '{callback}'.");
             }

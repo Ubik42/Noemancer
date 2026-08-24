@@ -41,6 +41,7 @@ add_library(noemancer_engine STATIC
     process_diagnostics.cpp
     project_document.cpp
     project_hybrid_pixel_authoring.cpp
+    project_ui_authoring.cpp
     project_workspace.cpp
     render_graph.cpp
     render_reference_scene.cpp

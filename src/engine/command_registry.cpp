@@ -1318,6 +1318,29 @@ void CommandRegistry::register_commands() {
     });
 
     commands_.push_back(CommandDefinition{
+        .name = "ui.project.action.invoke",
+        .description = "Validate or invoke one action declared by the canonical project UI document through the same script callback authority used by Retained UI.",
+        .access = "write", .idempotent = false, .supports_dry_run = true,
+        .runtime_state = "attached", .task_kind = "immediate",
+        .input_schema_json = R"({"type":"object","required":["nodeId","actionId","baseRevision"],"properties":{"nodeId":{"type":"string","minLength":1,"maxLength":128},"actionId":{"type":"string","minLength":1,"maxLength":128},"baseRevision":{"type":"integer","minimum":0},"eventKind":{"type":"string","enum":["invoke","value-changed"],"default":"invoke"},"value":{},"dryRun":{"type":"boolean","default":false},"source":{"type":"string","minLength":1,"maxLength":96,"default":"agent.ui.project.action"},"sequence":{"type":"integer","minimum":0,"default":0}},"additionalProperties":false})",
+        .output_schema_json = R"({"type":"object","required":["schemaVersion","success","code","documentRevision","nodeId","actionId","eventKind","dryRun"]})",
+        .handler = [this](const std::string_view arguments) {
+            const auto input=parse_object(arguments);
+            if(!input.contains("nodeId")||!input.at("nodeId").is_string()||
+               !input.contains("actionId")||!input.at("actionId").is_string()||
+               !input.contains("baseRevision")||!input.at("baseRevision").is_number_unsigned())
+                throw std::invalid_argument("nodeId, actionId and unsigned baseRevision are required");
+            return world_->project_ui_action_invoke_json(
+                input.at("nodeId").get<std::string>(),input.at("actionId").get<std::string>(),
+                input.value("eventKind",std::string("invoke")),
+                input.contains("value")?input.at("value").dump():std::string("null"),
+                input.at("baseRevision").get<std::uint64_t>(),input.value("dryRun",false),
+                input.value("source",std::string("agent.ui.project.action")),
+                input.value("sequence",0ULL));
+        }
+    });
+
+    commands_.push_back(CommandDefinition{
         .name = "ui.retained.preview",
         .description = "Project an entity Inspector through RmlUi 6.2 and return retained DOM layout plus renderer-neutral draw evidence.",
         .access = "read", .idempotent = true, .supports_dry_run = false, .runtime_state = "attached", .task_kind = "immediate",

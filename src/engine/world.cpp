@@ -3950,6 +3950,72 @@ std::string World::semantic_ui_project_document_json(const std::string_view loca
         input_runtime_.observe_json(),gameplay_runtime_.observe_json(),locale);
 }
 
+std::string World::project_ui_action_invoke_json(
+    const std::string_view node_id, const std::string_view action_id,
+    const std::string_view event_kind, const std::string_view value_json,
+    const std::optional<std::uint64_t> expected_document_revision,
+    const bool dry_run, const std::string_view source, const std::uint64_t sequence) {
+    const auto failure=[&](const std::string_view code,const std::string_view detail,
+                           const std::uint64_t document_revision=0ULL) {
+        return Json{{"schemaVersion","noemancer.project-ui-action-receipt/0.1"},{"success",false},
+            {"code",code},{"detail",detail},{"documentRevision",document_revision},
+            {"nodeId",node_id},{"actionId",action_id},{"eventKind",event_kind},{"dryRun",dry_run}}.dump();
+    };
+    if(project_hud_document_json_.empty())
+        return failure("ui.project-document-unavailable","The active project has no authored UI document.");
+    if(node_id.empty()||node_id.size()>128U||action_id.empty()||action_id.size()>128U||
+       source.empty()||source.size()>96U||(event_kind!="invoke"&&event_kind!="value-changed"))
+        return failure("ui.invalid-action-request","Node, action, source or event kind is invalid or exceeds its bound.");
+    if(value_json.size()>16U*1024U)
+        return failure("ui.action-value-too-large","Project UI action values are limited to 16 KiB.");
+    const auto value=Json::parse(value_json,nullptr,false);
+    if(value.is_discarded())return failure("ui.invalid-action-value","Project UI action value must be valid JSON.");
+    const auto document=Json::parse(project_hud_document_json_,nullptr,false);
+    if(document.is_discarded()||!document.is_object())
+        return failure("ui.invalid-project-document","The canonical project UI document is not valid JSON.");
+    const auto validation=Json::parse(semantic_ui_validation_json(project_hud_document_json_),nullptr,false);
+    const auto document_revision=document.value("revision",0ULL);
+    if(!validation.is_object()||!validation.value("valid",false))
+        return failure("ui.invalid-project-document","The canonical project UI document failed validation.",document_revision);
+    if(expected_document_revision&&*expected_document_revision!=document_revision)
+        return failure("ui.document-revision-conflict","Refresh the project UI document before invoking this action.",document_revision);
+    const auto& nodes=document.at("nodes");
+    const auto node=std::ranges::find_if(nodes,[&](const Json& candidate) {
+        return candidate.is_object()&&candidate.value("id",std::string{})==node_id;
+    });
+    if(node==nodes.end())return failure("ui.action-node-not-found","The authored UI node does not exist.",document_revision);
+    const auto actions=node->value("actions",Json::array());
+    const auto action=std::ranges::find_if(actions,[&](const Json& candidate) {
+        return candidate.is_object()&&candidate.value("id",std::string{})==action_id;
+    });
+    if(action==actions.end())
+        return failure("ui.action-not-declared","The action is not declared by the requested project UI node.",document_revision);
+    const auto binding=action->contains("binding")?action->at("binding"):node->value("binding",Json::object());
+    if(!binding.is_object()||binding.value("kind",std::string{})!="script-callback")
+        return failure("ui.action-binding-unsupported","Project UI invocation currently requires a script-callback binding.",document_revision);
+    const auto instance_id=binding.value("instanceId",std::string{});
+    if(instance_id.empty()||instance_id.size()>128U)
+        return failure("ui.action-binding-invalid","A script-callback binding requires a bounded stable instanceId.",document_revision);
+    const auto document_id=document.value("documentId",std::string{});
+    Json ui_action{{"documentId",document_id},{"nodeId",node_id},{"actionId",action_id},
+        {"kind",event_kind},{"value",value},{"source",source},{"sequence",sequence},
+        {"documentRevision",document_revision}};
+    if(dry_run)return Json{{"schemaVersion","noemancer.project-ui-action-receipt/0.1"},{"success",true},
+        {"code","ok"},{"detail","Project UI action validated; dry-run did not invoke project code."},
+        {"documentRevision",document_revision},{"documentId",document_id},{"nodeId",node_id},
+        {"actionId",action_id},{"eventKind",event_kind},{"instanceId",instance_id},{"dryRun",true},
+        {"uiAction",std::move(ui_action)}}.dump();
+    const auto script_receipt=Json::parse(scripting_invoke_json(instance_id,"OnUiAction",
+        Json{{"uiAction",ui_action}}.dump()),nullptr,false);
+    const auto success=script_receipt.is_object()&&script_receipt.value("success",false);
+    return Json{{"schemaVersion","noemancer.project-ui-action-receipt/0.1"},{"success",success},
+        {"code",success?"ok":"ui.script-callback-failed"},
+        {"detail",success?"Project UI action was handled by project code.":"The project script callback rejected or failed the UI action."},
+        {"documentRevision",document_revision},{"documentId",document_id},{"nodeId",node_id},
+        {"actionId",action_id},{"eventKind",event_kind},{"instanceId",instance_id},{"dryRun",false},
+        {"uiAction",std::move(ui_action)},{"scriptReceipt",script_receipt.is_discarded()?Json(nullptr):script_receipt}}.dump();
+}
+
 std::string World::semantic_ui_delta_json(const std::string_view entity_id, const std::uint64_t since_revision,
                                            const SemanticUiDeltaQuery& query, const std::string_view locale) const {
     return noemancer::semantic_ui_delta_json(

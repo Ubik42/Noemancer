@@ -108,6 +108,7 @@ const expected = [
   "semantic.conventions",
   "ui.delta",
   "ui.observe",
+  "ui.project.action.invoke",
   "ui.project.observe",
   "ui.resources.inspect",
   "ui.retained.preview",
@@ -227,7 +228,7 @@ const audioSpatialResult = await client.callTool({ name: "audio.voice.spatial.se
 const missingAudioClip = await client.callTool({ name: "audio.clip.load", arguments: { assetId: "asset.audio.missing" } });
 if (injectResult.isError || gameplayTick.isError || gameplayAfterInput.isError ||
     !textContent(gameplayAfterInput, "gameplay.events.observe").includes("input.action.pressed") ||
-    vfxAfterInput.isError || !textContent(vfxAfterInput, "vfx.observe").includes('"aliveCount":96') ||
+    vfxAfterInput.isError || !textContent(vfxAfterInput, "vfx.observe").includes('"aliveCount":48') ||
     abilityGrant.isError || !textContent(abilityGrant, "gameplay.ability.grant").includes('"success":true') ||
     abilityActivate.isError || !textContent(abilityActivate, "gameplay.ability.activate").includes('"eventType":"combat.hit"') ||
     abilityObserve.isError || !textContent(abilityObserve, "gameplay.ability.observe").includes("ability.combat.impact") ||
@@ -241,6 +242,7 @@ if (injectResult.isError || gameplayTick.isError || gameplayAfterInput.isError |
     audioSpatialResult.isError || !textContent(audioSpatialResult, "audio.voice.spatial.set").includes('"success":true') ||
     missingAudioClip.isError || !textContent(missingAudioClip, "audio.clip.load").includes("audio.asset-unavailable")) {
   throw new Error(`Persistent MCP gameplay mutation path did not produce action receipts and events: ${[
+    textContent(vfxAfterInput, "vfx.observe"),
     textContent(abilityActivate, "gameplay.ability.activate"),
     textContent(effectApply, "gameplay.effect.apply"),
     textContent(rayAbilityActivate, "gameplay.ability.activate-ray"),

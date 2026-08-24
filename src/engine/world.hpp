@@ -495,6 +495,16 @@ public:
     [[nodiscard]] std::string semantic_ui_observation_json(std::string_view entity_id, const SemanticUiQuery& query,
                                                             std::string_view locale = "en-US") const;
     [[nodiscard]] std::string semantic_ui_project_document_json(std::string_view locale = "en-US") const;
+    // Invoke one action declared by the canonical project UI document. Both
+    // Retained UI and Agent adapters enter through this boundary; callers do
+    // not supply a script callback or binding and therefore cannot bypass the
+    // authored node/action relationship.
+    [[nodiscard]] std::string project_ui_action_invoke_json(
+        std::string_view node_id, std::string_view action_id,
+        std::string_view event_kind = "invoke", std::string_view value_json = "null",
+        std::optional<std::uint64_t> expected_document_revision = std::nullopt,
+        bool dry_run = false, std::string_view source = "ui.retained",
+        std::uint64_t sequence = 0);
     [[nodiscard]] std::string semantic_ui_delta_json(std::string_view entity_id, std::uint64_t since_revision,
                                                      const SemanticUiDeltaQuery& query,
                                                      std::string_view locale = "en-US") const;

@@ -127,6 +127,8 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 - Semantic 2D Character Rig 可丢弃实验已按退出规则关闭，不提出生产 ADR。`generated/acceptance/semantic-2d-rig-prototype-current/` 使用版本控制友好的严格 JSON 定义两个角色、idle/run 与 north/east/south/west，确定性生成 24 个帧计划和 16 个既有 Sprite Clip；数组重排不改变计划指纹，单个 Pose 编辑只影响 1 帧且 12 个原帧 ID 保持。原型类型没有进入 Runtime、Scene、Registry kind 或 Package schema。
 - 当前 workload 的规范 Rig 源为 16,976 bytes，直接逐帧作者描述估算为 9,834 bytes，输出 Sprite 元数据为 13,321 bytes；它证明了编辑隔离，却没有证明作者体积、构建或包体收益。因此 `semantic-2d-character-production` 继续由更大真实角色批量证据触发，不因“AI-native”标签固化第二套动画 Authority。
 - 当前切片：`production.project-ui-authoring-and-interaction`。补齐项目 HUD 的 retained 交互 Action、可复用布局/控件声明和最小可视化作者闭环；GUI、Agent 与项目 C# 必须共用 Semantic UI/RmlUi/World 的稳定 binding/action/revision/receipt，不建立编辑器私有 UI 数据库。随后以 `hybrid-pixel.large-sprite-tilemap-production-pressure` 验证长序列、纹理/Atlas 与大型地图边界，再进入 `game-migration.hybrid-pixel-hd2d-small-slice`。
+- 当前切片第一批已经建立通用闭环：`ProjectUiAuthoringSession` 对项目 HUD 源文档执行 expected-revision CAS、dry-run、外部修改冲突检查、原子持久化和可持久化 Undo/Redo；Editor Project UI 面板只发布稳定请求，事务成功后才热应用到 Edit/Play World。RmlUi `button` 现在生成真实按钮并优先读取 Action 自身 binding；Retained UI 与 Agent 命令 `ui.project.action.invoke` 都由 World 从规范项目文档解析声明，固定进入项目 C# `OnUiAction`，调用者不能伪造 callback/instance。运行投影同时保留独立的 `sourceDocumentRevision`，避免把脚本/输入变化误当成作者源 revision。旧项目 HUD 已用真实项目 Headless 探针保持兼容；Debug 全量 CTest 85/85 与 MCP smoke 通过。
+- 该切片尚未退出：下一批补齐可复用布局/控件组合、编辑器中的生产级字段与错误态，并把 project-attached Agent 作者事务接到同一 live Authority；Standalone CLI/MCP 在 transport 成立前仍是 detached bootstrap，不能冒充已连接的编辑器会话。完成这些及必要的隐藏整窗证据后，才进入大型 Sprite/Tilemap 压力；游戏不并入引擎 sample，也不以项目特例抢占通用能力。
 
 ### P8：游戏迁移与制作验证（通用引擎完成后的下游验收）
 

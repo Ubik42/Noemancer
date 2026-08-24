@@ -175,6 +175,7 @@ std::string role_class(const std::string_view role) {
     if (role == "hud") return "surface hud-surface";
     if (role == "group") return "group";
     if (role == "property") return "property-row";
+    if (role == "button") return "action-button";
     if (role == "meter" || role == "status" || role == "ability-slot") return "property-row " + std::string(role);
     return "node";
 }
@@ -1040,6 +1041,8 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
               ".meter-track{width:210px;height:8px;background:#080b10;border-radius:4px;overflow:hidden;}"
               ".meter-fill{display:block;height:8px;background:" << escape_markup(accent_color) << ";}.meter-number{margin-left:8px;color:" << escape_markup(text_color) << ";}"
               ".ability-slot{margin-top:6px;background:" << escape_markup(group_color) << ";border-left-width:3px;border-left-color:" << escape_markup(accent_color) << ";}"
+              ".action-button{box-sizing:border-box;width:100%;min-height:34px;margin-top:6px;padding:6px 10px;background:" << escape_markup(group_color) << ";color:" << escape_markup(text_color) << ";border-width:1px;border-color:#34445a;text-align:center;pointer-events:auto;}"
+              ".action-button:hover{background:#273449;border-color:" << escape_markup(accent_color) << ";}.action-button:focus{border-color:" << escape_markup(accent_color) << ";}.action-button:disabled{opacity:0.48;}"
               << source.value("resources",Json::object()).value("stylesheet",Json::object()).value("content",std::string{}) <<
               "</style></head><body dir=\"" << escape_markup(source.value("textDirection",std::string("ltr"))) <<
               "\" lang=\"" << escape_markup(source.value("locale",std::string("en-US"))) << "\">";
@@ -1056,15 +1059,20 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
         if(!enabled)classes+=" disabled";
         if(!error.empty())classes+=" error";
         if(role=="group"&&!expanded)classes+=" collapsed";
-        output << "<div id=\"" << escape_markup(id) << "\" data-semantic-id=\"" << escape_markup(id)
+        const auto actions=node.value("actions",Json::array());
+        const auto has_action=actions.is_array()&&!actions.empty()&&actions.front().is_object();
+        const auto action_binding=has_action&&actions.front().contains("binding")?
+            actions.front().at("binding"):node.value("binding",Json::object());
+        const auto action_button=role=="button";
+        output << (action_button?"<button type=\"button\"":"<div") << " id=\"" << escape_markup(id) << "\" data-semantic-id=\"" << escape_markup(id)
                << "\" data-role=\"" << escape_markup(role) << "\" data-enabled=\"" << (enabled?"true":"false")
                << "\" data-editable=\"" << (editable?"true":"false") << "\"";
+        if(action_button&&!enabled)output << " disabled";
         if(role=="group")output << " data-expanded=\"" << (expanded?"true":"false") << "\"";
         if(!error.empty())output << " data-error=\"" << escape_markup(error) << "\"";
-        if (node.contains("binding") && node.at("binding").is_object())
-            output << " data-binding=\"" << escape_markup(node.at("binding").dump()) << "\"";
-        if (node.contains("actions") && node.at("actions").is_array() && !node.at("actions").empty())
-            output << " data-action=\"" << escape_markup(node.at("actions").front().value("id", "")) << "\"";
+        if(action_binding.is_object()&&!action_binding.empty())
+            output << " data-binding=\"" << escape_markup(action_binding.dump()) << "\"";
+        if(has_action)output << " data-action=\"" << escape_markup(actions.front().value("id", "")) << "\"";
         output << " class=\"" << classes << "\">";
         if(role=="group") {
             output << "<button class=\"group-header\" data-local-action=\"toggle-group\" type=\"button\"><span class=\"group-chevron\">"
@@ -1133,7 +1141,7 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
             else output << "<span class=\"value\">" << escape_markup(value) << "</span>";
         }
         if (const auto found = children.find(id); found != children.end()) for (const auto& child : found->second) self(self, child);
-        output << "</div>";
+        output << (action_button?"</button>":"</div>");
     };
     for (const auto& root : roots) emit(emit, root);
     output << "</body></rml>";

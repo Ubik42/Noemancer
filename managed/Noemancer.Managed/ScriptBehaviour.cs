@@ -418,6 +418,51 @@ public sealed class ScriptContext(EntityId entity, string argumentsJson, ScriptW
     public ScriptWorldView World { get; } = world;
     public ScriptCommandBuffer Commands { get; } = new();
 
+    /// <summary>
+    /// Returns the stable, typed UI action carried by an <c>OnUiAction</c>
+    /// invocation.  The wire payload remains <see cref="ArgumentsJson"/>;
+    /// this projection accepts both the canonical <c>uiAction</c> envelope
+    /// and a direct action object so callers do not need to know which host
+    /// adapter produced the event.  Invalid JSON or a missing field returns
+    /// <see langword="null"/> instead of throwing from a diagnostic path.
+    /// </summary>
+    public ScriptUiAction? UiAction
+    {
+        get
+        {
+            try
+            {
+                using var arguments = JsonDocument.Parse(ArgumentsJson);
+                var value = arguments.RootElement;
+                if (value.ValueKind != JsonValueKind.Object) return null;
+                if (value.TryGetProperty("uiAction", out var envelope))
+                {
+                    if (envelope.ValueKind != JsonValueKind.Object) return null;
+                    value = envelope;
+                }
+
+                if (!TryRequiredString(value, "actionId", out var actionId) ||
+                    !TryRequiredString(value, "nodeId", out var nodeId) ||
+                    !TryRequiredString(value, "documentId", out var documentId) ||
+                    !TryRequiredString(value, "kind", out var kind)) return null;
+
+                JsonElement actionValue;
+                if (value.TryGetProperty("value", out var inlineValue))
+                    actionValue = inlineValue.Clone();
+                else if (value.TryGetProperty("valueJson", out var valueJson) &&
+                         valueJson.ValueKind == JsonValueKind.String)
+                {
+                    using var parsedValue = JsonDocument.Parse(valueJson.GetString() ?? "");
+                    actionValue = parsedValue.RootElement.Clone();
+                }
+                else return null;
+                return new ScriptUiAction(actionId, nodeId, documentId, kind, actionValue);
+            }
+            catch (JsonException) { return null; }
+            catch (InvalidOperationException) { return null; }
+        }
+    }
+
     public float DeltaSeconds
     {
         get
@@ -448,9 +493,32 @@ public sealed class ScriptContext(EntityId entity, string argumentsJson, ScriptW
             !properties.TryGetProperty(name, out var value)) return default;
         return value.Deserialize<T>();
     }
+
+    private static bool TryRequiredString(JsonElement value, string name, out string result)
+    {
+        result = string.Empty;
+        if (!value.TryGetProperty(name, out var property) || property.ValueKind != JsonValueKind.String)
+            return false;
+        result = property.GetString() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(result);
+    }
 }
 
 public readonly record struct ScriptContact(EntityId Self, EntityId Other, Float3 Normal, float Penetration, bool IsTrigger);
+
+/// <summary>
+/// Stable, renderer-neutral UI intent delivered to managed scripts.  The
+/// value is a cloned JSON value and never exposes a native UI or DOM handle.
+/// </summary>
+public readonly record struct ScriptUiAction(
+    string ActionId,
+    string NodeId,
+    string DocumentId,
+    string Kind,
+    JsonElement ValueJson)
+{
+    public JsonElement Value => ValueJson;
+}
 
 public sealed class ScriptTimer(float durationSeconds, bool repeating = false)
 {
@@ -490,5 +558,6 @@ public abstract class ScriptBehaviour
     public virtual void OnTriggerEnter(in ScriptContext context) { }
     public virtual void OnTriggerStay(in ScriptContext context) { }
     public virtual void OnTriggerExit(in ScriptContext context) { }
+    public virtual void OnUiAction(in ScriptContext context) { }
     public virtual void OnDestroy(in ScriptContext context) { }
 }

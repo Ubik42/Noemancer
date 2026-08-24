@@ -21,6 +21,7 @@ class DebugPlayerProcess;
 class GamePersistenceStore;
 class ProjectInputEditSession;
 class ProjectHybridPixelAuthoring;
+class ProjectUiAuthoringSession;
 
 struct RuntimeInputSample final {
     std::string source;
@@ -94,6 +95,7 @@ private:
     void apply_project_request(const EditorProjectRequest& request);
     void apply_project_input_map_request(const ProjectSettingsInputMapPanelRequest& request);
     void apply_hybrid_pixel_profile_request(const HybridPixelProfilePanelRequest& request);
+    void apply_project_ui_request(const ProjectUiAuthoringPanelRequest& request);
     void apply_source_open_request(const EditorSourceOpenRequest& request);
     void apply_script_build_completion(const EditorScriptBuildCompletion& completion);
     [[nodiscard]] std::string load_editor_project_json(const std::filesystem::path& project_path);
@@ -128,6 +130,7 @@ private:
     std::vector<InputActionDefinition> project_input_actions_;
     std::unique_ptr<ProjectInputEditSession> project_input_session_;
     std::unique_ptr<ProjectHybridPixelAuthoring> project_hybrid_pixel_session_;
+    std::unique_ptr<ProjectUiAuthoringSession> project_ui_session_;
     std::string project_hud_document_json_;
     std::optional<HybridPixelProfile> hybrid_pixel_profile_;
     std::uint64_t hybrid_pixel_profile_revision_{1U};

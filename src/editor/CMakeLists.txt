@@ -23,6 +23,7 @@ add_library(noemancer_editor STATIC
     hybrid_pixel_profile_panel.cpp
     project_settings_input_map.cpp
     project_settings_input_map_panel.cpp
+    project_ui_authoring_panel.cpp
 )
 
 add_library(noemancer::editor ALIAS noemancer_editor)

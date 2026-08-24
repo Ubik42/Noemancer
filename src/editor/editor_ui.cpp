@@ -331,6 +331,7 @@ void EditorUi::render() {
     draw_agent_context();
     if(project_settings_open_&&project_input_panel_)project_input_panel_->render();
     if(project_settings_open_&&hybrid_pixel_profile_panel_)hybrid_pixel_profile_panel_->render();
+    if(project_settings_open_&&project_ui_panel_)project_ui_panel_->render();
 }
 
 void EditorUi::set_engine_status(std::string status_json) {
@@ -381,11 +382,27 @@ void EditorUi::set_project_hybrid_pixel_profile(std::optional<HybridPixelProfile
         hybrid_pixel_profile_panel_->set_undo_redo_available(can_undo,can_redo);
     }
 }
+void EditorUi::set_project_ui_document(std::string document_json,const std::uint64_t revision,
+                                       std::string fingerprint,const bool can_undo,const bool can_redo) {
+    project_context_.project_ui_document_json=std::move(document_json);
+    project_context_.project_ui_revision=revision;
+    project_context_.project_ui_fingerprint=std::move(fingerprint);
+    project_context_.project_ui_can_undo=can_undo;
+    project_context_.project_ui_can_redo=can_redo;
+    const ProjectUiAuthoringSnapshot snapshot{project_context_.project_ui_document_json,
+        project_context_.project_ui_revision,project_context_.project_ui_fingerprint,
+        project_context_.project_ui_can_undo,project_context_.project_ui_can_redo};
+    if(project_ui_panel_)project_ui_panel_->set_snapshot(snapshot);
+    else project_ui_panel_.emplace(snapshot);
+}
 std::optional<ProjectSettingsInputMapPanelRequest> EditorUi::consume_project_input_request() {
     return project_input_panel_?project_input_panel_->consume_request():std::nullopt;
 }
 std::optional<HybridPixelProfilePanelRequest> EditorUi::consume_hybrid_pixel_profile_request() {
     return hybrid_pixel_profile_panel_?hybrid_pixel_profile_panel_->consume_request():std::nullopt;
+}
+std::optional<ProjectUiAuthoringPanelRequest> EditorUi::consume_project_ui_request() {
+    return project_ui_panel_?project_ui_panel_->consume_request():std::nullopt;
 }
 void EditorUi::set_asset_thumbnail_texture(std::string asset_id,const std::uintptr_t texture_id) {
     if(asset_id.empty())return;
@@ -404,6 +421,11 @@ void EditorUi::set_project_context(EditorProjectContext context) {
         project_context_.input_revision,project_context_.input_actions});
     hybrid_pixel_profile_panel_.emplace(HybridPixelProfileSnapshot{
         project_context_.hybrid_pixel_profile_revision,project_context_.hybrid_pixel_profile});
+    if(!project_context_.project_ui_document_json.empty())project_ui_panel_.emplace(ProjectUiAuthoringSnapshot{
+        project_context_.project_ui_document_json,project_context_.project_ui_revision,
+        project_context_.project_ui_fingerprint,project_context_.project_ui_can_undo,
+        project_context_.project_ui_can_redo});
+    else project_ui_panel_.reset();
     if(scene_texture_width_>0U&&scene_texture_height_>0U)
         hybrid_pixel_profile_panel_->set_preview_extent(scene_texture_width_,scene_texture_height_);
     hybrid_pixel_profile_panel_->set_undo_redo_available(project_context_.hybrid_pixel_profile_can_undo,
@@ -745,6 +767,13 @@ std::string EditorUi::semantic_snapshot_json() const {
         if(profile_panel.is_object()) {
             profile_panel["open"]=project_settings_open_;
             snapshot["projectSettingsHybridPixelProfile"]=std::move(profile_panel);
+        }
+    }
+    if(project_ui_panel_) {
+        auto project_ui=nlohmann::json::parse(project_ui_panel_->semantic_snapshot_json(),nullptr,false);
+        if(project_ui.is_object()) {
+            project_ui["open"]=project_settings_open_;
+            snapshot["projectUiAuthoring"]=std::move(project_ui);
         }
     }
     const auto input_status=nlohmann::json::parse(input_status_json_,nullptr,false);

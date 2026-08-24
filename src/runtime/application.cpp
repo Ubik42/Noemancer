@@ -16,6 +16,7 @@
 #include "engine/project_document.hpp"
 #include "engine/project_hybrid_pixel_authoring.hpp"
 #include "engine/project_input_authoring.hpp"
+#include "engine/project_ui_authoring.hpp"
 #include "engine/project_workspace.hpp"
 #include "engine/retained_ui_runtime.hpp"
 #include "engine/semantic_ui.hpp"
@@ -494,6 +495,13 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
     project_input_session_=std::make_unique<ProjectInputEditSession>(project_input_actions_,
         loaded.project->root/"noemancer.project.json");
     project_hud_document_json_=loaded.project->hud_document_json;
+    project_ui_session_.reset();
+    if(loaded.project->hud_document) {
+        const auto source=nlohmann::json::parse(project_hud_document_json_,nullptr,false);
+        project_ui_session_=std::make_unique<ProjectUiAuthoringSession>(
+            project_hud_document_json_,loaded.project->root/ *loaded.project->hud_document,
+            source.is_object()?source.value("revision",1ULL):1ULL);
+    }
     hybrid_pixel_profile_=loaded.project->hybrid_pixel_profile;
     ++hybrid_pixel_profile_revision_;
     project_hybrid_pixel_session_=std::make_unique<ProjectHybridPixelAuthoring>(
@@ -528,6 +536,13 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
     context.hybrid_pixel_profile_revision=project_hybrid_pixel_session_->revision();
     context.hybrid_pixel_profile_can_undo=project_hybrid_pixel_session_->can_undo();
     context.hybrid_pixel_profile_can_redo=project_hybrid_pixel_session_->can_redo();
+    if(project_ui_session_) {
+        context.project_ui_document_json=project_ui_session_->source_json();
+        context.project_ui_revision=project_ui_session_->revision();
+        context.project_ui_fingerprint=project_ui_session_->fingerprint();
+        context.project_ui_can_undo=project_ui_session_->can_undo();
+        context.project_ui_can_redo=project_ui_session_->can_redo();
+    }
     editor_ui_.set_project_context(std::move(context));
     return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",true},{"code","ok"},
         {"operation","project.open"},{"detail","Project opened in the Editor."},{"projectPath",project_root_.generic_string()},
@@ -657,6 +672,69 @@ void Application::apply_hybrid_pixel_profile_request(
         project_hybrid_pixel_session_->revision(),project_hybrid_pixel_session_->can_undo(),
         project_hybrid_pixel_session_->can_redo());
     logger_.info("project.hybrid-pixel-profile",evidence);
+}
+
+void Application::apply_project_ui_request(const ProjectUiAuthoringPanelRequest& request) {
+    using Json=nlohmann::json;
+    if(!project_ui_session_) {
+        const auto detail=std::string("Open a project with a HUD document before editing Project UI.");
+        editor_ui_.set_last_action_status(detail);
+        logger_.error("project.ui-authoring",Json{{"success",false},
+            {"code","project.ui-authoring.session-unavailable"},{"detail",detail}}.dump());
+        return;
+    }
+    const ProjectUiEditOptions options{.expected_revision=request.base_revision};
+    const auto binding=Json::parse(request.binding_json,nullptr,false);
+    const auto actions=[&]() -> std::optional<std::string> {
+        if(request.action_id.empty())return request.node_kind==ProjectUiAuthoringNodeKind::button?
+            std::optional<std::string>{"[]"}:std::nullopt;
+        Json action{{"id",request.action_id}};
+        if(binding.is_object()&&!binding.empty())action["binding"]=binding;
+        return Json::array({std::move(action)}).dump();
+    }();
+    ProjectUiEditReceipt receipt;
+    switch(request.kind) {
+    case ProjectUiAuthoringPanelRequestKind::add_node: {
+        ProjectUiAddNodeRequest add{.id=request.node_id,.parent_id=request.parent_id,
+            .role=request.role,.label=request.label};
+        if(actions)add.actions_json=*actions;
+        if(!actions&&binding.is_object()&&!binding.empty())add.binding_json=binding.dump();
+        add.state_json=R"({"visible":true,"enabled":true,"editable":false})";
+        receipt=project_ui_session_->add_node(std::move(add),options);
+        break;
+    }
+    case ProjectUiAuthoringPanelRequestKind::remove_node:
+        receipt=project_ui_session_->remove_subtree(request.node_id,options);
+        break;
+    case ProjectUiAuthoringPanelRequestKind::update_node: {
+        ProjectUiUpdateNodeRequest update{.node_id=request.node_id,.label=request.label,.role=request.role};
+        if(actions)update.actions_json=*actions;
+        if(!actions&&binding.is_object())update.binding_json=binding.empty()?std::string("null"):binding.dump();
+        receipt=project_ui_session_->update_node(std::move(update),options);
+        break;
+    }
+    case ProjectUiAuthoringPanelRequestKind::reparent_node:
+        receipt=project_ui_session_->reparent(request.node_id,request.parent_id,options);
+        break;
+    case ProjectUiAuthoringPanelRequestKind::undo:
+        receipt=project_ui_session_->undo(options);
+        break;
+    case ProjectUiAuthoringPanelRequestKind::redo:
+        receipt=project_ui_session_->redo(options);
+        break;
+    }
+    const auto evidence=receipt.to_json();
+    editor_ui_.set_last_action_status(receipt.detail);
+    if(!receipt) {logger_.error("project.ui-authoring",evidence);return;}
+    project_hud_document_json_=project_ui_session_->source_json();
+    if(!world_.configure_project_hud(project_hud_document_json_)||
+       (play_world_&&!play_world_->configure_project_hud(project_hud_document_json_))) {
+        const auto detail=std::string("Persisted Project UI could not be hot-applied to the active World.");
+        editor_ui_.set_last_action_status(detail);logger_.error("project.ui-authoring.hot-apply",detail);return;
+    }
+    editor_ui_.set_project_ui_document(project_hud_document_json_,project_ui_session_->revision(),
+        project_ui_session_->fingerprint(),project_ui_session_->can_undo(),project_ui_session_->can_redo());
+    logger_.info("project.ui-authoring",evidence);
 }
 
 void Application::apply_source_open_request(const EditorSourceOpenRequest& request) {
@@ -1730,7 +1808,20 @@ int Application::run_interactive() {
         }
 
         for(const auto& action:retained_ui.consume_action_events()) {
-            if(action.kind!=RetainedUiActionKind::value_changed||action.action_id!="world.property.plan")continue;
+            if(action.action_id!="world.property.plan") {
+                const auto receipt=active_world().project_ui_action_invoke_json(
+                    action.node_id,action.action_id,
+                    action.kind==RetainedUiActionKind::invoke?"invoke":"value-changed",
+                    action.value_json.empty()?std::string_view("null"):std::string_view(action.value_json),
+                    std::nullopt,false,"ui.retained",action.sequence);
+                const auto parsed=nlohmann::json::parse(receipt,nullptr,false);
+                if(parsed.is_object()&&parsed.value("success",false)) {
+                    editor_ui_.set_last_action_status(parsed.value("detail",std::string{"Project UI action completed."}));
+                    logger_.info("ui.project_action",receipt);
+                } else logger_.error("ui.project_action",receipt);
+                continue;
+            }
+            if(action.kind!=RetainedUiActionKind::value_changed)continue;
             if(!options_.player_mode&&editor_ui_.simulation_state()!=EditorSimulationState::edit) {
                 logger_.error("ui.retained_action","World property editing is disabled outside Edit World.");
                 continue;
@@ -1910,6 +2001,8 @@ int Application::run_interactive() {
             }
             if(const auto request=editor_ui_.consume_hybrid_pixel_profile_request())
                 apply_hybrid_pixel_profile_request(*request);
+            if(const auto request=editor_ui_.consume_project_ui_request())
+                apply_project_ui_request(*request);
             if (const auto command=editor_ui_.consume_simulation_command()) apply_simulation_command(*command);
             if (const auto request=editor_ui_.consume_managed_debug_request()) apply_managed_debug_request(*request);
             if (const auto request=editor_ui_.consume_package_request()) apply_package_request(*request);
