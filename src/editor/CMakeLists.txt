@@ -24,6 +24,7 @@ add_library(noemancer_editor STATIC
     project_settings_input_map.cpp
     project_settings_input_map_panel.cpp
     project_ui_authoring_panel.cpp
+    startup_hub.cpp
 )
 
 add_library(noemancer::editor ALIAS noemancer_editor)

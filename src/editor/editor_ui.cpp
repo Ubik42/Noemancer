@@ -321,6 +321,10 @@ void EditorUi::render() {
     if (!layout_initialized_) {
         apply_editor_style();
     }
+    if(startup_hub_open_) {
+        draw_startup_hub();
+        return;
+    }
     draw_root_dockspace();
     draw_scene_view();
     draw_animation_graph();
@@ -417,6 +421,13 @@ std::vector<EditorAssetThumbnailArtifact> EditorUi::asset_thumbnail_artifacts() 
 }
 void EditorUi::set_project_context(EditorProjectContext context) {
     project_context_=std::move(context);model_.reset_for_loaded_project();
+    if(project_context_.root!="engine://") {
+        const auto opened=std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        startup_hub_.set_recent_projects({StartupHubRecentProject{
+            project_context_.root,project_context_.name,static_cast<std::uint64_t>(std::max<std::int64_t>(0,opened))}});
+        startup_hub_open_=false;
+    }
     project_input_panel_.emplace(ProjectSettingsInputMapSnapshot{project_context_.project_id,project_context_.name,
         project_context_.input_revision,project_context_.input_actions});
     hybrid_pixel_profile_panel_.emplace(HybridPixelProfileSnapshot{
@@ -435,6 +446,113 @@ void EditorUi::set_project_context(EditorProjectContext context) {
         const auto output=(std::filesystem::path(project_context_.root)/"dist"/(project_context_.name+"-windows-x64")).string();
         std::snprintf(package_output_path_.data(),package_output_path_.size(),"%s",output.c_str());
     }
+}
+
+void EditorUi::draw_startup_hub() {
+    const ImGuiViewport* viewport=ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize,0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{0.0F,0.0F});
+    constexpr auto flags=ImGuiWindowFlags_NoDocking|ImGuiWindowFlags_NoTitleBar|
+        ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|
+        ImGuiWindowFlags_NoBringToFrontOnFocus|ImGuiWindowFlags_NoNavFocus;
+    ImGui::Begin("Noemancer Project Hub",nullptr,flags);
+    ImGui::PopStyleVar(3);
+
+    const auto extent=ImGui::GetContentRegionAvail();
+    const auto left_width=std::clamp(extent.x*0.37F,340.0F,560.0F);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.075F,0.133F,0.184F,1.0F});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{48.0F,44.0F});
+    if(ImGui::BeginChild("##startup-brand",{left_width,extent.y},ImGuiChildFlags_None,
+        ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse)) {
+        const auto origin=ImGui::GetCursorScreenPos();
+        constexpr float mark=92.0F;
+        auto* draw=ImGui::GetWindowDrawList();
+        draw->AddRectFilled(origin,{origin.x+mark,origin.y+mark},IM_COL32(20,36,51,255),14.0F);
+        const auto gold=IM_COL32(212,161,93,255),green=IM_COL32(110,154,139,255);
+        const auto x=origin.x,y=origin.y;
+        draw->AddLine({x+24,y+69},{x+24,y+23},gold,9.0F);
+        draw->AddLine({x+24,y+23},{x+68,y+69},gold,9.0F);
+        draw->AddLine({x+68,y+69},{x+68,y+23},gold,9.0F);
+        draw->AddLine({x+18,y+76},{x+74,y+76},green,4.0F);
+        ImGui::Dummy({mark,mark+38.0F});
+        ImGui::SetWindowFontScale(2.0F);ImGui::TextUnformatted(startup_hub_.brand().title.c_str());ImGui::SetWindowFontScale(1.0F);
+        ImGui::TextColored({0.83F,0.63F,0.36F,1.0F},"ENGINE / EDITOR");
+        ImGui::Dummy({1.0F,22.0F});
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+std::max(220.0F,left_width-96.0F));
+        ImGui::TextColored({0.77F,0.83F,0.86F,1.0F},
+            "Build worlds with one readable state shared by the editor, runtime, and coding agents.");
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy({1.0F,std::max(20.0F,extent.y-390.0F)});
+        ImGui::TextDisabled("PRE-ALPHA  |  WINDOWS x64");
+        ImGui::TextDisabled("Source-first. Agent-readable. Runtime-verifiable.");
+    }
+    ImGui::EndChild();ImGui::PopStyleVar();ImGui::PopStyleColor();
+
+    ImGui::SameLine(0.0F,0.0F);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.043F,0.051F,0.070F,1.0F});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{44.0F,40.0F});
+    if(ImGui::BeginChild("##startup-projects",{0,extent.y},ImGuiChildFlags_None)) {
+        ImGui::SetWindowFontScale(1.45F);ImGui::TextUnformatted("Start a project");ImGui::SetWindowFontScale(1.0F);
+        ImGui::TextDisabled("Open an existing workspace or create a clean Noemancer project.");
+        ImGui::Dummy({1.0F,18.0F});
+
+        if(project_dialog_mode_==0)project_dialog_mode_=2;
+        if(ImGui::Button("Open Project",{150.0F,38.0F}))project_dialog_mode_=2;
+        ImGui::SameLine();if(ImGui::Button("New Project",{150.0F,38.0F}))project_dialog_mode_=1;
+        if(project_context_.root!="engine://") {
+            ImGui::SameLine();if(ImGui::Button("Back to Editor",{150.0F,38.0F}))startup_hub_open_=false;
+        } else {
+            ImGui::SameLine();if(ImGui::Button("Empty Workspace",{150.0F,38.0F}))startup_hub_open_=false;
+        }
+        ImGui::Dummy({1.0F,14.0F});
+
+        const auto creating=project_dialog_mode_==1;
+        ImGui::TextUnformatted(creating?"Create a workspace":"Open a workspace");
+        ImGui::TextDisabled(creating?"The target folder must not already contain a project.":
+            "Use a project directory or its noemancer.project.json path.");
+        if(creating) {
+            ImGui::SetNextItemWidth(-1.0F);ImGui::InputText("Project name",project_name_.data(),project_name_.size());
+        }
+        ImGui::SetNextItemWidth(-1.0F);ImGui::InputText("Project path",project_path_.data(),project_path_.size());
+        const auto ready=project_path_[0]!='\0'&&(!creating||project_name_[0]!='\0');
+        ImGui::BeginDisabled(!ready);
+        if(ImGui::Button(creating?"Create and Open":"Open in Editor",{180.0F,38.0F})) {
+            project_request_=EditorProjectRequest{creating?EditorProjectCommand::create:EditorProjectCommand::open,
+                project_path_.data(),creating?project_name_.data():std::string{}};
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Dummy({1.0F,24.0F});ImGui::Separator();ImGui::Dummy({1.0F,14.0F});
+        ImGui::TextUnformatted("Recent projects");
+        const auto& recent=startup_hub_.view().recent_projects;
+        if(recent.empty()) {
+            ImGui::TextDisabled("No project has been opened in this session yet.");
+            ImGui::TextDisabled("Choose a path above; recent workspaces will appear here.");
+        }
+        for(std::size_t index=0;index<recent.size();++index) {
+            const auto& project=recent[index];ImGui::PushID(static_cast<int>(index));
+            const auto available=project.status==StartupHubProjectStatus::available;
+            ImGui::BeginDisabled(!available);
+            if(ImGui::Selectable(project.display_name.c_str(),false,ImGuiSelectableFlags_None,{0,42.0F}))
+                project_request_=EditorProjectRequest{EditorProjectCommand::open,project.path,{}};
+            ImGui::EndDisabled();
+            ImGui::SameLine(190.0F);ImGui::TextDisabled("%s",project.path.c_str());
+            if(!available){ImGui::SameLine();ImGui::TextColored(color_warning,"%s",startup_hub_project_status_name(project.status));}
+            ImGui::PopID();
+        }
+        const auto project_status=nlohmann::json::parse(project_status_json_,nullptr,false);
+        if(project_status.is_object()&&!project_status.value("success",true)) {
+            ImGui::Dummy({1.0F,12.0F});
+            ImGui::TextColored(color_danger,"%s",project_status.value("detail",
+                project_status.value("code",std::string{"Project operation failed."})).c_str());
+        }
+    }
+    ImGui::EndChild();ImGui::PopStyleVar();ImGui::PopStyleColor();
+    ImGui::End();
 }
 
 void EditorUi::set_package_status(const bool busy,std::string status_json) {
@@ -723,6 +841,8 @@ std::optional<EditorManagedDebugRequest> EditorUi::consume_managed_debug_request
 
 std::string EditorUi::semantic_snapshot_json() const {
     auto snapshot=nlohmann::json::parse(model_.semantic_snapshot_json());
+    snapshot["startupHub"]=nlohmann::json::parse(startup_hub_.semantic_snapshot_json(),nullptr,false);
+    snapshot["startupHub"]["visible"]=startup_hub_open_;
     snapshot["simulation"]={{"state",simulation_state_==EditorSimulationState::edit?"edit":
         simulation_state_==EditorSimulationState::playing?"playing":"paused"},
         {"editWorldWritable",simulation_state_==EditorSimulationState::edit&&!script_compile_busy_},
@@ -909,6 +1029,8 @@ void EditorUi::draw_root_dockspace() {
 
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
+            if(ImGui::MenuItem("Project Hub..."))startup_hub_open_=true;
+            ImGui::Separator();
             ImGui::BeginDisabled(model_.scene_dirty()||simulation_state_!=EditorSimulationState::edit||script_compile_busy_);
             if(ImGui::MenuItem("New Project...")) {project_dialog_mode_=1;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}
             if(ImGui::MenuItem("Open Project...")) {project_dialog_mode_=2;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}

@@ -74,6 +74,8 @@ cd Noemancer
 ./scripts/engine.ps1 run -Config Release
 ```
 
+On Windows, `Noemancer Editor.cmd` is the official product entry point. Double-click it to open the branded Project Hub, or pass a project directory to open that workspace directly. The separate `Open Platformer Editor.cmd` and `Play Platformer.cmd` files are validation-game shortcuts, not the engine launcher.
+
 Noemancer prefers its pinned local CMake distribution when present and otherwise uses `cmake` from `PATH`.
 
 ### Headless smoke test
@@ -147,8 +149,8 @@ Start with [Documentation authority](docs/README.md), then read [Architecture](d
 
 Near-term work is focused on:
 
-1. completing project UI authoring and interaction;
-2. applying production pressure with larger sprite and tilemap workloads;
+1. closing first-cook and incremental rebuild costs for large sprite atlases;
+2. applying further production pressure to sprite and tilemap workflows;
 3. validating a small HD2D game slice;
 4. improving independent-machine packaging, performance evidence and raster quality;
 5. extending project-attached Agent transport without duplicating engine state.

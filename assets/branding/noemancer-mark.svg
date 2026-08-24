@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Noemancer</title>
+  <desc id="desc">A flat geometric N mark in navy, ochre and sea green.</desc>
+  <rect x="4" y="4" width="56" height="56" rx="10" fill="#142433"/>
+  <path d="M16 48V16h8l16 20V16h8v32h-8L24 28v20z" fill="#D4A15D"/>
+  <path d="M12 52h40" stroke="#6E9A8B" stroke-width="3" stroke-linecap="round"/>
+</svg>

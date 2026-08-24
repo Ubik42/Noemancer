@@ -20,6 +20,7 @@
   "completedMilestones": [
     "engine-production-closure",
     "editor-experience-foundation",
+    "editor.official-launcher-and-project-hub",
     "production.project-ui-authoring-and-input-remap",
     "production.project-ui-authoring-and-interaction",
     "production.release-diagnostics-and-license-closure",

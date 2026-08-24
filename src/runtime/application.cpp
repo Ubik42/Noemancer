@@ -449,16 +449,10 @@ Application::Application(RunOptions options)
     register_sprite_assets(world_);
     register_tilemap_assets(world_);
     register_audio_assets(world_);
-    // Seed both blend groups so compute partitioning, alpha sorting, and the
-    // dual-indirect graphics consumer remain visible and capture-testable.
-    // The built-in bootstrap scene doubles as the renderer/VFX development
-    // fixture. Project scenes own their effects and must never inherit debug
-    // emitters merely because they are opened in the Editor.
-    if (!options_.headless&&!options_.player_mode&&options_.project_path.empty()&&
-        options_.reference_scene_id.empty()&&options_.render_stress_instances==0&&!options_.animation_physics_stress) {
-        static_cast<void>(world_.vfx_spawn_json("vfx.debug-impact",{2.5F,2.2F,1.0F},0x4e4f454dULL));
-        static_cast<void>(world_.vfx_spawn_json("vfx.debug-smoke",{1.65F,1.8F,0.55F},0x534d4f4b45ULL));
-    }
+    // An editor launched without a project is a product entry surface, not a
+    // renderer/VFX fixture.  Stress and reference-scene paths seed their own
+    // explicit content; the normal Project Hub must never surprise the user
+    // with debug particles or make them look like project content.
     editor_ui_.refresh_world_model();
     if(!options_.editor_selected_asset_id.empty()&&!editor_ui_.select_asset(options_.editor_selected_asset_id))
         startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.editor-startup/0.1"},{"success",false},

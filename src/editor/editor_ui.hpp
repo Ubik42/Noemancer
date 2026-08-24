@@ -5,6 +5,7 @@
 #include "editor/hybrid_pixel_profile_panel.hpp"
 #include "editor/project_settings_input_map_panel.hpp"
 #include "editor/project_ui_authoring_panel.hpp"
+#include "editor/startup_hub.hpp"
 #include "engine/render_world.hpp"
 #include "engine/hybrid_pixel_profile.hpp"
 
@@ -168,6 +169,7 @@ private:
     enum class GizmoMode { select, translate, rotate, scale, tilemap };
     enum class TileBrushShape { brush,rectangle,flood };
     void draw_root_dockspace();
+    void draw_startup_hub();
     void draw_scene_view();
     void draw_world_outliner();
     void draw_inspector();
@@ -183,6 +185,8 @@ private:
     void evaluate_auto_compile();
 
     EditorModel model_;
+    StartupHubModel startup_hub_;
+    bool startup_hub_open_{true};
     std::string engine_status_json_;
     std::string render_status_json_;
     std::string input_status_json_{R"({"schemaVersion":"noemancer.input-sources/0.1","devices":[],"sources":[]})"};

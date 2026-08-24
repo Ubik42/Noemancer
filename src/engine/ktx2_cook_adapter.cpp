@@ -16,9 +16,11 @@
 #include <cstdlib>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <span>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace noemancer {
@@ -30,6 +32,71 @@ constexpr std::array<std::uint8_t, 12> kKtx2Identifier{
     0xABU, 0x4BU, 0x54U, 0x58U, 0x20U, 0x32U,
     0x30U, 0xBBU, 0x0DU, 0x0AU, 0x1AU, 0x0AU
 };
+
+std::uint64_t fnv1a(std::span<const std::byte> bytes);
+std::string hex_u64(std::uint64_t value);
+void populate_product(TextureCookProduct& result, const CookSource& source,
+                      const CookPlatformProfile& profile, const TextureCookSettings& settings,
+                      TextureCookCompression compression);
+
+// Texture compression is intentionally kept out of the public cache/artifact
+// contract.  A Cook plan is immutable, and its cache key already captures the
+// source hash, profile and recipe.  The input fingerprint below closes the
+// remaining direct-C++ path where callers provide RGBA bytes without a file
+// registry.  This bounded process-local cache avoids repeating a costly Basis
+// encode when package planning, tests or multiple asset IDs request the same
+// content.  It stores only engine-owned products; no libktx object crosses the
+// cache boundary.
+constexpr std::size_t kTextureCookCacheBudgetBytes = 256U * 1024U * 1024U;
+std::mutex texture_cook_cache_mutex;
+std::unordered_map<std::string, TextureCookProduct> texture_cook_cache;
+std::size_t texture_cook_cache_bytes{};
+
+std::string texture_input_cache_key(const CookArtifactContract& plan,
+                                    const TextureCookInput& input,
+                                    const TextureCookCompression compression) {
+    std::ostringstream material;
+    material << plan.cache_key << '|'
+             << (compression == TextureCookCompression::basis_lz ? "basis-lz" : "uastc") << '|'
+             << input.width << 'x' << input.height << '|'
+             << hex_u64(fnv1a(std::span<const std::byte>(input.rgba8.data(), input.rgba8.size())));
+    for (const auto& mip : input.mip_levels) {
+        material << '|' << mip.width << 'x' << mip.height << ':'
+                 << hex_u64(fnv1a(std::span<const std::byte>(mip.rgba8.data(), mip.rgba8.size())));
+    }
+    return material.str();
+}
+
+bool texture_cache_lookup(const std::string_view key, TextureCookProduct& result,
+                          const CookSource& source, const CookPlatformProfile& profile,
+                          const TextureCookSettings& settings,
+                          const TextureCookCompression compression) {
+    std::scoped_lock lock(texture_cook_cache_mutex);
+    const auto found = texture_cook_cache.find(std::string(key));
+    if (found == texture_cook_cache.end()) return false;
+    result = found->second;
+    // The encoded payload is recipe/content-addressed, while the caller's
+    // source identity is still reflected in this per-call product metadata.
+    populate_product(result, source, profile, settings, compression);
+    result.diagnostics.push_back("cache:hit");
+    return true;
+}
+
+void texture_cache_store(const std::string_view key, const TextureCookProduct& product) {
+    if (!product.valid || product.payload.empty() ||
+        product.payload.size() > kTextureCookCacheBudgetBytes) return;
+    std::scoped_lock lock(texture_cook_cache_mutex);
+    if (texture_cook_cache.contains(std::string(key))) return;
+    while (texture_cook_cache_bytes + product.payload.size() > kTextureCookCacheBudgetBytes &&
+           !texture_cook_cache.empty()) {
+        const auto evicted = texture_cook_cache.begin();
+        texture_cook_cache_bytes -= evicted->second.payload.size();
+        texture_cook_cache.erase(evicted);
+    }
+    if (texture_cook_cache_bytes + product.payload.size() > kTextureCookCacheBudgetBytes) return;
+    texture_cook_cache.emplace(std::string(key), product);
+    texture_cook_cache_bytes += product.payload.size();
+}
 
 std::uint64_t fnv1a(const std::span<const std::byte> bytes) {
     std::uint64_t hash = 14695981039346656037ULL;
@@ -225,6 +292,14 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
         return result;
     }
 
+    // Lookup happens before mip generation and any libktx allocation.  The
+    // key includes the planned immutable recipe plus every authored RGBA/mip
+    // fingerprint, so a direct caller cannot accidentally reuse a different
+    // in-memory texture that happens to share only a source label.
+    const auto cache_key = texture_input_cache_key(plan, input, compression);
+    if (texture_cache_lookup(cache_key, result, source, profile, settings, compression))
+        return result;
+
     // The platform profile is part of the Cook contract. A target may disable
     // generated mips even when an authoring setting requests them; supplied
     // source mips remain valid and are never discarded.
@@ -360,6 +435,8 @@ TextureCookProduct execute_texture_cook(const CookSource& source, const TextureC
         (execution_settings.generate_mipmaps ? "provided-plus-generated" : "provided-only")));
     result.diagnostics.push_back("levels:" + std::to_string(result.level_count));
     result.diagnostics.push_back("target:" + plan.payload_target);
+    texture_cache_store(cache_key, result);
+    result.diagnostics.push_back("cache:miss");
     return result;
 #else
     static_cast<void>(input);

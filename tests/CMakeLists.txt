@@ -23,6 +23,10 @@ add_executable(noemancer_project_ui_authoring_visual_contract_tests project_ui_a
 target_link_libraries(noemancer_project_ui_authoring_visual_contract_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.project_ui_authoring_visual_contract COMMAND noemancer_project_ui_authoring_visual_contract_tests)
 
+add_executable(noemancer_startup_hub_tests startup_hub_tests.cpp)
+target_link_libraries(noemancer_startup_hub_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.startup_hub COMMAND noemancer_startup_hub_tests)
+
 add_executable(noemancer_project_ui_action_tests project_ui_action_tests.cpp)
 target_link_libraries(noemancer_project_ui_action_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 target_compile_definitions(noemancer_project_ui_action_tests PRIVATE NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

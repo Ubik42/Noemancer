@@ -2,13 +2,16 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <fstream>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -24,10 +27,65 @@ bool has_ktx2_identifier(const std::vector<std::byte>& payload) {
     return true;
 }
 
+bool has_diagnostic(const noemancer::TextureCookProduct& product, const std::string_view value) {
+    return std::find(product.diagnostics.begin(), product.diagnostics.end(), value) !=
+        product.diagnostics.end();
+}
+
+int run_4k_pressure() {
+    using namespace noemancer;
+    if (!ktx2_available()) {
+        std::cout << "ktx2_cook_adapter_tests: KTX unavailable; 4K pressure skipped\n";
+        return 0;
+    }
+    constexpr std::uint32_t width = 4096U;
+    constexpr std::uint32_t height = 4096U;
+    TextureCookInput input{
+        .width = width,
+        .height = height,
+        .rgba8 = std::vector<std::byte>(static_cast<std::size_t>(width) * height * 4U,
+            std::byte{0x7f})
+    };
+    TextureCookSettings settings;
+    settings.semantic = TextureSemantic::base_color;
+    settings.alpha_mode = TextureAlphaMode::blend;
+    settings.srgb = true;
+    settings.generate_mipmaps = true;
+    settings.quality = 2U;
+    const auto profile = cook_platform_profile("windows-x64-debug");
+    const CookSource source{
+        .asset_id = "texture.test.pressure-4k",
+        .source_uri = "asset://test/pressure-4k.rgba8",
+        .source_hash = "sha256:pressure-4k-fixture",
+        .source_bytes = input.rgba8.size(),
+        .importer = "image/rgba8"
+    };
+    const auto first_started = std::chrono::steady_clock::now();
+    const auto first = execute_texture_cook(source, input, profile, settings,
+        TextureCookCompression::basis_lz);
+    const auto first_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - first_started).count();
+    const auto repeat_started = std::chrono::steady_clock::now();
+    const auto repeat = execute_texture_cook(source, input, profile, settings,
+        TextureCookCompression::basis_lz);
+    const auto repeat_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - repeat_started).count();
+    if (!first.valid || !repeat.valid || first.payload != repeat.payload ||
+        !has_diagnostic(repeat, "cache:hit")) {
+        std::cerr << "4K KTX2 pressure did not preserve payload identity or cache reuse\n";
+        return 20;
+    }
+    std::cout << "ktx2_cook_adapter_tests: 4k first_ms=" << first_milliseconds
+              << " repeat_ms=" << repeat_milliseconds
+              << " payload_bytes=" << first.payload.size() << "\n";
+    return 0;
+}
+
 } // namespace
 
 int main(const int argc,char** argv) {
     using namespace noemancer;
+    if (argc == 2 && std::string_view(argv[1]) == "--pressure-4k") return run_4k_pressure();
     if(argc==2) {
         std::ifstream stream(argv[1],std::ios::binary);
         const std::vector<char> bytes{std::istreambuf_iterator<char>(stream),{}};
@@ -63,7 +121,10 @@ int main(const int argc,char** argv) {
     settings.generate_mipmaps = true;
     settings.quality = 2U;
 
+    const auto first_started = std::chrono::steady_clock::now();
     const auto basis = execute_texture_cook(source, input, profile, settings, TextureCookCompression::basis_lz);
+    const auto first_milliseconds = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - first_started).count();
     if (!ktx2_available()) {
         if (basis.valid || basis.code != "asset.ktx2-unavailable" || basis.ktx_available) {
             std::cerr << "Missing KTX dependency did not produce an explicit unavailable result.\n";
@@ -96,10 +157,13 @@ int main(const int argc,char** argv) {
         std::cerr << "Runtime BC7 mip-chain transcode did not preserve the full KTX2 chain.\n";
         return 12;
     }
+    const auto repeat_started = std::chrono::steady_clock::now();
     const auto basis_repeat = execute_texture_cook(source, input, profile, settings, TextureCookCompression::basis_lz);
+    const auto repeat_milliseconds = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - repeat_started).count();
     if (!basis_repeat.valid || basis.payload != basis_repeat.payload ||
         basis.payload_fingerprint != basis_repeat.payload_fingerprint ||
-        basis.level_count != basis_repeat.level_count) {
+        basis.level_count != basis_repeat.level_count || !has_diagnostic(basis_repeat, "cache:hit")) {
         std::cerr << "BasisLZ KTX2 output was not deterministic.\n";
         return 3;
     }
@@ -171,6 +235,7 @@ int main(const int argc,char** argv) {
         std::cerr << "sRGB normal-map KTX2 contract was accepted.\n";
         return 10;
     }
-    std::cout << "ktx2_cook_adapter_tests: ok\n";
+    std::cout << "ktx2_cook_adapter_tests: ok first_us=" << first_milliseconds
+              << " repeat_us=" << repeat_milliseconds << "\n";
     return 0;
 }

@@ -54,6 +54,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 
 ### P2：已完成——Editor Experience 基础
 
+- 正式产品入口已从游戏验收快捷方式中分离：`Noemancer Editor.cmd` 从自身位置解析仓库、按需调用统一构建入口，并可无项目打开 Project Hub 或直接打开指定项目。Project Hub 使用自有平面矢量标识，提供 Open/New/Empty Workspace 与有界最近项目状态；同一状态以 `noemancer.startup-hub/0.1` 语义投影暴露，项目动作继续进入既有 Workspace Authority。无项目入口不再注入 VFX 调试粒子。Platformer 两个 `.cmd` 仅保留为验收项目入口。
 - 保留 Dear ImGui 作为 Dockspace、Profiler、Render Debugger 和低层诊断壳；不把当前换色 ImGui 首版误认为最终产品 UI。
 - 建立 Editor 专用视觉 token、字体/图标、表面层级、状态色、控件密度和一致的 hover/focus/disabled/error/success 反馈；中央 Scene View 保持最大工作面积，Outliner、Inspector、Asset Browser 和底部工具服务当前选择与制作循环。
 - 首批收口应用顶栏、Edit/Play/Paused/Build 状态、场景工具栏、面板标题/搜索/空状态与 Inspector 信息层级；去除 `Bootstrap`、`GPU Scene` 等面向开发夹具的产品文案。
@@ -65,7 +66,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 ### P3：生产纵切已成立——Noemancer Platformer 第一阶段验收
 
 - 只补阻塞真实游戏制作的通用能力，不抢先制作大量内容。
-- 引擎根目录提供 `Open Platformer Editor.cmd` 与 `Play Platformer.cmd` 两个验收入口：前者增量构建后直接打开源项目编辑器，后者按 Runtime 与项目内容哈希创建或复用 Debug 原子包，并启动不含编辑器壳层的独立 Player。首次游戏启动需要 Cook/Package，内容未变时后续启动复用同一包。
+- 引擎根目录提供 `Open Platformer Editor.cmd` 与 `Play Platformer.cmd` 两个专用验收入口：前者增量构建后直接打开源项目编辑器，后者按 Runtime 与项目内容哈希创建或复用 Debug 原子包，并启动不含编辑器壳层的独立 Player。它们不替代官方 `Noemancer Editor.cmd`。首次游戏启动需要 Cook/Package，内容未变时后续启动复用同一包。
 - 验证 Input、2D Character Motor、Camera、Tilemap/Sprite、Trigger/Tag、脚本、音频、UI、Save/Replay 和打包闭环。
 - Input 已形成项目级可移植契约与改键作者闭环：Project manifest 严格校验 Action/Binding，SDL3 泛化键盘、鼠标和手柄 source，轴死区在 Action 层执行；可见 Project Settings、真实输入捕获、原子保存和热应用贯通 Edit World、Play World、Headless 与打包 Player，不复制第二份 Input 状态。Lumen Run 显式声明键盘、方向键、手柄摇杆/D-pad、跳跃、交互、暂停和重开映射，并已通过临时改绑验收。
 - 项目 HUD 已形成首个生产纵切：Project manifest 引用严格校验的 Semantic UI 文档，Package closure 与 Game Profile 携带该资产；Runtime 把托管脚本 public state、Input Action 与 Gameplay Attribute 绑定为 revisioned UI 节点，同一物化文档交给 RmlUi 和 `ui.project.observe`。新建 Workspace 自动生成可运行 HUD，Lumen Run 的收集数、完成态和移动输入已在隐藏 Player 画面中成立。后续扩写组件库、交互 Action 和可视化作者工具，不回退到项目专用 C++ HUD。
@@ -131,7 +132,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 - 新增可解析的 visual contract 回归，覆盖组件继承、`componentRef`、稳定字段身份、非法 JSON、dirty/pending/stale/conflict 与文档诊断；公共测试配置变化后的 Debug 全量 CTest 87/87 通过。
 - 当前切片：`hybrid-pixel.large-sprite-tilemap-production-pressure`。以可测生产负载验证长 Sprite 序列、Atlas 碎片/纹理数组决策、Registry→Cook→Package 确定性闭包，以及大型稀疏 Tilemap 的 Chunk 可见集、稳定 GPU Range、碰撞烘焙、内存和增量更新成本；只有证据证明现有 Atlas 路径不足时才引入 texture array。完成后进入 `game-migration.hybrid-pixel-hd2d-small-slice`；游戏不并入引擎 sample，也不以项目特例抢占通用能力。
 - 该切片首个生产批次已落盘：Sprite Codec 增加 source/frame/clip/引用硬上限和 Atlas union/overlap/free area、引用复用、稳定 layout fingerprint；`asset.sprite.pressure` 与 Registry `asset.inspect.renderPayload.production` 把同一统计投影给 CLI/Agent。Tilemap 增加统一层/Chunk/Cell/可见集/collider 预算、生产内存统计、确定性 packed range、局部可见查询，以及带 dry-run/commit 的增量 stroke 收据；收据量化 dirty/rebuilt/reused/created/removed Chunk、上传量与稳定 range 复用。`render.tilemap.pressure` 0.3 可模拟 64×64 Chunk 的稀疏占用而不实例化全部可寻址 Cell。
-- 正式证据 `generated/acceptance/sprite-tilemap-production-pressure-evidence.json` 在真实项目临时副本上通过：真实 2048×2048 Atlas 含 2,048 帧/32 Clips，Registry→Inspect→Cook Apply→Package dry-run 闭合；Tilemap 为 4,096 Chunks、262,144 可寻址/65,536 占用 Cell，裁掉 3,469 Chunks，稳定 range move 为 0，源项目树未改变。证据明确不宣称 GPU timing；公共构建与 Agent ABI 变化后的 Debug 全量 CTest 89/89 和 MCP smoke 通过。一次真实 4096×4096 Debug Atlas Cook 超过 120 秒预算，因此当前切片不退出：后续优先测 Release/offline cook profile、缓存与分页面增量重建，再以数据决定维持单 Atlas、拆分 Sprite asset 或引入 texture array。
+- 正式证据 `generated/acceptance/sprite-tilemap-production-pressure-evidence.json` 在真实项目临时副本上通过：真实 2048×2048 Atlas 含 2,048 帧/32 Clips，Registry→Inspect→Cook Apply→Package dry-run 闭合；Tilemap 为 4,096 Chunks、262,144 可寻址/65,536 占用 Cell，裁掉 3,469 Chunks，稳定 range move 为 0，源项目树未改变。证据明确不宣称 GPU timing；公共构建与 Agent ABI 变化后的 Debug 全量 CTest 89/89 和 MCP smoke 通过。KTX2 Adapter 现有 256 MiB 有界进程内结果缓存，以完整内容/配方/压缩模式身份消除同一进程重复编码；小型探针首次/重复约为 46 ms/0.1 ms。一次真实 4096×4096 Debug Atlas 首次 Cook 仍超过 100 秒预算，因此当前切片不退出：后续优先实测 Release/offline profile、libktx 编码并行度、mipmap 生成和分页面增量重建，再以数据决定维持单 Atlas、拆分 Sprite asset 或引入 texture array。
 
 ### P8：游戏迁移与制作验证（通用引擎完成后的下游验收）
 
