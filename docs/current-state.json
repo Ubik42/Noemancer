@@ -2,7 +2,7 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-24",
   "status": "active-development",
-  "currentSlice": "production.project-ui-authoring-and-interaction",
+  "currentSlice": "hybrid-pixel.large-sprite-tilemap-production-pressure",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -11,7 +11,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "production.project-ui-authoring-and-interaction",
     "hybrid-pixel.large-sprite-tilemap-production-pressure",
     "game-migration.hybrid-pixel-hd2d-small-slice"
   ],
@@ -22,6 +21,7 @@
     "engine-production-closure",
     "editor-experience-foundation",
     "production.project-ui-authoring-and-input-remap",
+    "production.project-ui-authoring-and-interaction",
     "production.release-diagnostics-and-license-closure",
     "game-migration.open-2d-small-slice",
     "hybrid-pixel.core-profile",

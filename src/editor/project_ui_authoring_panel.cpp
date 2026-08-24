@@ -165,11 +165,61 @@ Json field_state_json(const ProjectUiAuthoringFieldState& state) {
             {"conflict", state.conflict}, {"error", state.error}};
 }
 
-void draw_text_input(const char* label, std::string& value, const std::size_t capacity = 512U) {
+bool draw_text_input(const char* label, std::string& value, const std::size_t capacity = 512U) {
     std::vector<char> buffer(std::max<std::size_t>(capacity, value.size() + 1U));
     std::ranges::copy(value, buffer.begin());
     buffer[value.size()] = '\0';
-    if (ImGui::InputText(label, buffer.data(), buffer.size())) value = buffer.data();
+    if (!ImGui::InputText(label, buffer.data(), buffer.size())) return false;
+    value = buffer.data();
+    return true;
+}
+
+bool draw_multiline_text(const char* label, std::string& value, const ImVec2 size = {0.0F, 76.0F},
+                         const std::size_t capacity = 4096U) {
+    std::vector<char> buffer(std::max<std::size_t>(capacity, value.size() + 1U));
+    std::ranges::copy(value, buffer.begin());
+    buffer[value.size()] = '\0';
+    if (!ImGui::InputTextMultiline(label, buffer.data(), buffer.size(), size)) return false;
+    value = buffer.data();
+    return true;
+}
+
+void draw_field_status(const ProjectUiAuthoringFieldState& status) {
+    const auto field = project_ui_authoring_field_kind_name(status.field);
+    if (!status.valid) {
+        ImGui::SameLine();
+        ImGui::TextColored({1.0F, 0.42F, 0.34F, 1.0F}, "error");
+    } else if (status.conflict) {
+        ImGui::SameLine();
+        ImGui::TextColored({1.0F, 0.72F, 0.24F, 1.0F}, "conflict");
+    } else if (status.pending) {
+        ImGui::SameLine();
+        ImGui::TextColored({0.42F, 0.78F, 1.0F, 1.0F}, "pending");
+    } else if (status.dirty) {
+        ImGui::SameLine();
+        ImGui::TextColored({0.45F, 0.88F, 0.62F, 1.0F}, "dirty");
+    }
+    if (!status.error.empty()) {
+        ImGui::TextColored({1.0F, 0.42F, 0.34F, 1.0F}, "%s: %s", field, status.error.c_str());
+    }
+}
+
+void draw_readonly_json_summary(const char* label, const std::string& json) {
+    const auto parsed = Json::parse(json, nullptr, false);
+    if (parsed.is_discarded()) {
+        ImGui::TextColored({1.0F, 0.42F, 0.34F, 1.0F}, "%s: invalid JSON", label);
+        return;
+    }
+    if (!parsed.is_object()) {
+        ImGui::TextDisabled("%s: %s", label, parsed.type_name());
+        return;
+    }
+    ImGui::TextDisabled("%s: %zu keys", label, parsed.size());
+    for (const auto& [key, value] : parsed.items()) {
+        const auto preview = value.is_string() ? value.get<std::string>() : value.dump();
+        const auto clipped = preview.size() > 96U ? preview.substr(0U, 93U) + "..." : preview;
+        ImGui::BulletText("%s = %s", key.c_str(), clipped.c_str());
+    }
 }
 
 } // namespace
@@ -833,113 +883,386 @@ std::string ProjectUiAuthoringPanel::semantic_snapshot_json() const {
 }
 
 void ProjectUiAuthoringPanel::render() {
-    ImGui::SetNextWindowSize({620.0F, 760.0F}, ImGuiCond_FirstUseEver);
-    ImGui::Begin("Project UI Authoring");
-    ImGui::Text("Revision %llu | %zu nodes | %s",
-                static_cast<unsigned long long>(snapshot_.revision), view_.nodes.size(),
-                view_.valid ? "valid" : "invalid");
-    if (!view_.diagnostics.empty()) {
-        ImGui::TextColored({1.0F, 0.55F, 0.25F, 1.0F}, "%zu document diagnostics", view_.diagnostics.size());
-        if (ImGui::TreeNode("Diagnostics")) {
-            for (const auto& diagnostic : view_.diagnostics)
-                ImGui::BulletText("%s: %s", diagnostic.code.c_str(), diagnostic.detail.c_str());
-            ImGui::TreePop();
-        }
+    ImGui::SetNextWindowSize({1040.0F, 780.0F}, ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Project UI Authoring")) {
+        ImGui::End();
+        return;
     }
 
-    ImGui::SeparatorText("Hierarchy");
+    // The header is intentionally a compact, machine-legible status line.  A
+    // human can see the source revision and whether an edit is still local;
+    // an Agent sees the same facts in semantic_snapshot_json().
+    std::size_t dirty_fields{};
+    std::size_t invalid_fields{};
     for (const auto& node : view_.nodes) {
-        ImGui::PushID(node.id.c_str());
-        const std::string prefix(node.depth * 2U, ' ');
-        const bool selected = node.id == selected_node_id_;
-        if (ImGui::Selectable((prefix + node.label + " [" + node.role + "]").c_str(), selected))
-            static_cast<void>(select_node(node.id));
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", node.id.c_str());
-        ImGui::PopID();
-    }
-
-    if (const auto* node = selected_node(); node != nullptr) {
-        sync_selected_draft();
-        auto& draft = drafts_.at(node->id);
-        ImGui::SeparatorText("Selected Node");
-        ImGui::Text("%s (%s)", node->id.c_str(), project_ui_authoring_node_kind_name(node->kind));
-        draw_text_input("Label", draft.label);
-        draw_text_input("Role", draft.role);
-        draw_text_input("Parent ID", draft.parent_id);
-        draw_text_input("Action ID", draft.action_id);
-        draw_text_input("Binding JSON", draft.binding_json, 4096U);
-        draw_text_input("State JSON", draft.state_json, 4096U);
-        draw_text_input("Presentation JSON", draft.presentation_json, 4096U);
-        draw_text_input("Value JSON", draft.value_json, 4096U);
-        draw_text_input("Component Ref", draft.component_ref);
-        for (const auto field : {ProjectUiAuthoringFieldKind::binding, ProjectUiAuthoringFieldKind::state,
+        for (const auto field : {ProjectUiAuthoringFieldKind::label, ProjectUiAuthoringFieldKind::role,
+                                 ProjectUiAuthoringFieldKind::parent, ProjectUiAuthoringFieldKind::action_id,
+                                 ProjectUiAuthoringFieldKind::binding, ProjectUiAuthoringFieldKind::state,
                                  ProjectUiAuthoringFieldKind::presentation, ProjectUiAuthoringFieldKind::value,
                                  ProjectUiAuthoringFieldKind::component_ref}) {
-            const auto status = field_state(*node, field);
-            if (!status.error.empty())
-                ImGui::TextColored({1.0F, 0.45F, 0.30F, 1.0F}, "%s: %s",
-                                   project_ui_authoring_field_kind_name(field), status.error.c_str());
-            else if (status.conflict)
-                ImGui::TextColored({1.0F, 0.70F, 0.25F, 1.0F}, "%s: revision conflict",
-                                   project_ui_authoring_field_kind_name(field));
+            const auto status = field_state(node, field);
+            dirty_fields += status.dirty ? 1U : 0U;
+            invalid_fields += status.valid ? 0U : 1U;
         }
-        if (ImGui::Button("Update")) static_cast<void>(request_update_node());
-        ImGui::SameLine();
-        if (ImGui::Button("Reparent")) static_cast<void>(request_reparent_node());
-        ImGui::SameLine();
-        if (ImGui::Button("Delete Subtree")) static_cast<void>(request_remove_node());
     }
+    dirty_fields += design_tokens_draft_ != view_.design_tokens_json ? 1U : 0U;
+    ImGui::Text("Project UI  |  revision %llu  |  %zu nodes  |  %zu components",
+                static_cast<unsigned long long>(snapshot_.revision), view_.nodes.size(), view_.components.size());
+    ImGui::SameLine();
+    ImGui::TextColored(view_.valid ? ImVec4{0.42F, 0.86F, 0.58F, 1.0F} : ImVec4{1.0F, 0.42F, 0.34F, 1.0F},
+                       "%s", view_.valid ? "valid" : "invalid");
+    ImGui::SameLine();
+    ImGui::TextDisabled("dirty %zu  invalid %zu  undo %s  redo %s", dirty_fields, invalid_fields,
+                        snapshot_.can_undo ? "ready" : "empty", snapshot_.can_redo ? "ready" : "empty");
+    ImGui::Separator();
 
-    ImGui::SeparatorText("Add Node");
-    if (ImGui::BeginCombo("New Kind", project_ui_authoring_node_kind_name(add_kind_))) {
-        for (const auto kind : {ProjectUiAuthoringNodeKind::container, ProjectUiAuthoringNodeKind::text,
-                                ProjectUiAuthoringNodeKind::button, ProjectUiAuthoringNodeKind::property}) {
-            const bool selected_kind = add_kind_ == kind;
-            if (ImGui::Selectable(project_ui_authoring_node_kind_name(kind), selected_kind)) {
-                add_kind_ = kind;
-                if (add_draft_.role.empty() || kind_from_string(add_draft_.role) == ProjectUiAuthoringNodeKind::unknown)
-                    add_draft_.role = project_ui_authoring_node_kind_name(kind);
+    if (ImGui::BeginTable("##project-ui-authoring-columns", 2,
+                          ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+                              ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Hierarchy", ImGuiTableColumnFlags_WidthFixed, 330.0F);
+        ImGui::TableSetupColumn("Inspector", ImGuiTableColumnFlags_WidthStretch);
+
+        // Left column: the source hierarchy is the primary navigation model.
+        // It is rendered as a real tree, not a string with spaces, so the same
+        // parent/child relationship is visible to a person and unambiguous in
+        // the semantic projection.
+        ImGui::TableNextColumn();
+        ImGui::SeparatorText("Node tree");
+        if (ImGui::BeginChild("##project-ui-node-tree", ImVec2(0.0F, 300.0F), ImGuiChildFlags_Borders)) {
+            std::unordered_map<std::string, std::vector<const ProjectUiAuthoringNode*>> children;
+            std::vector<const ProjectUiAuthoringNode*> roots;
+            for (const auto& node : view_.nodes) {
+                if (node.parent_id.empty()) roots.push_back(&node);
+                else children[node.parent_id].push_back(&node);
             }
-            if (selected_kind) ImGui::SetItemDefaultFocus();
+            std::unordered_set<std::string> visited;
+            const auto draw_tree_node = [&](const auto& self, const ProjectUiAuthoringNode& node) -> void {
+                if (!visited.insert(node.id).second) return;
+                const auto child = children.find(node.id);
+                const bool has_children = child != children.end() && !child->second.empty();
+                ImGui::PushID(node.id.c_str());
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
+                if (node.id == selected_node_id_) flags |= ImGuiTreeNodeFlags_Selected;
+                if (!has_children) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+                std::string title = node.label.empty() ? node.id : node.label;
+                title += "  [";
+                title += node.role;
+                title += "]";
+                const bool open = ImGui::TreeNodeEx("##node", flags, "%s", title.c_str());
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) static_cast<void>(select_node(node.id));
+                const auto state = field_state(node, ProjectUiAuthoringFieldKind::state);
+                const auto presentation = field_state(node, ProjectUiAuthoringFieldKind::presentation);
+                const auto component = field_state(node, ProjectUiAuthoringFieldKind::component_ref);
+                if (!state.valid || !presentation.valid || !component.valid) {
+                    ImGui::SameLine();
+                    ImGui::TextColored({1.0F, 0.42F, 0.34F, 1.0F}, "!");
+                } else if (state.conflict || presentation.conflict || component.conflict) {
+                    ImGui::SameLine();
+                    ImGui::TextColored({1.0F, 0.72F, 0.24F, 1.0F}, "conflict");
+                } else if (state.dirty || presentation.dirty || component.dirty) {
+                    ImGui::SameLine();
+                    ImGui::TextColored({0.45F, 0.88F, 0.62F, 1.0F}, "dirty");
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", node.id.c_str());
+                if (has_children && open) {
+                    for (const auto* child_node : child->second) self(self, *child_node);
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            };
+            for (const auto* node : roots) draw_tree_node(draw_tree_node, *node);
+            // Invalid/orphaned sources remain inspectable rather than silently
+            // disappearing from the authoring surface.
+            for (const auto& node : view_.nodes)
+                if (!visited.contains(node.id)) draw_tree_node(draw_tree_node, node);
+            if (view_.nodes.empty()) ImGui::TextDisabled("No authored nodes.");
         }
-        ImGui::EndCombo();
-    }
-    draw_text_input("New ID", add_draft_.id);
-    draw_text_input("New Role", add_draft_.role);
-    draw_text_input("New Label", add_draft_.label);
-    draw_text_input("New Parent ID", add_draft_.parent_id);
-    draw_text_input("New Action ID", add_draft_.action_id);
-    draw_text_input("New Binding JSON", add_draft_.binding_json, 4096U);
-    draw_text_input("New Component Ref", add_draft_.component_ref);
-    if (ImGui::Button("Add Node")) static_cast<void>(request_add_node());
-    ImGui::SameLine();
-    if (ImGui::Button("Undo")) static_cast<void>(request_undo());
-    ImGui::SameLine();
-    if (ImGui::Button("Redo")) static_cast<void>(request_redo());
+        ImGui::EndChild();
 
-    ImGui::SeparatorText("Design Tokens");
-    draw_text_input("Design Tokens JSON", design_tokens_draft_, 4096U);
-    if (ImGui::Button("Update Design Tokens")) static_cast<void>(request_update_design_tokens());
-    if (!design_tokens_error_.empty())
-        ImGui::TextColored({1.0F, 0.45F, 0.30F, 1.0F}, "%s", design_tokens_error_.c_str());
+        ImGui::SeparatorText("Create node");
+        if (ImGui::BeginCombo("Kind", project_ui_authoring_node_kind_name(add_kind_))) {
+            for (const auto kind : {ProjectUiAuthoringNodeKind::container, ProjectUiAuthoringNodeKind::text,
+                                    ProjectUiAuthoringNodeKind::button, ProjectUiAuthoringNodeKind::property}) {
+                const bool selected_kind = add_kind_ == kind;
+                if (ImGui::Selectable(project_ui_authoring_node_kind_name(kind), selected_kind)) {
+                    add_kind_ = kind;
+                    if (add_draft_.role.empty() || kind_from_string(add_draft_.role) == ProjectUiAuthoringNodeKind::unknown)
+                        add_draft_.role = project_ui_authoring_node_kind_name(kind);
+                }
+                if (selected_kind) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        draw_text_input("ID", add_draft_.id);
+        draw_text_input("Role", add_draft_.role);
+        draw_text_input("Label", add_draft_.label);
+        draw_text_input("Parent ID", add_draft_.parent_id);
+        draw_text_input("Action ID", add_draft_.action_id);
+        draw_multiline_text("Binding##new-node", add_draft_.binding_json, ImVec2(-1.0F, 54.0F));
+        if (ImGui::BeginCombo("Component##new-node",
+                              add_draft_.component_ref.empty() ? "<none>" : add_draft_.component_ref.c_str())) {
+            if (ImGui::Selectable("<none>", add_draft_.component_ref.empty())) add_draft_.component_ref.clear();
+            for (const auto& component : view_.components) {
+                const bool selected = add_draft_.component_ref == component.id;
+                const auto title = component.label.empty() ? component.id : component.id + " / " + component.label;
+                if (ImGui::Selectable(title.c_str(), selected)) add_draft_.component_ref = component.id;
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::Button("Add node")) static_cast<void>(request_add_node());
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!snapshot_.can_undo || pending_request_.has_value());
+        if (ImGui::Button("Undo")) static_cast<void>(request_undo());
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!snapshot_.can_redo || pending_request_.has_value());
+        if (ImGui::Button("Redo")) static_cast<void>(request_redo());
+        ImGui::EndDisabled();
 
-    if (!view_.components.empty()) {
-        ImGui::SeparatorText("Components");
-        for (const auto& component : view_.components) {
-            ImGui::PushID(component.id.c_str());
-            ImGui::Text("%s%s", component.id.c_str(), component.label.empty() ? "" : (" / " + component.label).c_str());
+        // Right column: a compact inspector deliberately follows the source
+        // language.  JSON editors are kept under stateful sections and are
+        // accompanied by parsed summaries, so arbitrary user-authored fields
+        // remain lossless without turning the whole panel into a JSON dump.
+        ImGui::TableNextColumn();
+        const auto* node = selected_node();
+        if (node == nullptr) {
+            ImGui::SeparatorText("Inspector");
+            ImGui::TextDisabled("Select a node from the tree to inspect it.");
+        } else {
+            sync_selected_draft();
+            auto& draft = drafts_.at(node->id);
+            ImGui::SeparatorText("Selected node");
+            ImGui::Text("%s  /  %s  /  depth %zu  /  %zu children", node->id.c_str(),
+                        project_ui_authoring_node_kind_name(node->kind), node->depth, node->child_count);
+
+            const auto edit_scalar = [&](const char* caption, std::string& value,
+                                         const ProjectUiAuthoringFieldKind field, const auto& setter) {
+                ImGui::TextUnformatted(caption);
+                draw_field_status(field_state(*node, field));
+                std::string candidate = value;
+                const std::string id = std::string("##selected-") + project_ui_authoring_field_kind_name(field);
+                if (draw_text_input(id.c_str(), candidate)) {
+                    if (!setter(candidate)) {
+                        value = candidate;
+                        if (!last_error_.empty()) set_field_error(node->id, field, last_error_);
+                    }
+                }
+            };
+            const auto edit_json = [&](const char* caption, std::string& value,
+                                       const ProjectUiAuthoringFieldKind field, const auto& setter,
+                                       const ImVec2 size = {0.0F, 72.0F}) {
+                ImGui::TextUnformatted(caption);
+                draw_field_status(field_state(*node, field));
+                std::string candidate = value;
+                const std::string id = std::string("##selected-") + project_ui_authoring_field_kind_name(field);
+                if (draw_multiline_text(id.c_str(), candidate, size)) {
+                    if (!setter(candidate)) {
+                        value = candidate;
+                        if (!last_error_.empty()) set_field_error(node->id, field, last_error_);
+                    }
+                }
+                if (ImGui::TreeNodeEx((std::string("Parsed ") + caption).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                    draw_readonly_json_summary(caption, value);
+                    ImGui::TreePop();
+                }
+            };
+
+            if (ImGui::CollapsingHeader("Identity", ImGuiTreeNodeFlags_DefaultOpen)) {
+                edit_scalar("Label", draft.label, ProjectUiAuthoringFieldKind::label,
+                            [&](const std::string& value) { return set_label(value); });
+                edit_scalar("Role", draft.role, ProjectUiAuthoringFieldKind::role,
+                            [&](const std::string& value) { return set_role(value); });
+                edit_scalar("Parent ID", draft.parent_id, ProjectUiAuthoringFieldKind::parent,
+                            [&](const std::string& value) { return set_parent(value); });
+                edit_scalar("Action ID", draft.action_id, ProjectUiAuthoringFieldKind::action_id,
+                            [&](const std::string& value) { return set_action_id(value); });
+
+                ImGui::TextUnformatted("Component declaration");
+                draw_field_status(field_state(*node, ProjectUiAuthoringFieldKind::component_ref));
+                std::string component_preview = draft.component_ref.empty() ? "<none>" : draft.component_ref;
+                if (!draft.component_ref.empty()) {
+                    const auto found = std::ranges::find(view_.components, draft.component_ref,
+                                                         &ProjectUiAuthoringComponentDeclaration::id);
+                    if (found != view_.components.end() && !found->label.empty())
+                        component_preview += " / " + found->label;
+                }
+                if (ImGui::BeginCombo("##selected-component", component_preview.c_str())) {
+                    if (ImGui::Selectable("<none>", draft.component_ref.empty()))
+                        static_cast<void>(set_component_ref({}));
+                    for (const auto& component : view_.components) {
+                        const bool selected = draft.component_ref == component.id;
+                        const auto title = component.label.empty() ? component.id : component.id + " / " + component.label;
+                        if (ImGui::Selectable(title.c_str(), selected)) static_cast<void>(set_component_ref(component.id));
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+
+            if (ImGui::CollapsingHeader("State and presentation", ImGuiTreeNodeFlags_DefaultOpen)) {
+                edit_json("Binding", draft.binding_json, ProjectUiAuthoringFieldKind::binding,
+                          [&](const std::string& value) { return set_binding_json(value); }, ImVec2(0.0F, 62.0F));
+                edit_json("State", draft.state_json, ProjectUiAuthoringFieldKind::state,
+                          [&](const std::string& value) { return set_state_json(value); });
+                edit_json("Presentation", draft.presentation_json, ProjectUiAuthoringFieldKind::presentation,
+                          [&](const std::string& value) { return set_presentation_json(value); });
+                edit_json("Value", draft.value_json, ProjectUiAuthoringFieldKind::value,
+                          [&](const std::string& value) { return set_value_json(value); }, ImVec2(0.0F, 54.0F));
+            }
+
+            ImGui::BeginDisabled(pending_request_.has_value());
+            if (ImGui::Button("Commit node")) static_cast<void>(request_update_node());
             ImGui::SameLine();
-            if (ImGui::SmallButton("Update Declaration"))
-                static_cast<void>(request_update_component_declaration(component.id));
-            ImGui::PopID();
+            if (ImGui::Button("Reparent")) static_cast<void>(request_reparent_node());
+            ImGui::SameLine();
+            if (ImGui::Button("Delete subtree")) static_cast<void>(request_remove_node());
+            ImGui::EndDisabled();
         }
-    }
 
-    if (pending_request_)
-        ImGui::TextDisabled("Pending: %s (%s)", pending_request_->request_id.c_str(),
-                           project_ui_authoring_request_kind_name(pending_request_->kind));
-    if (!last_error_.empty()) ImGui::TextColored({1.0F, 0.35F, 0.30F, 1.0F}, "%s", last_error_.c_str());
+        if (ImGui::CollapsingHeader("Component declarations", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (view_.components.empty()) {
+                ImGui::TextDisabled("No reusable declarations. Add one below.");
+            } else {
+                if (selected_component_id_.empty() ||
+                    std::ranges::find(view_.components, selected_component_id_,
+                                      &ProjectUiAuthoringComponentDeclaration::id) == view_.components.end())
+                    selected_component_id_ = view_.components.front().id;
+                const auto selected_component = std::ranges::find(view_.components, selected_component_id_,
+                                                                   &ProjectUiAuthoringComponentDeclaration::id);
+                const auto component_preview = selected_component == view_.components.end()
+                    ? std::string("<none>")
+                    : (selected_component->label.empty() ? selected_component->id
+                                                          : selected_component->id + " / " + selected_component->label);
+                if (ImGui::BeginCombo("Declaration", component_preview.c_str())) {
+                    for (const auto& component : view_.components) {
+                        const bool selected = component.id == selected_component_id_;
+                        const auto title = component.label.empty() ? component.id : component.id + " / " + component.label;
+                        if (ImGui::Selectable(title.c_str(), selected)) selected_component_id_ = component.id;
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (selected_component != view_.components.end()) {
+                    const auto draft = component_drafts_.find(selected_component_id_);
+                    std::string source = draft == component_drafts_.end() ? selected_component->component_json : draft->second;
+                    auto parsed = Json::parse(source, nullptr, false);
+                    if (parsed.is_discarded() || !parsed.is_object()) {
+                        draw_field_status({.field = ProjectUiAuthoringFieldKind::component_declaration,
+                                           .valid = false, .dirty = true,
+                                           .error = "Component declaration must be a JSON object."});
+                    } else {
+                        ImGui::Text("id: %s  |  root: %s  |  %zu authored fields", selected_component->id.c_str(),
+                                    string_member(parsed, "rootNodeId", string_member(parsed, "root", "<none>")).c_str(),
+                                    parsed.size());
+                        const auto label_key = parsed.contains("label") ? "label" : "name";
+                        std::string label = string_member(parsed, label_key);
+                        ImGui::TextUnformatted("Label");
+                        const std::string label_id = "##component-label-" + selected_component_id_;
+                        if (draw_text_input(label_id.c_str(), label)) {
+                            parsed[label_key] = label;
+                            const auto candidate = parsed.dump();
+                            if (!set_component_declaration_json(selected_component_id_, candidate))
+                                component_drafts_[selected_component_id_] = candidate;
+                        }
+                        const auto root_key = parsed.contains("rootNodeId") ? "rootNodeId" : "root";
+                        std::string root = string_member(parsed, root_key);
+                        ImGui::TextUnformatted("Root node ID");
+                        const std::string root_id = "##component-root-" + selected_component_id_;
+                        if (draw_text_input(root_id.c_str(), root)) {
+                            parsed[root_key] = root;
+                            const auto candidate = parsed.dump();
+                            if (!set_component_declaration_json(selected_component_id_, candidate))
+                                component_drafts_[selected_component_id_] = candidate;
+                        }
+                        if (ImGui::TreeNode("Advanced declaration source")) {
+                            const auto current_draft = component_drafts_.find(selected_component_id_);
+                            std::string editable = current_draft == component_drafts_.end()
+                                ? selected_component->component_json : current_draft->second;
+                            if (draw_multiline_text(("##component-source-" + selected_component_id_).c_str(), editable,
+                                                    ImVec2(0.0F, 92.0F), 8192U))
+                                static_cast<void>(set_component_declaration_json(selected_component_id_, editable));
+                            ImGui::TreePop();
+                        }
+                        const auto status = selected_component->status;
+                        auto effective_status = status;
+                        effective_status.dirty = component_drafts_.contains(selected_component_id_) &&
+                            component_drafts_.at(selected_component_id_) != selected_component->component_json;
+                        effective_status.pending = pending_request_ && pending_request_->component_id == selected_component_id_;
+                        effective_status.conflict = conflicted_fields_.contains("component:" + selected_component_id_);
+                        if (const auto error = field_errors_.find(field_key("component:" + selected_component_id_,
+                                                                             ProjectUiAuthoringFieldKind::component_declaration));
+                            error != field_errors_.end()) {
+                            effective_status.valid = false;
+                            effective_status.error = error->second;
+                        }
+                        draw_field_status(effective_status);
+                        ImGui::BeginDisabled(pending_request_.has_value());
+                        if (ImGui::Button("Commit declaration"))
+                            static_cast<void>(request_update_component_declaration(selected_component_id_));
+                        ImGui::SameLine();
+                        if (ImGui::Button("Remove declaration"))
+                            static_cast<void>(request_remove_component_declaration(selected_component_id_));
+                        ImGui::EndDisabled();
+                    }
+                }
+            }
+            draw_text_input("New declaration ID", new_component_id_);
+            if (ImGui::Button("Add declaration"))
+                static_cast<void>(request_add_component_declaration(new_component_id_));
+        }
+
+        if (ImGui::CollapsingHeader("Design tokens", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const auto token_status = [&] {
+                auto status = view_.design_tokens_status;
+                status.dirty = design_tokens_draft_ != view_.design_tokens_json;
+                status.pending = pending_request_ && pending_request_->kind == ProjectUiAuthoringPanelRequestKind::update_design_tokens;
+                status.conflict = conflicted_fields_.contains(field_key({}, ProjectUiAuthoringFieldKind::design_tokens));
+                status.error = design_tokens_error_;
+                status.valid = status.error.empty() && view_.design_tokens_valid;
+                return status;
+            }();
+            draw_field_status(token_status);
+            draw_readonly_json_summary("Current token values", design_tokens_draft_);
+            if (ImGui::TreeNode("Edit token source")) {
+                std::string candidate = design_tokens_draft_;
+                if (draw_multiline_text("##design-tokens-source", candidate, ImVec2(0.0F, 96.0F), 8192U)) {
+                    if (!set_design_tokens_json(candidate)) design_tokens_draft_ = candidate;
+                }
+                if (ImGui::Button("Commit design tokens")) static_cast<void>(request_update_design_tokens());
+                ImGui::TreePop();
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Diagnostics", view_.diagnostics.empty() ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (view_.diagnostics.empty()) ImGui::TextColored({0.42F, 0.86F, 0.58F, 1.0F}, "No document diagnostics.");
+            for (const auto& diagnostic : view_.diagnostics) {
+                ImGui::PushID(diagnostic.path.c_str());
+                ImGui::TextColored({1.0F, 0.58F, 0.28F, 1.0F}, "%s", diagnostic.code.c_str());
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", diagnostic.path.c_str());
+                ImGui::TextWrapped("%s", diagnostic.detail.c_str());
+                ImGui::PopID();
+            }
+        }
+
+        ImGui::SeparatorText("Commit status");
+        if (pending_request_) {
+            ImGui::TextColored({0.42F, 0.78F, 1.0F, 1.0F}, "Pending %s",
+                               project_ui_authoring_request_kind_name(pending_request_->kind));
+            ImGui::SameLine();
+            ImGui::TextDisabled("request %s @ revision %llu", pending_request_->request_id.c_str(),
+                                static_cast<unsigned long long>(pending_request_->base_revision));
+        } else if (dirty_fields != 0U) {
+            ImGui::TextColored({0.45F, 0.88F, 0.62F, 1.0F}, "%zu local draft fields; commit is explicit.", dirty_fields);
+        } else {
+            ImGui::TextDisabled("No local drafts. Source is synchronized at revision %llu.",
+                                static_cast<unsigned long long>(snapshot_.revision));
+        }
+        if (!last_error_.empty()) ImGui::TextColored({1.0F, 0.35F, 0.30F, 1.0F}, "%s", last_error_.c_str());
+        ImGui::EndTable();
+    }
     ImGui::End();
 }
 

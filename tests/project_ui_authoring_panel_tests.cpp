@@ -145,6 +145,14 @@ int main() {
         std::cerr << "Agent semantic project UI snapshot was incomplete.\n";
         return 29;
     }
+    bool state_dirty{};
+    for (const auto& field : semantic.at("nodes").at(2).at("fields"))
+        if (field.value("field", "") == "state" && field.value("dirty", false)) state_dirty = true;
+    if (!state_dirty || !semantic.at("designTokensStatus").value("dirty", false) ||
+        !semantic.at("components").at(0).at("status").value("dirty", false)) {
+        std::cerr << "Semantic authoring status did not expose local dirty drafts.\n";
+        return 34;
+    }
 
     if (!panel.request_update_node()) return 30;
     panel.set_snapshot(snapshot(18U));

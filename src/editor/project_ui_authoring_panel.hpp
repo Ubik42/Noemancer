@@ -292,6 +292,8 @@ private:
     std::map<std::string, std::string> field_errors_;
     std::set<std::string> conflicted_fields_;
     std::map<std::string, std::string> component_drafts_;
+    std::string selected_component_id_;
+    std::string new_component_id_{"component.new"};
     std::string design_tokens_draft_{"{}"};
     std::string design_tokens_error_;
     std::string last_error_;
