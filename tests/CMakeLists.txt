@@ -1,0 +1,410 @@
+add_executable(noemancer_world_tests world_tests.cpp)
+target_link_libraries(noemancer_world_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+target_compile_definitions(noemancer_world_tests PRIVATE NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME noemancer.world COMMAND noemancer_world_tests)
+
+add_executable(noemancer_semantic_ui_tests semantic_ui_tests.cpp)
+target_link_libraries(noemancer_semantic_ui_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.semantic_ui COMMAND noemancer_semantic_ui_tests)
+
+add_executable(noemancer_retained_ui_runtime_tests retained_ui_runtime_tests.cpp)
+target_link_libraries(noemancer_retained_ui_runtime_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.retained_ui_runtime COMMAND noemancer_retained_ui_runtime_tests)
+
+add_executable(noemancer_text_layout_tests text_layout_tests.cpp)
+target_link_libraries(noemancer_text_layout_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.text_layout COMMAND noemancer_text_layout_tests)
+
+add_executable(noemancer_simulation_runtime_tests simulation_runtime_tests.cpp)
+target_link_libraries(noemancer_simulation_runtime_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.simulation_runtime COMMAND noemancer_simulation_runtime_tests)
+
+add_executable(noemancer_play_world_apply_tests play_world_apply_tests.cpp)
+target_link_libraries(noemancer_play_world_apply_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.play_world_apply COMMAND noemancer_play_world_apply_tests)
+
+add_executable(noemancer_package_pipeline_tests package_pipeline_tests.cpp)
+target_link_libraries(noemancer_package_pipeline_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.package_pipeline COMMAND noemancer_package_pipeline_tests)
+
+add_executable(noemancer_hybrid_pixel_production_package_tests hybrid_pixel_production_package_tests.cpp)
+target_link_libraries(noemancer_hybrid_pixel_production_package_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.hybrid_pixel_production_package COMMAND noemancer_hybrid_pixel_production_package_tests)
+
+add_executable(noemancer_asset_job_queue_tests asset_job_queue_tests.cpp)
+target_link_libraries(noemancer_asset_job_queue_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.asset_job_queue COMMAND noemancer_asset_job_queue_tests)
+
+add_executable(noemancer_asset_repair_tests asset_repair_tests.cpp)
+target_link_libraries(noemancer_asset_repair_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.asset_repair COMMAND noemancer_asset_repair_tests)
+
+add_executable(noemancer_asset_thumbnail_tests asset_thumbnail_tests.cpp)
+target_link_libraries(noemancer_asset_thumbnail_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.asset_thumbnail COMMAND noemancer_asset_thumbnail_tests)
+
+add_executable(noemancer_asset_workflow_tests asset_workflow_tests.cpp)
+target_link_libraries(noemancer_asset_workflow_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.asset_workflow COMMAND noemancer_asset_workflow_tests)
+
+add_executable(noemancer_gameplay_runtime_tests gameplay_runtime_tests.cpp)
+target_link_libraries(noemancer_gameplay_runtime_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.gameplay_runtime COMMAND noemancer_gameplay_runtime_tests)
+
+add_executable(noemancer_game_persistence_store_tests
+    game_persistence_store_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/game_persistence_store.cpp)
+target_link_libraries(noemancer_game_persistence_store_tests PRIVATE nlohmann_json::nlohmann_json)
+target_include_directories(noemancer_game_persistence_store_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME noemancer.game_persistence_store COMMAND noemancer_game_persistence_store_tests)
+
+add_executable(noemancer_character_motor_2d_tests character_motor_2d_tests.cpp)
+target_link_libraries(noemancer_character_motor_2d_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.character_motor_2d COMMAND noemancer_character_motor_2d_tests)
+
+add_executable(noemancer_vfx_runtime_tests vfx_runtime_tests.cpp)
+target_link_libraries(noemancer_vfx_runtime_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.vfx_runtime COMMAND noemancer_vfx_runtime_tests)
+
+add_executable(noemancer_vfx_gpu_residency_tests vfx_gpu_residency_tests.cpp)
+target_link_libraries(noemancer_vfx_gpu_residency_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.vfx_gpu_residency COMMAND noemancer_vfx_gpu_residency_tests)
+
+add_executable(noemancer_network_replication_tests network_replication_tests.cpp)
+target_link_libraries(noemancer_network_replication_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.network_replication COMMAND noemancer_network_replication_tests)
+if(WIN32)
+    add_test(NAME noemancer.network_two_process
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/network_two_process.ps1"
+            -Runtime "$<TARGET_FILE:noemancer>")
+    set_tests_properties(noemancer.network_two_process PROPERTIES TIMEOUT 15
+        PASS_REGULAR_EXPRESSION "Two-process network session passed")
+endif()
+
+add_executable(noemancer_gameplay_world_tests gameplay_world_tests.cpp)
+target_link_libraries(noemancer_gameplay_world_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+target_compile_definitions(noemancer_gameplay_world_tests PRIVATE NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME noemancer.gameplay_world COMMAND noemancer_gameplay_world_tests)
+
+add_executable(noemancer_managed_gameplay_acceptance_tests managed_gameplay_acceptance_tests.cpp)
+target_link_libraries(noemancer_managed_gameplay_acceptance_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+target_compile_definitions(noemancer_managed_gameplay_acceptance_tests PRIVATE NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME noemancer.managed_gameplay_acceptance COMMAND noemancer_managed_gameplay_acceptance_tests)
+
+add_executable(noemancer_render_architecture_tests render_architecture_tests.cpp)
+target_link_libraries(noemancer_render_architecture_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.render_architecture COMMAND noemancer_render_architecture_tests)
+
+add_executable(noemancer_hybrid_pixel_profile_tests hybrid_pixel_profile_tests.cpp)
+target_link_libraries(noemancer_hybrid_pixel_profile_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.hybrid_pixel_profile COMMAND noemancer_hybrid_pixel_profile_tests)
+
+add_executable(noemancer_pixel_presentation_tests pixel_presentation_tests.cpp)
+target_link_libraries(noemancer_pixel_presentation_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.pixel_presentation COMMAND noemancer_pixel_presentation_tests)
+
+add_executable(noemancer_pixel_snapping_tests pixel_snapping_tests.cpp)
+target_link_libraries(noemancer_pixel_snapping_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.pixel_snapping COMMAND noemancer_pixel_snapping_tests)
+
+add_executable(noemancer_hybrid_pixel_render_tests hybrid_pixel_render_tests.cpp)
+target_link_libraries(noemancer_hybrid_pixel_render_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.hybrid_pixel_render COMMAND noemancer_hybrid_pixel_render_tests)
+
+add_executable(noemancer_hybrid_pixel_post_tests hybrid_pixel_post_tests.cpp)
+target_link_libraries(noemancer_hybrid_pixel_post_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.hybrid_pixel_post COMMAND noemancer_hybrid_pixel_post_tests)
+
+add_executable(noemancer_cascaded_shadow_tests cascaded_shadow_tests.cpp)
+target_link_libraries(noemancer_cascaded_shadow_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.cascaded_shadow COMMAND noemancer_cascaded_shadow_tests)
+
+add_executable(noemancer_visibility_culling_tests visibility_culling_tests.cpp)
+target_link_libraries(noemancer_visibility_culling_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.visibility_culling COMMAND noemancer_visibility_culling_tests)
+
+add_executable(noemancer_temporal_aa_tests temporal_aa_tests.cpp)
+target_link_libraries(noemancer_temporal_aa_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.temporal_aa COMMAND noemancer_temporal_aa_tests)
+
+add_executable(noemancer_image_decoder_tests image_decoder_tests.cpp)
+target_link_libraries(noemancer_image_decoder_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.image_decoder COMMAND noemancer_image_decoder_tests)
+
+add_executable(noemancer_ibl_cook_tests ibl_cook_tests.cpp)
+target_link_libraries(noemancer_ibl_cook_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.ibl_cook COMMAND noemancer_ibl_cook_tests)
+
+add_executable(noemancer_asset_registry_tests asset_registry_tests.cpp)
+target_link_libraries(noemancer_asset_registry_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.asset_registry COMMAND noemancer_asset_registry_tests)
+
+add_executable(noemancer_asset_cook_pipeline_tests asset_cook_pipeline_tests.cpp)
+target_link_libraries(noemancer_asset_cook_pipeline_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.asset_cook_pipeline COMMAND noemancer_asset_cook_pipeline_tests)
+
+add_executable(noemancer_mesh_runtime_artifact_tests mesh_runtime_artifact_tests.cpp)
+target_link_libraries(noemancer_mesh_runtime_artifact_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.mesh_runtime_artifact COMMAND noemancer_mesh_runtime_artifact_tests)
+
+add_executable(noemancer_texture_streaming_policy_tests texture_streaming_policy_tests.cpp)
+target_link_libraries(noemancer_texture_streaming_policy_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.texture_streaming_policy COMMAND noemancer_texture_streaming_policy_tests)
+
+add_executable(noemancer_texture_streaming_demand_tests texture_streaming_demand_tests.cpp)
+target_link_libraries(noemancer_texture_streaming_demand_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.texture_streaming_demand COMMAND noemancer_texture_streaming_demand_tests)
+
+add_executable(noemancer_ktx2_cook_adapter_tests ktx2_cook_adapter_tests.cpp)
+target_link_libraries(noemancer_ktx2_cook_adapter_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.ktx2_cook_adapter COMMAND noemancer_ktx2_cook_adapter_tests)
+
+add_executable(noemancer_animation_state_machine_tests animation_state_machine_tests.cpp)
+target_link_libraries(noemancer_animation_state_machine_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.animation_state_machine COMMAND noemancer_animation_state_machine_tests)
+
+add_executable(noemancer_animation_graph_tests animation_graph_tests.cpp)
+target_link_libraries(noemancer_animation_graph_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.animation_graph COMMAND noemancer_animation_graph_tests)
+
+add_executable(noemancer_animation_graph_patch_tests animation_graph_patch_tests.cpp)
+target_link_libraries(noemancer_animation_graph_patch_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.animation_graph_patch COMMAND noemancer_animation_graph_patch_tests)
+
+add_executable(noemancer_animation_graph_canvas_tests animation_graph_canvas_tests.cpp)
+target_link_libraries(noemancer_animation_graph_canvas_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.animation_graph_canvas COMMAND noemancer_animation_graph_canvas_tests)
+
+add_executable(noemancer_audio_asset_tests audio_asset_tests.cpp)
+target_link_libraries(noemancer_audio_asset_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.audio_asset COMMAND noemancer_audio_asset_tests)
+
+add_executable(noemancer_audio_render_graph_tests
+    audio_render_graph_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/miniaudio_render_graph.cpp)
+target_link_libraries(noemancer_audio_render_graph_tests PRIVATE noemancer::engine noemancer_miniaudio nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.audio_render_graph COMMAND noemancer_audio_render_graph_tests)
+
+add_executable(noemancer_gltf_animation_tests gltf_animation_tests.cpp)
+target_link_libraries(noemancer_gltf_animation_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.gltf_animation COMMAND noemancer_gltf_animation_tests)
+
+add_executable(noemancer_fbx_animation_tests fbx_animation_tests.cpp)
+target_link_libraries(noemancer_fbx_animation_tests PRIVATE noemancer::engine)
+target_compile_definitions(noemancer_fbx_animation_tests PRIVATE
+    NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+add_test(NAME noemancer.fbx_animation COMMAND noemancer_fbx_animation_tests)
+set_tests_properties(noemancer.fbx_animation PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(noemancer_animation_compression_tests animation_compression_tests.cpp)
+target_link_libraries(noemancer_animation_compression_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.animation_compression COMMAND noemancer_animation_compression_tests)
+
+add_executable(noemancer_animation_compression_evidence_tests animation_compression_evidence_tests.cpp)
+target_link_libraries(noemancer_animation_compression_evidence_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+target_compile_definitions(noemancer_animation_compression_evidence_tests PRIVATE
+    NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME noemancer.animation_compression_evidence COMMAND noemancer_animation_compression_evidence_tests)
+set_tests_properties(noemancer.animation_compression_evidence PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+add_executable(noemancer_content_hash_tests content_hash_tests.cpp)
+target_link_libraries(noemancer_content_hash_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.content_hash COMMAND noemancer_content_hash_tests)
+
+add_executable(noemancer_gpu_batch_cache_tests gpu_batch_cache_tests.cpp)
+target_link_libraries(noemancer_gpu_batch_cache_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.gpu_batch_cache COMMAND noemancer_gpu_batch_cache_tests)
+
+add_executable(noemancer_linear_dirty_ranges_tests linear_dirty_ranges_tests.cpp)
+target_link_libraries(noemancer_linear_dirty_ranges_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.linear_dirty_ranges COMMAND noemancer_linear_dirty_ranges_tests)
+
+add_executable(noemancer_gpu_batch_resource_identity_tests
+    gpu_batch_resource_identity_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/gpu_batch_resource_identity.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/texture_resource_table.cpp)
+target_include_directories(noemancer_gpu_batch_resource_identity_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_gpu_batch_resource_identity_tests PRIVATE SDL3::SDL3 nlohmann_json::nlohmann_json noemancer::engine)
+add_test(NAME noemancer.gpu_batch_resource_identity COMMAND noemancer_gpu_batch_resource_identity_tests)
+
+add_executable(noemancer_gpu_driven_shader_contract_tests gpu_driven_shader_contract_tests.cpp)
+target_compile_definitions(noemancer_gpu_driven_shader_contract_tests PRIVATE NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME noemancer.gpu_driven_shader_contract
+    COMMAND noemancer_gpu_driven_shader_contract_tests "${PROJECT_SOURCE_DIR}")
+
+add_executable(noemancer_shader_artifact_contract_tests
+    shader_artifact_contract_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/shader_artifact_contract.cpp)
+target_link_libraries(noemancer_shader_artifact_contract_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.shader_artifact_contract COMMAND noemancer_shader_artifact_contract_tests)
+
+add_executable(noemancer_animation_cooked_artifact_tests animation_cooked_artifact_tests.cpp)
+target_link_libraries(noemancer_animation_cooked_artifact_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.animation_cooked_artifact COMMAND noemancer_animation_cooked_artifact_tests)
+
+add_executable(noemancer_animation_clip_asset_tests animation_clip_asset_tests.cpp)
+target_link_libraries(noemancer_animation_clip_asset_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.animation_clip_asset COMMAND noemancer_animation_clip_asset_tests)
+
+add_executable(noemancer_scene_document_tests scene_document_tests.cpp)
+target_link_libraries(noemancer_scene_document_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+target_compile_definitions(noemancer_scene_document_tests PRIVATE
+    NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+add_test(NAME noemancer.scene_document COMMAND noemancer_scene_document_tests)
+
+add_executable(noemancer_sprite_asset_tests sprite_asset_tests.cpp)
+target_link_libraries(noemancer_sprite_asset_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.sprite_asset COMMAND noemancer_sprite_asset_tests)
+
+add_executable(noemancer_semantic_2d_rig_prototype_tests semantic_2d_rig_prototype_tests.cpp)
+target_link_libraries(noemancer_semantic_2d_rig_prototype_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+target_compile_definitions(noemancer_semantic_2d_rig_prototype_tests PRIVATE
+    NOEMANCER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME noemancer.semantic_2d_rig_prototype
+    COMMAND noemancer_semantic_2d_rig_prototype_tests)
+
+add_executable(noemancer_tilemap_asset_tests tilemap_asset_tests.cpp)
+target_link_libraries(noemancer_tilemap_asset_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.tilemap_asset COMMAND noemancer_tilemap_asset_tests)
+
+add_executable(noemancer_project_document_tests project_document_tests.cpp)
+target_link_libraries(noemancer_project_document_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.project_document COMMAND noemancer_project_document_tests)
+
+add_executable(noemancer_project_input_authoring_tests project_input_authoring_tests.cpp)
+target_link_libraries(noemancer_project_input_authoring_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.project_input_authoring COMMAND noemancer_project_input_authoring_tests)
+
+add_executable(noemancer_project_hybrid_pixel_authoring_tests project_hybrid_pixel_authoring_tests.cpp)
+target_link_libraries(noemancer_project_hybrid_pixel_authoring_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.project_hybrid_pixel_authoring COMMAND noemancer_project_hybrid_pixel_authoring_tests)
+
+add_executable(noemancer_project_workspace_tests project_workspace_tests.cpp)
+target_link_libraries(noemancer_project_workspace_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.project_workspace COMMAND noemancer_project_workspace_tests)
+
+add_executable(noemancer_source_editor_service_tests
+    source_editor_service_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/source_editor_service.cpp)
+target_include_directories(noemancer_source_editor_service_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_source_editor_service_tests PRIVATE nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(noemancer_source_editor_service_tests PRIVATE shell32)
+endif()
+add_test(NAME noemancer.source_editor_service COMMAND noemancer_source_editor_service_tests)
+
+add_executable(noemancer_texture_resource_table_tests
+    texture_resource_table_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/texture_resource_table.cpp)
+target_include_directories(noemancer_texture_resource_table_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_texture_resource_table_tests PRIVATE SDL3::SDL3 nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.texture_resource_table COMMAND noemancer_texture_resource_table_tests)
+
+add_executable(noemancer_editor_model_tests editor_model_tests.cpp)
+target_link_libraries(noemancer_editor_model_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.editor_model COMMAND noemancer_editor_model_tests)
+
+add_executable(noemancer_hybrid_pixel_profile_panel_tests hybrid_pixel_profile_panel_tests.cpp)
+target_link_libraries(noemancer_hybrid_pixel_profile_panel_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.hybrid_pixel_profile_panel COMMAND noemancer_hybrid_pixel_profile_panel_tests)
+
+add_executable(noemancer_hybrid_pixel_profile_authoring_acceptance hybrid_pixel_profile_authoring_acceptance.cpp)
+target_link_libraries(noemancer_hybrid_pixel_profile_authoring_acceptance PRIVATE
+    noemancer::editor nlohmann_json::nlohmann_json)
+
+add_executable(noemancer_editor_ui_tests editor_ui_tests.cpp)
+target_link_libraries(noemancer_editor_ui_tests PRIVATE noemancer::editor noemancer_imgui)
+add_test(NAME noemancer.editor_ui COMMAND noemancer_editor_ui_tests)
+
+add_executable(noemancer_project_settings_input_map_tests project_settings_input_map_tests.cpp)
+target_link_libraries(noemancer_project_settings_input_map_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.project_settings_input_map COMMAND noemancer_project_settings_input_map_tests)
+
+add_executable(noemancer_project_settings_input_map_panel_tests project_settings_input_map_panel_tests.cpp)
+target_link_libraries(noemancer_project_settings_input_map_panel_tests PRIVATE
+    noemancer::editor noemancer_imgui nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.project_settings_input_map_panel COMMAND noemancer_project_settings_input_map_panel_tests)
+
+add_executable(noemancer_input_source_adapter_tests
+    input_source_adapter_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/input_source_adapter.cpp)
+target_include_directories(noemancer_input_source_adapter_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_input_source_adapter_tests PRIVATE SDL3::SDL3 nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.input_source_adapter COMMAND noemancer_input_source_adapter_tests)
+
+add_executable(noemancer_engine_host_tests engine_host_tests.cpp)
+target_link_libraries(noemancer_engine_host_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.engine_host COMMAND noemancer_engine_host_tests)
+
+add_executable(noemancer_managed_debug_protocol_tests managed_debug_protocol_tests.cpp)
+target_link_libraries(noemancer_managed_debug_protocol_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.managed_debug_protocol COMMAND noemancer_managed_debug_protocol_tests)
+
+add_executable(noemancer_fake_dap_adapter fake_dap_adapter.cpp)
+target_link_libraries(noemancer_fake_dap_adapter PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_executable(noemancer_managed_debug_transport_tests managed_debug_transport_tests.cpp)
+target_link_libraries(noemancer_managed_debug_transport_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.managed_debug_transport
+    COMMAND noemancer_managed_debug_transport_tests $<TARGET_FILE:noemancer_fake_dap_adapter>)
+set_tests_properties(noemancer.managed_debug_transport PROPERTIES TIMEOUT 10)
+
+add_executable(noemancer_process_diagnostics_tests process_diagnostics_tests.cpp)
+target_link_libraries(noemancer_process_diagnostics_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.diagnostics_fatal COMMAND noemancer_process_diagnostics_tests)
+set_tests_properties(noemancer.diagnostics_fatal PROPERTIES
+    PASS_REGULAR_EXPRESSION "process.terminate.*intentional fatal diagnostics probe"
+)
+add_test(NAME noemancer.diagnostics_abort_no_dialog
+    COMMAND noemancer_process_diagnostics_tests --verify-abort)
+set_tests_properties(noemancer.diagnostics_abort_no_dialog PROPERTIES
+    PASS_REGULAR_EXPRESSION "process.abort.*SIGABRT/abort invoked"
+    TIMEOUT 5
+)
+
+add_test(NAME noemancer.headless COMMAND noemancer run --headless --frames 3 --format json)
+set_tests_properties(noemancer.headless PROPERTIES PASS_REGULAR_EXPRESSION "runtime.production_state")
+
+add_test(NAME noemancer.tools_manifest COMMAND noemancer tools list --format json)
+set_tests_properties(noemancer.tools_manifest PROPERTIES PASS_REGULAR_EXPRESSION "world.snapshot")
+
+add_test(NAME noemancer.tool_call COMMAND noemancer tool call run.headless --input {"frames":2})
+set_tests_properties(noemancer.tool_call PROPERTIES PASS_REGULAR_EXPRESSION "operationId")
+
+add_test(NAME noemancer.managed_bindings COMMAND noemancer bindings csharp)
+set_tests_properties(noemancer.managed_bindings PROPERTIES PASS_REGULAR_EXPRESSION "PropertyId<Float3> Position")
+
+# Install the Windows error-mode/Debug-CRT guard into every native test before
+# main().  This keeps unattended CTest runs machine-readable even when a test
+# that has not yet opted into process_diagnostics fails during startup.
+add_library(noemancer_test_process_guard OBJECT test_process_guard.cpp)
+get_property(noemancer_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(noemancer_test_target IN LISTS noemancer_test_targets)
+    get_target_property(noemancer_test_target_type ${noemancer_test_target} TYPE)
+    if(noemancer_test_target_type STREQUAL "EXECUTABLE" AND
+       noemancer_test_target MATCHES "^noemancer_.*_tests$")
+        target_sources(${noemancer_test_target} PRIVATE
+            $<TARGET_OBJECTS:noemancer_test_process_guard>)
+    endif()
+endforeach()
+
+# Only tests that execute or inspect project-managed scripts need the .NET host
+# artifacts. Pure native targets must not rebuild managed projects in their inner loop.
+if(TARGET noemancer_managed_host)
+    foreach(managed_consumer IN ITEMS
+        noemancer_world_tests
+        noemancer_gameplay_world_tests
+        noemancer_managed_gameplay_acceptance_tests
+        noemancer_editor_model_tests
+        noemancer_editor_ui_tests)
+        add_dependencies(${managed_consumer} noemancer_managed_host)
+    endforeach()
+endif()

@@ -1,0 +1,318 @@
+{
+  "entities": [
+    {
+      "components": {},
+      "guid": "entity.bootstrap-root",
+      "name": "Bootstrap Root",
+      "parent": null
+    },
+    {
+      "components": {
+        "Camera": {
+          "farClip": 100.0,
+          "nearClip": 0.1,
+          "primary": true,
+          "target": [
+            0.0,
+            1.0,
+            0.0
+          ],
+          "verticalFovDegrees": 45.0
+        },
+        "Transform": {
+          "position": [
+            7.0,
+            5.5,
+            8.5
+          ]
+        }
+      },
+      "guid": "entity.camera.editor",
+      "name": "Editor Camera",
+      "parent": "entity.bootstrap-root"
+    },
+    {
+      "components": {
+        "BoxCollider": {
+          "friction": 0.55,
+          "halfExtents": [
+            0.5,
+            0.5,
+            0.5
+          ],
+          "restitution": 0.05
+        },
+        "MeshRenderer": {
+          "castsShadows": true,
+          "meshAsset": "asset.primitive.cube",
+          "receivesShadows": true,
+          "visible": true
+        },
+        "PbrMaterial": {
+          "baseColor": [
+            0.15,
+            0.58,
+            0.92
+          ],
+          "metallic": 0.1,
+          "roughness": 0.42
+        },
+        "RigidBody": {
+          "gravityFactor": 1.0,
+          "linearDamping": 0.08,
+          "mass": 1.0,
+          "motionType": "dynamic"
+        },
+        "Transform": {
+          "position": [
+            0.0,
+            1.05,
+            0.0
+          ]
+        },
+        "Velocity": {
+          "linear": [
+            0.01,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "guid": "entity.demo-cube",
+      "name": "Demo Cube",
+      "parent": "entity.bootstrap-root"
+    },
+    {
+      "components": {
+        "MeshRenderer": {
+          "castsShadows": true,
+          "meshAsset": "asset.primitive.cube",
+          "receivesShadows": true,
+          "visible": true
+        },
+        "PbrMaterial": {
+          "baseColor": [
+            0.92,
+            0.32,
+            0.18
+          ],
+          "baseColorTexture": "asset.texture.checker",
+          "emissiveColor": [
+            1.0,
+            0.18,
+            0.04
+          ],
+          "emissiveIntensity": 4.0,
+          "metallic": 0.0,
+          "roughness": 0.58
+        },
+        "Transform": {
+          "position": [
+            2.7,
+            1.05,
+            -1.4
+          ]
+        }
+      },
+      "guid": "entity.demo-cube-secondary",
+      "name": "Secondary Cube",
+      "parent": "entity.bootstrap-root"
+    },
+    {
+      "components": {
+        "AnimationPlayer": {
+          "clipAsset": "asset.animation.test-bob",
+          "looping": true,
+          "playbackSpeed": 1.0,
+          "playing": true
+        },
+        "MeshRenderer": {
+          "castsShadows": true,
+          "meshAsset": "asset.primitive.cube",
+          "receivesShadows": true,
+          "visible": true
+        },
+        "PbrMaterial": {
+          "baseColor": [
+            0.64,
+            0.28,
+            0.95
+          ],
+          "metallic": 0.08,
+          "roughness": 0.36
+        },
+        "Transform": {
+          "position": [
+            2.5,
+            1.2,
+            2.4
+          ]
+        }
+      },
+      "guid": "entity.demo-skeletal-cube",
+      "name": "Ozz Skeletal Cube",
+      "parent": "entity.bootstrap-root"
+    },
+    {
+      "components": {
+        "MeshRenderer": {
+          "castsShadows": true,
+          "meshAsset": "asset.primitive.sphere",
+          "receivesShadows": true,
+          "visible": true
+        },
+        "PbrMaterial": {
+          "baseColor": [
+            0.12,
+            0.78,
+            0.55
+          ],
+          "metallic": 0.15,
+          "roughness": 0.3
+        },
+        "RigidBody": {
+          "gravityFactor": 1.0,
+          "linearDamping": 0.03,
+          "mass": 1.2,
+          "motionType": "dynamic"
+        },
+        "SphereCollider": {
+          "friction": 0.45,
+          "radius": 1.0,
+          "restitution": 0.35
+        },
+        "Transform": {
+          "position": [
+            -1.8,
+            3.2,
+            -0.8
+          ]
+        }
+      },
+      "guid": "entity.demo-sphere",
+      "name": "Jolt Dynamic Sphere",
+      "parent": "entity.bootstrap-root"
+    },
+    {
+      "components": {
+        "BoxCollider": {
+          "friction": 0.8,
+          "halfExtents": [
+            7.0,
+            0.05,
+            7.0
+          ],
+          "restitution": 0.0
+        },
+        "MeshRenderer": {
+          "castsShadows": false,
+          "meshAsset": "asset.primitive.plane",
+          "receivesShadows": true,
+          "visible": true
+        },
+        "PbrMaterial": {
+          "baseColor": [
+            0.24,
+            0.29,
+            0.34
+          ],
+          "metallic": 0.0,
+          "roughness": 0.8
+        },
+        "RigidBody": {
+          "gravityFactor": 0.0,
+          "linearDamping": 0.0,
+          "mass": 1.0,
+          "motionType": "static"
+        },
+        "Transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "guid": "entity.ground",
+      "name": "Ground Plane",
+      "parent": "entity.bootstrap-root"
+    },
+    {
+      "components": {
+        "DirectionalLight": {
+          "ambientIntensity": 0.18,
+          "castsShadows": true,
+          "color": [
+            1.0,
+            0.96,
+            0.88
+          ],
+          "direction": [
+            -0.55,
+            -1.0,
+            -0.35
+          ],
+          "intensity": 0.95
+        }
+      },
+      "guid": "entity.sun",
+      "name": "Sun",
+      "parent": "entity.bootstrap-root"
+    },
+    {
+      "components": {
+        "AnimationPlayer": {
+          "clipAsset": "asset.animation.test-bob",
+          "looping": true,
+          "playbackSpeed": 1.0,
+          "playing": true
+        },
+        "MeshRenderer": {
+          "castsShadows": true,
+          "meshAsset": "asset.test.kenney.alien",
+          "receivesShadows": true,
+          "visible": true
+        },
+        "Transform": {
+          "position": [
+            -3.2,
+            0.4,
+            2.8
+          ]
+        }
+      },
+      "guid": "entity.test-alien",
+      "name": "Kenney Alien",
+      "parent": "entity.bootstrap-root"
+    },
+    {
+      "components": {
+        "AnimationPlayer": {
+          "clipAsset": "asset.local.mixamo.rumba-02/skin/unnamed/animation/take-001",
+          "looping": true,
+          "playbackSpeed": 1.0,
+          "playing": true
+        },
+        "MeshRenderer": {
+          "castsShadows": true,
+          "meshAsset": "asset.local.mixamo.rumba-02",
+          "receivesShadows": true,
+          "visible": true
+        },
+        "Transform": {
+          "position": [
+            -4.0,
+            0.0,
+            -1.5
+          ]
+        }
+      },
+      "guid": "entity.test-mixamo-rumba",
+      "name": "Mixamo Rumba Dancer",
+      "parent": "entity.bootstrap-root"
+    }
+  ],
+  "name": "Bootstrap Scene",
+  "sceneGuid": "scene.bootstrap",
+  "schema": "noemancer.scene/0.1"
+}

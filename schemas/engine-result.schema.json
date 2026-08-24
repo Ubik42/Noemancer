@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noemancer.local/schema/engine-result-0.2.json",
+  "title": "Noemancer Agent ABI result envelope",
+  "type": "object",
+  "required": ["protocolVersion", "ok", "tool"],
+  "properties": {
+    "protocolVersion": { "const": "0.2" },
+    "ok": { "type": "boolean" },
+    "tool": { "type": "string" },
+    "result": {},
+    "receipt": { "$ref": "#/$defs/receipt" },
+    "error": { "$ref": "#/$defs/error" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "ok": { "const": true } },
+        "required": ["ok"]
+      },
+      "then": { "required": ["result", "receipt"] },
+      "else": { "required": ["error"] }
+    }
+  ],
+  "$defs": {
+    "receipt": {
+      "type": "object",
+      "required": [
+        "operationId",
+        "access",
+        "status",
+        "changedObjects",
+        "artifacts",
+        "evidence",
+        "warnings"
+      ],
+      "properties": {
+        "operationId": { "type": "string", "pattern": "^op_[a-f0-9]+-[0-9]+$" },
+        "access": { "enum": ["read", "write", "control", "debug"] },
+        "status": { "enum": ["completed", "rejected", "rolled-back"] },
+        "changedObjects": { "type": "array", "items": { "type": "string" } },
+        "artifacts": { "type": "array", "items": { "type": "string" } },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

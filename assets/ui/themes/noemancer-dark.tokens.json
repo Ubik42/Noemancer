@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "noemancer.ui-design-tokens/0.1",
+  "themeId": "theme.noemancer-dark",
+  "tokens": {
+    "surfaceColor": "#0b1018ee",
+    "groupColor": "#182334f2",
+    "textColor": "#e8edf5",
+    "mutedTextColor": "#93a4b8",
+    "accentColor": "#62d7ff",
+    "dangerColor": "#ff5876",
+    "surfaceWidthPx": 360,
+    "spaceUnitPx": 4,
+    "cornerRadiusPx": 6
+  }
+}

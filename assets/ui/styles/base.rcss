@@ -1,0 +1,5 @@
+.surface { overflow-y: auto; }
+.group { border-radius: 6px; }
+.property-row { gap: 8px; }
+.label, .value { min-width: 0; word-break: break-word; }
+.ability-slot { padding: 8px; }

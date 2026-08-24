@@ -1,0 +1,230 @@
+#include "engine/retained_ui_runtime.hpp"
+#include "engine/scene_document.hpp"
+#include "engine/world.hpp"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <iostream>
+
+int main() {
+    noemancer::World world;
+    if (!world.load_scene(noemancer::make_bootstrap_scene_document()).success) return 1;
+
+    const auto semantic_document = world.semantic_ui_document_json("entity.demo-cube", "zh-CN");
+    const auto rml = noemancer::retained_ui_rml_from_semantic_document(semantic_document);
+    if (rml.find("data-semantic-id=\"editor.inspector.entity.demo-cube.PbrMaterial.roughness\"") == std::string::npos ||
+        rml.find("class=\"property-row\"") == std::string::npos||rml.find("data-action=\"world.property.plan\"")==std::string::npos||
+        rml.find("&quot;entityId&quot;:&quot;entity.demo-cube&quot;")==std::string::npos||
+        rml.find("type=\"checkbox\"")==std::string::npos||rml.find("PbrMaterial.roughness.editor")==std::string::npos||
+        rml.find("class=\"axis-input vector-x\"")==std::string::npos||rml.find("data-local-action=\"toggle-group\"")==std::string::npos||
+        rml.find("section.identity\" data-role=\"group\" data-enabled=\"true\" data-editable=\"false\" data-expanded=\"false\"")==std::string::npos) {
+        std::cerr << "Semantic UI did not project to retained markup with stable identity\n";
+        return 2;
+    }
+    auto combo_document=nlohmann::json::parse(semantic_document);
+    for(auto& node:combo_document["nodes"])if(node.value("role",std::string{})=="property") {
+        node["state"]["editable"]=true;node["value"]="option-b";node["binding"]["valueType"]="string";
+        node["presentation"]={{"control","combo"},{"constraints",{{"options",{"option-a","option-b"}}}}};
+        node["actions"]=nlohmann::json::array({{{"id","world.property.plan"}}});break;
+    }
+    const auto combo_rml=noemancer::retained_ui_rml_from_semantic_document(combo_document.dump());
+    if(combo_rml.find("<select")==std::string::npos||combo_rml.find("option-b\" selected")==std::string::npos)return 33;
+    const auto animation_rml=noemancer::retained_ui_rml_from_semantic_document(
+        world.semantic_ui_document_json("entity.demo-skeletal-cube","en-US"));
+    if(animation_rml.find("entity.demo-skeletal-cube.AnimationPlayer.clipAsset.editor")==std::string::npos||
+       animation_rml.find("class=\"value-editor\"")==std::string::npos) {
+        std::cerr<<"Editable asset fields did not project to retained text controls\n";
+        return 20;
+    }
+
+    auto preview = nlohmann::json::parse(noemancer::retained_ui_preview_json(semantic_document, 960, 720, 1.25F));
+    if (!preview.at("valid").get<bool>() || preview.at("code") != "ok" ||
+        preview.at("observation").at("implementation").at("name") != "RmlUi" ||
+        preview.at("observation").at("implementation").at("version") != "6.2" ||
+        preview.at("observation").at("viewport").at("densityScale") != 1.25F ||
+        !preview.at("observation").at("text").at("defaultFontLoaded").get<bool>() ||
+        preview.at("observation").at("nodeCount") != nlohmann::json::parse(semantic_document).at("nodes").size() ||
+        preview.at("observation").at("layoutDiagnostics").at("overflowCount") != 0 ||
+        preview.dump().find("engine.entity.material.roughness") == std::string::npos ||
+        preview.at("renderPacket").at("residentGeometryCount").get<std::size_t>() == 0 ||
+        preview.dump().size() >= 16 * 1024) {
+        std::cerr << "RmlUi retained preview did not expose layout and renderer-neutral draw evidence\n"
+                  << preview.dump(2) << '\n';
+        return 3;
+    }
+    {
+        noemancer::RetainedUiRuntime binary_runtime;
+        if(!binary_runtime.initialize(960,720,1.0F)||!binary_runtime.load_document("ui.binary",rml)||!binary_runtime.render()) return 6;
+        const auto packet=binary_runtime.render_packet();
+        const auto has_textured_draw=std::ranges::any_of(packet.draws,[](const auto& draw){return draw.texture_id!=0;});
+        if(packet.vertices.empty()||packet.indices.empty()||packet.draws.empty()||packet.textures.empty()||
+           !has_textured_draw||packet.indices.size()%3U!=0U) {
+            std::cerr << "RmlUi did not expose a renderer-native typed draw packet\n"; return 7;
+        }
+        if(binary_runtime.pointer_move(40,70)||!binary_runtime.update()) return 8;
+        const auto interaction=nlohmann::json::parse(binary_runtime.observation_json("ui.binary")).at("interaction");
+        if(!interaction.at("pointerInteracting").get<bool>()||
+           interaction.at("hoveredNodeId").get<std::string>().empty()) {
+            std::cerr << "Retained UI input did not resolve to a stable semantic node\n"; return 9;
+        }
+        const auto action_rml=std::string(
+            "<rml><head><style>body{margin:0;width:100%;height:100%;pointer-events:none;font-family:LatoLatin;}"
+            "button{position:absolute;left:8px;top:8px;width:180px;height:36px;pointer-events:auto;"
+            "background-color:#273449;color:#f2f5fa;border:1px #5a6b84;}"
+            "</style></head><body><button id=\"ui.action.cook\" data-semantic-id=\"ui.action.cook\" "
+            "data-role=\"button\" data-action=\"asset.cook\" data-binding=\"{&quot;assetId&quot;:&quot;asset.demo&quot;}\">Cook</button></body></rml>");
+        if(!binary_runtime.load_document("ui.actions",action_rml)||!binary_runtime.render())return 25;
+        static_cast<void>(binary_runtime.pointer_move(24,24));
+        static_cast<void>(binary_runtime.pointer_button(0,true));
+        static_cast<void>(binary_runtime.pointer_button(0,false));
+        const auto actions=binary_runtime.consume_action_events();
+        if(actions.size()!=1U||actions.front().sequence!=1U||actions.front().kind!=noemancer::RetainedUiActionKind::invoke||
+           actions.front().surface_id!="primary"||actions.front().document_id!="ui.actions"||actions.front().node_id!="ui.action.cook"||
+           actions.front().action_id!="asset.cook"||actions.front().binding_json!=R"({"assetId":"asset.demo"})"||actions.front().value_json!="null") {
+            std::cerr<<"Retained action did not preserve stable semantic intent\n";return 26;
+        }
+        const auto consumed_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.actions"));
+        if(consumed_observation.at("interaction").at("actions").at("pendingCount")!=0||
+           consumed_observation.at("interaction").at("actions").at("lastSequence")!=1)return 27;
+        const auto change_rml=std::string(
+            "<rml><head><style>body{margin:0;}input{width:220px;height:32px;}</style></head><body>"
+            "<input id=\"ui.property.name\" data-semantic-id=\"ui.property.name\" data-role=\"property\" "
+            "data-action=\"world.property.plan\" data-binding=\"{&quot;kind&quot;:&quot;world-property&quot;,&quot;entityId&quot;:&quot;entity.demo-cube&quot;,&quot;property&quot;:&quot;engine.entity.sprite.clip&quot;,&quot;revision&quot;:1}\" value=\"idle\"/>"
+            "<button id=\"ui.property.commit\" data-semantic-id=\"ui.property.commit\">Commit</button></body></rml>");
+        if(!binary_runtime.load_document("ui.change",change_rml)||
+           !binary_runtime.focus_node("ui.change","ui.property.name")||
+           binary_runtime.text_input("-run")||
+           !binary_runtime.focus_node("ui.change","ui.property.commit")||!binary_runtime.update())return 28;
+        const auto changes=binary_runtime.consume_action_events();
+        const auto changed_value=changes.empty()?std::string{}:nlohmann::json::parse(changes.front().value_json).get<std::string>();
+        if(changes.size()!=1U||changes.front().sequence!=2U||changes.front().kind!=noemancer::RetainedUiActionKind::value_changed||
+           changes.front().document_id!="ui.change"||changes.front().node_id!="ui.property.name"||
+           changes.front().action_id!="world.property.plan"||changed_value.find("idle")==std::string::npos||changed_value.find("run")==std::string::npos||
+           nlohmann::json::parse(changes.front().binding_json).at("revision")!=1){
+            std::cerr<<"Retained value change did not preserve its revision-bound binding; events="<<changes.size();
+            for(const auto& change:changes)std::cerr<<" sequence="<<change.sequence<<" kind="<<static_cast<int>(change.kind)<<" document="<<change.document_id<<
+                " node="<<change.node_id<<" action="<<change.action_id<<" binding="<<change.binding_json<<" value="<<change.value_json;
+            std::cerr<<'\n';return 29;
+        }
+        const auto position_id=std::string("editor.inspector.entity.demo-cube.Transform.position");
+        if(!binary_runtime.focus_node("ui.binary",position_id+".editor.x")||binary_runtime.text_input("1")||
+           !binary_runtime.focus_node("ui.change","ui.property.commit")||!binary_runtime.update())return 34;
+        const auto vector_changes=binary_runtime.consume_action_events();
+        const auto vector_value=vector_changes.empty()?nlohmann::json{}:nlohmann::json::parse(vector_changes.front().value_json);
+        if(vector_changes.size()!=1U||vector_changes.front().sequence!=3U||vector_changes.front().node_id!=position_id||
+           vector_changes.front().action_id!="world.property.plan"||!vector_value.is_object()||
+           !vector_value.contains("x")||!vector_value.contains("y")||!vector_value.contains("z")) {
+            std::cerr<<"Retained vector editor did not emit one typed property value\n";return 35;
+        }
+        auto binary_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.binary"));
+        const auto transform_id=std::string("editor.inspector.entity.demo-cube.section.transform");
+        auto transform_node=std::ranges::find_if(binary_observation.at("nodes"),[&](const auto& node){return node.at("id")==transform_id;});
+        if(transform_node==binary_observation.at("nodes").end()||!transform_node->at("state").at("expanded").get<bool>())return 36;
+        const auto& transform_layout=transform_node->at("layout");
+        static_cast<void>(binary_runtime.pointer_move(static_cast<int>(transform_layout.at("x").get<float>()+12.0F),
+                                                      static_cast<int>(transform_layout.at("y").get<float>()+12.0F)));
+        static_cast<void>(binary_runtime.pointer_button(0,true));
+        static_cast<void>(binary_runtime.pointer_button(0,false));
+        if(!binary_runtime.update()||!binary_runtime.consume_action_events().empty())return 37;
+        binary_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.binary"));
+        transform_node=std::ranges::find_if(binary_observation.at("nodes"),[&](const auto& node){return node.at("id")==transform_id;});
+        if(transform_node==binary_observation.at("nodes").end()||transform_node->at("state").at("expanded").get<bool>()||
+           !binary_runtime.reload_document("ui.binary",rml))return 38;
+        binary_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.binary"));
+        transform_node=std::ranges::find_if(binary_observation.at("nodes"),[&](const auto& node){return node.at("id")==transform_id;});
+        if(transform_node==binary_observation.at("nodes").end()||transform_node->at("state").at("expanded").get<bool>())return 39;
+        const auto primary_packet_before=binary_runtime.render_packet();
+        if(!binary_runtime.create_surface("editor.inspector",420,640,1.25F)||
+           !binary_runtime.load_surface_document("editor.inspector","ui.inspector",action_rml)||
+           !binary_runtime.render_surface("editor.inspector"))return 30;
+        const auto inspector_packet=binary_runtime.surface_render_packet("editor.inspector");
+        const auto primary_packet_after=binary_runtime.render_packet();
+        const auto inspector_observation=nlohmann::json::parse(
+            binary_runtime.surface_observation_json("editor.inspector","ui.inspector"));
+        if(inspector_packet.draws.empty()||inspector_packet.vertices.empty()||
+           primary_packet_before.draws.size()!=primary_packet_after.draws.size()||
+           inspector_observation.at("surfaceId")!="editor.inspector"||
+           inspector_observation.at("viewport").at("width")!=420||
+           inspector_observation.at("viewport").at("densityScale")!=1.25F){
+            std::cerr<<"Independent retained surface evidence invalid: draws="<<inspector_packet.draws.size()<<
+                " vertices="<<inspector_packet.vertices.size()<<" primaryBefore="<<primary_packet_before.draws.size()<<
+                " primaryAfter="<<primary_packet_after.draws.size()<<" observation="<<inspector_observation.dump()<<'\n';return 31;
+        }
+        static_cast<void>(binary_runtime.surface_pointer_move("editor.inspector",24,24));
+        static_cast<void>(binary_runtime.surface_pointer_button("editor.inspector",0,true));
+        static_cast<void>(binary_runtime.surface_pointer_button("editor.inspector",0,false));
+        const auto surface_actions=binary_runtime.consume_action_events();
+        if(surface_actions.size()!=1U||surface_actions.front().sequence!=4U||
+           surface_actions.front().surface_id!="editor.inspector"||surface_actions.front().action_id!="asset.cook"||
+           !binary_runtime.destroy_surface("editor.inspector")||
+           !binary_runtime.surface_render_packet("editor.inspector").draws.empty())return 32;
+        auto themed=nlohmann::json::parse(semantic_document);
+        themed["designTokens"]={{"surfaceColor","#201028ee"},{"groupColor","#30203a"},{"textColor","#fff4ff"},
+                                {"accentColor","#ff77dd"},{"surfaceWidthPx",420}};
+        const auto themed_rml=noemancer::retained_ui_rml_from_semantic_document(themed.dump());
+        if (themed_rml.find("width:420px")==std::string::npos || themed_rml.find("#ff77dd")==std::string::npos ||
+            !binary_runtime.reload_document("ui.binary",themed_rml) || !binary_runtime.render()) return 10;
+        if (!nlohmann::json::parse(binary_runtime.observation_json("ui.binary")).at("valid").get<bool>()) return 11;
+        const auto arabic_rml=std::string(
+            "<rml><head><style>body{font-family:LatoLatin;font-size:28px;color:#fff;}"
+            "</style></head><body dir=\"rtl\" lang=\"ar-SA\"><div id=\"ui.arabic\" data-semantic-id=\"ui.arabic\">"
+            "Noemancer 42 \xD8\xA7\xD9\x84\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85</div></body></rml>");
+        if(!binary_runtime.load_document("ui.arabic",arabic_rml)||!binary_runtime.render()) return 23;
+        const auto arabic_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.arabic"));
+        const auto& shaping_stats=arabic_observation.at("text").at("shapingStats");
+        if(!arabic_observation.at("text").at("retainedGlyphRunRendering").get<bool>()||
+           shaping_stats.at("stringsShaped").get<unsigned long long>()==0ULL||
+           shaping_stats.at("visualRuns").get<unsigned long long>()<2ULL||
+           shaping_stats.at("glyphsEmitted").get<unsigned long long>()==0ULL||
+           shaping_stats.at("fallbackRuns").get<unsigned long long>()==0ULL||
+           shaping_stats.at("atlasGlyphsLoaded").get<unsigned long long>()==0ULL) {
+            std::cerr<<"Retained Arabic text did not traverse BiDi shaping and the fallback glyph atlas\n";
+            return 24;
+        }
+        const auto text_capabilities=nlohmann::json::parse(noemancer::retained_ui_text_capabilities_json("zh-CN"));
+        if(!text_capabilities.at("valid").get<bool>()||text_capabilities.at("requiredScript")!="Han"||
+           !text_capabilities.at("textInput").at("committedUtf8").get<bool>()||
+           !text_capabilities.at("textInput").at("compositionPreview").get<bool>()||
+           !text_capabilities.at("shaping").at("harfBuzz").get<bool>()||
+           !text_capabilities.at("segmentation").at("bidirectionalLayout").get<bool>()||
+           !text_capabilities.at("segmentation").at("localeLineBreaking").get<bool>()||
+           !text_capabilities.at("retainedRenderIntegration").at("glyphRunConsumer").get<bool>()) return 12;
+#ifdef _WIN32
+        if(!text_capabilities.at("requiredScriptFallbackAvailable").get<bool>()||
+           text_capabilities.at("platformFallbackFaces").empty()) return 13;
+#endif
+        const auto input_rml=std::string(
+            "<rml><head><style>body{font-family:LatoLatin;font-size:18px;}input{width:260px;height:32px;}"
+            "</style></head><body><input id=\"ui.text.input\" data-semantic-id=\"ui.text.input\" "
+            "data-role=\"text-input\" type=\"text\" value=\"\"/></body></rml>");
+        if(!binary_runtime.load_document("ui.text",input_rml)||
+           !binary_runtime.focus_node("ui.text","ui.text.input")) return 14;
+        const auto keyboard=binary_runtime.keyboard_request();
+        if(!keyboard.active||keyboard.line_height<=0) return 15;
+        constexpr auto chinese_text="\xE4\xBD\xA0\xE5\xA5\xBD";
+        if(!binary_runtime.text_composition(chinese_text,2,0)||!binary_runtime.update()) return 16;
+        auto text_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.text"));
+        if(text_observation.at("nodes").at(0).at("editableValue")!=chinese_text||
+           !text_observation.at("interaction").at("textInput").at("active").get<bool>()||
+           !text_observation.at("interaction").at("textInput").at("composition").at("active").get<bool>()||
+           !text_observation.at("text").at("fallbackGlyphSelection").get<bool>()) return 17;
+        if(binary_runtime.text_input(chinese_text)||!binary_runtime.update()) return 21;
+        text_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.text"));
+        if(text_observation.at("nodes").at(0).at("editableValue")!=chinese_text||
+           text_observation.at("interaction").at("textInput").at("composition").at("active").get<bool>()) return 22;
+        if(binary_runtime.key(noemancer::RetainedUiKey::backspace,true)||!binary_runtime.update()) return 18;
+        text_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.text"));
+        if(text_observation.at("nodes").at(0).at("editableValue")!="\xE4\xBD\xA0") return 19;
+    }
+
+    noemancer::RetainedUiRuntime first;
+    noemancer::RetainedUiRuntime second;
+    if (!first.initialize(640, 480) || second.initialize(640, 480) ||
+        second.last_error().find("process-global state") == std::string::npos) {
+        std::cerr << "Process-global RmlUi ownership is not guarded\n";
+        return 4;
+    }
+
+    return 0;
+}

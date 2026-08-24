@@ -1,0 +1,459 @@
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+index 7be3327..c2b4b28 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+@@ -6,14 +6,36 @@
+ #include "FontFaceLayer.h"
+ #include "FontProvider.h"
+ #include "FreeTypeInterface.h"
++#include <hb-ot.h>
++#include <hb.h>
++#include <unicode/ubidi.h>
++#include <unicode/utf16.h>
++#include <unicode/ustring.h>
+ #include <algorithm>
++#include <atomic>
++#include <cmath>
+ #include <numeric>
++#include <ft2build.h>
++#include FT_FREETYPE_H
+ 
+ namespace Rml {
+ 
+ static constexpr char32_t KerningCache_AsciiSubsetBegin = 32;
+ static constexpr char32_t KerningCache_AsciiSubsetLast = 126;
+ 
++static std::atomic<uint64_t> strings_shaped{0};
++static std::atomic<uint64_t> visual_runs_shaped{0};
++static std::atomic<uint64_t> glyphs_emitted{0};
++static std::atomic<uint64_t> fallback_runs_shaped{0};
++static std::atomic<uint64_t> atlas_glyphs_loaded{0};
++static std::atomic<uint64_t> shaping_failures{0};
++
++DefaultFontShapingStats GetDefaultFontShapingStats()
++{
++	return {strings_shaped.load(), visual_runs_shaped.load(), glyphs_emitted.load(), fallback_runs_shaped.load(),
++		atlas_glyphs_loaded.load(), shaping_failures.load()};
++}
++
+ FontFaceHandleDefault::FontFaceHandleDefault()
+ {
+ 	base_layer = nullptr;
+@@ -23,6 +45,8 @@ FontFaceHandleDefault::FontFaceHandleDefault()
+ 
+ FontFaceHandleDefault::~FontFaceHandleDefault()
+ {
++	if (harfbuzz_font)
++		hb_font_destroy((hb_font_t*)harfbuzz_font);
+ 	glyphs.clear();
+ 	layers.clear();
+ }
+@@ -59,6 +83,14 @@ const FontGlyphMap& FontFaceHandleDefault::GetGlyphs() const
+ int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingContext& text_shaping_context, Character prior_character)
+ {
+ 	RMLUI_ZoneScoped;
++	Vector<ShapedGlyph> shaped_glyphs;
++	if (ShapeString(string, text_shaping_context, shaped_glyphs))
++	{
++		int width = 0;
++		for (const ShapedGlyph& glyph : shaped_glyphs)
++			width += glyph.advance_x;
++		return Math::Max(width, 0);
++	}
+ 
+ 	bool has_set_size = false;
+ 	bool is_kerning_enabled = IsKerningEnabled(text_shaping_context);
+@@ -85,6 +117,197 @@ int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingCo
+ 	return Math::Max(width, 0);
+ }
+ 
++void* FontFaceHandleDefault::GetHarfBuzzFont()
++{
++	if (harfbuzz_font)
++		return harfbuzz_font;
++	FT_Face face = (FT_Face)ft_face;
++	if (!face || !face->stream || !face->stream->base || face->stream->size == 0)
++		return nullptr;
++	hb_blob_t* blob = hb_blob_create((const char*)face->stream->base, (unsigned int)face->stream->size, HB_MEMORY_MODE_READONLY, nullptr, nullptr);
++	hb_face_t* hb_face = hb_face_create(blob, (unsigned int)(face->face_index & 0xffff));
++	hb_blob_destroy(blob);
++	hb_font_t* font = hb_font_create(hb_face);
++	hb_face_destroy(hb_face);
++	hb_ot_font_set_funcs(font);
++	const int scale = metrics.size * 64;
++	hb_font_set_scale(font, scale, scale);
++	hb_font_set_ppem(font, (unsigned int)metrics.size, (unsigned int)metrics.size);
++	harfbuzz_font = font;
++	return harfbuzz_font;
++}
++
++bool FontFaceHandleDefault::HasCharacter(Character character) const
++{
++	return FreeType::HasGlyph(ft_face, character);
++}
++
++FontFaceHandleDefault* FontFaceHandleDefault::ResolveFace(Character character)
++{
++	if (HasCharacter(character))
++		return this;
++	const int fallback_count = FontProvider::CountFallbackFontFaces();
++	for (int index = 0; index < fallback_count; ++index)
++	{
++		FontFaceHandleDefault* fallback = FontProvider::GetFallbackFontFace(index, metrics.size);
++		if (fallback && fallback != this && fallback->HasCharacter(character))
++			return fallback;
++	}
++	return nullptr;
++}
++
++Character FontFaceHandleDefault::GetOrAppendShapedGlyph(FontFaceHandleDefault* source_face, uint32_t glyph_index)
++{
++	if (!source_face || glyph_index == 0)
++		return Character::Null;
++	const auto identity = std::make_pair((uintptr_t)source_face, glyph_index);
++	if (const auto found = shaped_glyph_keys.find(identity); found != shaped_glyph_keys.end())
++		return found->second;
++
++	Character source_key = Character::Null;
++	if (source_face == this)
++	{
++		source_key = (Character)next_shaped_atlas_key++;
++		if (!FreeType::AppendGlyphIndex(ft_face, metrics.size, glyph_index, source_key, glyphs))
++			return Character::Null;
++		is_layers_dirty = true;
++	}
++	else
++	{
++		const Character fallback_key = source_face->GetOrAppendShapedGlyph(source_face, glyph_index);
++		const auto fallback_glyph = source_face->glyphs.find(fallback_key);
++		if (fallback_key == Character::Null || fallback_glyph == source_face->glyphs.end())
++			return Character::Null;
++		source_key = (Character)next_shaped_atlas_key++;
++		glyphs.emplace(source_key, fallback_glyph->second.WeakCopy());
++		is_layers_dirty = true;
++	}
++	shaped_glyph_keys.emplace(identity, source_key);
++	++atlas_glyphs_loaded;
++	return source_key;
++}
++
++bool FontFaceHandleDefault::ShapeString(StringView string, const TextShapingContext& text_shaping_context, Vector<ShapedGlyph>& result)
++{
++	result.clear();
++	if (string.empty())
++		return true;
++	UErrorCode status = U_ZERO_ERROR;
++	int32_t utf16_length = 0;
++	u_strFromUTF8(nullptr, 0, &utf16_length, string.begin(), (int32_t)string.size(), &status);
++	if (status != U_BUFFER_OVERFLOW_ERROR && U_FAILURE(status))
++	{
++		++shaping_failures;
++		return false;
++	}
++	status = U_ZERO_ERROR;
++	Vector<UChar> utf16((size_t)utf16_length + 1);
++	u_strFromUTF8(utf16.data(), utf16_length + 1, &utf16_length, string.begin(), (int32_t)string.size(), &status);
++	if (U_FAILURE(status))
++	{
++		++shaping_failures;
++		return false;
++	}
++	utf16.resize((size_t)utf16_length);
++
++	UBiDiLevel paragraph_level = UBIDI_DEFAULT_LTR;
++	if (text_shaping_context.text_direction == Style::Direction::Rtl)
++		paragraph_level = UBIDI_RTL;
++	else if (text_shaping_context.text_direction == Style::Direction::Ltr)
++		paragraph_level = UBIDI_LTR;
++	UBiDi* bidi = ubidi_openSized(utf16_length, 0, &status);
++	if (U_FAILURE(status) || !bidi)
++	{
++		++shaping_failures;
++		return false;
++	}
++	ubidi_setPara(bidi, utf16.data(), utf16_length, paragraph_level, nullptr, &status);
++	const int32_t bidi_run_count = U_SUCCESS(status) ? ubidi_countRuns(bidi, &status) : 0;
++	if (U_FAILURE(status))
++	{
++		ubidi_close(bidi);
++		++shaping_failures;
++		return false;
++	}
++
++	struct FontRun { FontFaceHandleDefault* face; int32_t start; int32_t length; };
++	for (int32_t visual_index = 0; visual_index < bidi_run_count; ++visual_index)
++	{
++		int32_t logical_start = 0;
++		int32_t logical_length = 0;
++		const UBiDiDirection bidi_direction = ubidi_getVisualRun(bidi, visual_index, &logical_start, &logical_length);
++		Vector<FontRun> font_runs;
++		const int32_t logical_end = logical_start + logical_length;
++		for (int32_t offset = logical_start; offset < logical_end;)
++		{
++			const int32_t codepoint_start = offset;
++			UChar32 codepoint = 0;
++			U16_NEXT(utf16.data(), offset, logical_end, codepoint);
++			FontFaceHandleDefault* selected_face = ResolveFace((Character)codepoint);
++			if (!selected_face)
++			{
++				ubidi_close(bidi);
++				++shaping_failures;
++				result.clear();
++				return false;
++			}
++			if (font_runs.empty() || font_runs.back().face != selected_face)
++				font_runs.push_back({selected_face, codepoint_start, offset - codepoint_start});
++			else
++				font_runs.back().length = offset - font_runs.back().start;
++		}
++		if (bidi_direction == UBIDI_RTL)
++			std::reverse(font_runs.begin(), font_runs.end());
++
++		for (const FontRun& run : font_runs)
++		{
++			hb_font_t* font = (hb_font_t*)run.face->GetHarfBuzzFont();
++			if (!font)
++			{
++				ubidi_close(bidi);
++				++shaping_failures;
++				result.clear();
++				return false;
++			}
++			hb_buffer_t* buffer = hb_buffer_create();
++			hb_buffer_add_utf16(buffer, (const uint16_t*)utf16.data(), utf16_length, run.start, run.length);
++			hb_buffer_set_direction(buffer, bidi_direction == UBIDI_RTL ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
++			hb_buffer_set_language(buffer, hb_language_from_string(text_shaping_context.language.c_str(), (int)text_shaping_context.language.size()));
++			hb_buffer_guess_segment_properties(buffer);
++			hb_shape(font, buffer, nullptr, 0);
++			unsigned int glyph_count = 0;
++			const hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buffer, &glyph_count);
++			const hb_glyph_position_t* positions = hb_buffer_get_glyph_positions(buffer, &glyph_count);
++			for (unsigned int glyph_index = 0; glyph_index < glyph_count; ++glyph_index)
++			{
++				const Character atlas_key = GetOrAppendShapedGlyph(run.face, infos[glyph_index].codepoint);
++				if (atlas_key == Character::Null)
++				{
++					hb_buffer_destroy(buffer);
++					ubidi_close(bidi);
++					++shaping_failures;
++					result.clear();
++					return false;
++				}
++				const bool end_of_cluster = glyph_index + 1 == glyph_count || infos[glyph_index + 1].cluster != infos[glyph_index].cluster;
++				result.push_back({atlas_key,
++					(int)std::lround((double)positions[glyph_index].x_advance / 64.0) + (end_of_cluster ? (int)text_shaping_context.letter_spacing : 0),
++					(int)std::lround((double)positions[glyph_index].y_advance / 64.0),
++					(int)std::lround((double)positions[glyph_index].x_offset / 64.0),
++					(int)std::lround((double)positions[glyph_index].y_offset / 64.0), infos[glyph_index].cluster});
++			}
++			glyphs_emitted += glyph_count;
++			if (run.face != this)
++				++fallback_runs_shaped;
++			hb_buffer_destroy(buffer);
++		}
++		++visual_runs_shaped;
++	}
++	ubidi_close(bidi);
++	++strings_shaped;
++	return true;
++}
++
+ int FontFaceHandleDefault::GenerateLayerConfiguration(const FontEffectList& font_effects)
+ {
+ 	if (font_effects.empty())
+@@ -178,7 +401,11 @@ int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, Texture
+ 	int line_width = 0;
+ 	bool has_set_size = false;
+ 	bool is_kerning_enabled = IsKerningEnabled(text_shaping_context);
++	Vector<ShapedGlyph> shaped_glyphs;
++	const bool has_shaped_glyphs = ShapeString(string, text_shaping_context, shaped_glyphs);
+ 
++	// Shaping may append glyph indices which did not previously exist in the atlas.
++	// Rebuild dirty layers only after the complete run is known.
+ 	UpdateLayersOnDirty();
+ 
+ 	// Fetch the requested configuration and generate the geometry for each one.
+@@ -216,7 +443,29 @@ int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, Texture
+ 		mesh_list[geometry_index].mesh.indices.reserve(string.size() * 6);
+ 		mesh_list[geometry_index].mesh.vertices.reserve(string.size() * 4);
+ 
+-		for (auto it_string = StringIteratorU8(string); it_string; ++it_string)
++		if (has_shaped_glyphs)
++		{
++			float pen_x = 0.f;
++			float pen_y = 0.f;
++			for (const ShapedGlyph& shaped_glyph : shaped_glyphs)
++			{
++				auto it_glyph = glyphs.find(shaped_glyph.atlas_key);
++				if (it_glyph == glyphs.end())
++					continue;
++
++				const FontGlyph& glyph = it_glyph->second;
++				ColourbPremultiplied glyph_color = layer_colour;
++				if (layer == base_layer && glyph.color_format == ColorFormat::RGBA8)
++					glyph_color = ColourbPremultiplied(layer_colour.alpha, layer_colour.alpha);
++
++				layer->GenerateGeometry(&mesh_list[geometry_index], shaped_glyph.atlas_key,
++					Vector2f(position.x + pen_x + shaped_glyph.offset_x, position.y - pen_y - shaped_glyph.offset_y), glyph_color);
++				pen_x += (float)shaped_glyph.advance_x;
++				pen_y += (float)shaped_glyph.advance_y;
++			}
++			line_width = Math::RoundToInteger(pen_x);
++		}
++		else for (auto it_string = StringIteratorU8(string); it_string; ++it_string)
+ 		{
+ 			Character character = *it_string;
+ 
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.h b/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
+index cf05181..f6b2dd2 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.h
+@@ -8,11 +8,24 @@
+ #include "../../../Include/RmlUi/Core/Texture.h"
+ #include "../../../Include/RmlUi/Core/Traits.h"
+ #include "FontTypes.h"
++#include <map>
++#include <utility>
+ 
+ namespace Rml {
+ 
+ class FontFaceLayer;
+ 
++struct DefaultFontShapingStats {
++	uint64_t strings_shaped = 0;
++	uint64_t visual_runs = 0;
++	uint64_t glyphs_emitted = 0;
++	uint64_t fallback_runs = 0;
++	uint64_t atlas_glyphs_loaded = 0;
++	uint64_t failures = 0;
++};
++
++DefaultFontShapingStats GetDefaultFontShapingStats();
++
+ class FontFaceHandleDefault final : public NonCopyMoveable {
+ public:
+ 	FontFaceHandleDefault();
+@@ -62,6 +75,21 @@ public:
+ 	int GetVersion() const;
+ 
+ private:
++	struct ShapedGlyph {
++		Character atlas_key = Character::Null;
++		int advance_x = 0;
++		int advance_y = 0;
++		int offset_x = 0;
++		int offset_y = 0;
++		uint32_t cluster = 0;
++	};
++
++	bool ShapeString(StringView string, const TextShapingContext& text_shaping_context, Vector<ShapedGlyph>& result);
++	FontFaceHandleDefault* ResolveFace(Character character);
++	bool HasCharacter(Character character) const;
++	Character GetOrAppendShapedGlyph(FontFaceHandleDefault* source_face, uint32_t glyph_index);
++	void* GetHarfBuzzFont();
++
+ 	// Build and append glyph to 'glyphs'
+ 	bool AppendGlyph(Character character);
+ 
+@@ -122,6 +150,9 @@ private:
+ 	FontMetrics metrics;
+ 
+ 	FontFaceHandleFreetype ft_face;
++	void* harfbuzz_font = nullptr;
++	char32_t next_shaped_atlas_key = 0x110000;
++	std::map<std::pair<uintptr_t, uint32_t>, Character> shaped_glyph_keys;
+ };
+ 
+ } // namespace Rml
+diff --git a/Source/Core/FontEngineDefault/FreeTypeInterface.cpp b/Source/Core/FontEngineDefault/FreeTypeInterface.cpp
+index f162dd2..e373415 100644
+--- a/Source/Core/FontEngineDefault/FreeTypeInterface.cpp
++++ b/Source/Core/FontEngineDefault/FreeTypeInterface.cpp
+@@ -15,6 +15,7 @@ namespace Rml {
+ static FT_Library ft_library = nullptr;
+ 
+ static bool BuildGlyph(FT_Face ft_face, Character character, FontGlyphMap& glyphs, float bitmap_scaling_factor);
++static bool BuildGlyphIndex(FT_Face ft_face, FT_UInt glyph_index, Character atlas_key, FontGlyphMap& glyphs, float bitmap_scaling_factor);
+ static void BuildGlyphMap(FT_Face ft_face, int size, FontGlyphMap& glyphs, float bitmap_scaling_factor, bool load_default_glyphs);
+ static void GenerateMetrics(FT_Face ft_face, FontMetrics& metrics, float bitmap_scaling_factor);
+ static bool SetFontSize(FT_Face ft_face, int font_size, float& out_bitmap_scaling_factor);
+@@ -198,6 +199,23 @@ bool FreeType::AppendGlyph(FontFaceHandleFreetype face, int font_size, Character
+ 	return true;
+ }
+ 
++bool FreeType::AppendGlyphIndex(FontFaceHandleFreetype face, int font_size, uint32_t glyph_index, Character atlas_key, FontGlyphMap& glyphs)
++{
++	FT_Face ft_face = (FT_Face)face;
++	RMLUI_ASSERT(glyphs.find(atlas_key) == glyphs.end());
++	RMLUI_ASSERT(ft_face);
++	float bitmap_scaling_factor = 1.0f;
++	if (!SetFontSize(ft_face, font_size, bitmap_scaling_factor))
++		return false;
++	return BuildGlyphIndex(ft_face, (FT_UInt)glyph_index, atlas_key, glyphs, bitmap_scaling_factor);
++}
++
++bool FreeType::HasGlyph(FontFaceHandleFreetype face, Character character)
++{
++	FT_Face ft_face = (FT_Face)face;
++	return ft_face && FT_Get_Char_Index(ft_face, (FT_ULong)character) != 0;
++}
++
+ int FreeType::GetKerning(FontFaceHandleFreetype face, int font_size, Character lhs, Character rhs)
+ {
+ 	FT_Face ft_face = (FT_Face)face;
+@@ -279,11 +297,18 @@ static bool BuildGlyph(FT_Face ft_face, const Character character, FontGlyphMap&
+ 	FT_UInt index = FT_Get_Char_Index(ft_face, (FT_ULong)character);
+ 	if (index == 0)
+ 		return false;
++	return BuildGlyphIndex(ft_face, index, character, glyphs, bitmap_scaling_factor);
++}
+ 
+-	FT_Error error = FT_Load_Glyph(ft_face, index, FT_LOAD_COLOR);
++static bool BuildGlyphIndex(FT_Face ft_face, const FT_UInt glyph_index, const Character atlas_key, FontGlyphMap& glyphs,
++	const float bitmap_scaling_factor)
++{
++	if (glyph_index == 0)
++		return false;
++	FT_Error error = FT_Load_Glyph(ft_face, glyph_index, FT_LOAD_COLOR);
+ 	if (error != 0)
+ 	{
+-		Log::Message(Log::LT_WARNING, "Unable to load glyph for character '%u' on the font face '%s %s'; error code: %d.", (unsigned int)character,
++		Log::Message(Log::LT_WARNING, "Unable to load glyph index '%u' on the font face '%s %s'; error code: %d.", (unsigned int)glyph_index,
+ 			ft_face->family_name, ft_face->style_name, error);
+ 		return false;
+ 	}
+@@ -291,15 +316,15 @@ static bool BuildGlyph(FT_Face ft_face, const Character character, FontGlyphMap&
+ 	error = FT_Render_Glyph(ft_face->glyph, FT_RENDER_MODE_NORMAL);
+ 	if (error != 0)
+ 	{
+-		Log::Message(Log::LT_WARNING, "Unable to render glyph for character '%u' on the font face '%s %s'; error code: %d.", (unsigned int)character,
++		Log::Message(Log::LT_WARNING, "Unable to render glyph index '%u' on the font face '%s %s'; error code: %d.", (unsigned int)glyph_index,
+ 			ft_face->family_name, ft_face->style_name, error);
+ 		return false;
+ 	}
+ 
+-	auto result = glyphs.emplace(character, FontGlyph{});
++	auto result = glyphs.emplace(atlas_key, FontGlyph{});
+ 	if (!result.second)
+ 	{
+-		Log::Message(Log::LT_WARNING, "Glyph character '%u' is already loaded in the font face '%s %s'.", (unsigned int)character,
++		Log::Message(Log::LT_WARNING, "Glyph atlas key '%u' is already loaded in the font face '%s %s'.", (unsigned int)atlas_key,
+ 			ft_face->family_name, ft_face->style_name);
+ 		return false;
+ 	}
+diff --git a/Source/Core/FontEngineDefault/FreeTypeInterface.h b/Source/Core/FontEngineDefault/FreeTypeInterface.h
+index 68a3a72..62328d7 100644
+--- a/Source/Core/FontEngineDefault/FreeTypeInterface.h
++++ b/Source/Core/FontEngineDefault/FreeTypeInterface.h
+@@ -29,6 +29,10 @@ namespace FreeType {
+ 
+ 	// Build a new glyph representing the given code point and append to 'glyphs'.
+ 	bool AppendGlyph(FontFaceHandleFreetype face, int font_size, Character character, FontGlyphMap& glyphs);
++	// Build a glyph by font-specific glyph index under an engine-private atlas key.
++	bool AppendGlyphIndex(FontFaceHandleFreetype face, int font_size, uint32_t glyph_index, Character atlas_key, FontGlyphMap& glyphs);
++	// Returns true when the face maps the Unicode code point to a real glyph.
++	bool HasGlyph(FontFaceHandleFreetype face, Character character);
+ 
+ 	// Returns the kerning between two characters.
+ 	// 'font_size' value of zero assumes the font size is already set on the face, and skips this step for performance reasons.
+

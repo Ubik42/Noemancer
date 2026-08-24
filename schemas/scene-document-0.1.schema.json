@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noemancer.local/schema/scene-document-0.1.json",
+  "title": "Noemancer Scene Document 0.1",
+  "type": "object",
+  "required": ["schema", "sceneGuid", "name", "entities"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "noemancer.scene/0.1"},
+    "sceneGuid": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "entities": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/entity"}
+    }
+  },
+  "$defs": {
+    "vector3": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "number"},
+        {"type": "number"},
+        {"type": "number"}
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "normalizedNumber": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "entity": {
+      "type": "object",
+      "required": ["guid", "name", "parent", "components"],
+      "additionalProperties": false,
+      "properties": {
+        "guid": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "parent": {"type": ["string", "null"]},
+        "components": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "Transform": {
+              "type": "object",
+              "required": ["position"],
+              "additionalProperties": false,
+              "properties": {"position": {"$ref": "#/$defs/vector3"}}
+            },
+            "Velocity": {
+              "type": "object",
+              "required": ["linear"],
+              "additionalProperties": false,
+              "properties": {"linear": {"$ref": "#/$defs/vector3"}}
+            },
+            "Camera": {
+              "type": "object",
+              "required": ["target", "verticalFovDegrees", "nearClip", "farClip", "primary"],
+              "additionalProperties": false,
+              "properties": {
+                "target": {"$ref": "#/$defs/vector3"},
+                "verticalFovDegrees": {"type": "number", "exclusiveMinimum": 1.0, "exclusiveMaximum": 179.0},
+                "nearClip": {"type": "number", "exclusiveMinimum": 0.0},
+                "farClip": {"type": "number", "exclusiveMinimum": 0.0},
+                "primary": {"type": "boolean"}
+              }
+            },
+            "DirectionalLight": {
+              "type": "object",
+              "required": ["direction", "color", "intensity", "ambientIntensity", "castsShadows"],
+              "additionalProperties": false,
+              "properties": {
+                "direction": {"$ref": "#/$defs/vector3"},
+                "color": {"$ref": "#/$defs/vector3"},
+                "intensity": {"type": "number", "minimum": 0.0},
+                "ambientIntensity": {"type": "number", "minimum": 0.0},
+                "castsShadows": {"type": "boolean"}
+              }
+            },
+            "MeshRenderer": {
+              "type": "object",
+              "required": ["meshAsset", "visible", "castsShadows", "receivesShadows"],
+              "additionalProperties": false,
+              "properties": {
+                "meshAsset": {"type": "string", "minLength": 1},
+                "visible": {"type": "boolean"},
+                "castsShadows": {"type": "boolean"},
+                "receivesShadows": {"type": "boolean"}
+              }
+            },
+            "PbrMaterial": {
+              "type": "object",
+              "required": ["baseColor", "metallic", "roughness"],
+              "additionalProperties": false,
+              "properties": {
+                "baseColor": {"$ref": "#/$defs/vector3"},
+                "metallic": {"$ref": "#/$defs/normalizedNumber"},
+                "roughness": {"$ref": "#/$defs/normalizedNumber"},
+                "baseColorTexture": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+/build/
+/_tools/
+/.vs/
+/.cache/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+/tools/mcp/node_modules/
+/tools/mcp/dist/
+/assets/local-test/**/*.fbx
+/generated/
+docs/research/papers/*.pdf
+**/bin/
+**/obj/

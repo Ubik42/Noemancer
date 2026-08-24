@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0",
+  "source": {
+    "provider": "Adobe Mixamo",
+    "url": "https://www.mixamo.com/",
+    "licenseReference": "https://helpx.adobe.com/creative-cloud/faq/mixamo-faq.html",
+    "redistribution": "local-only",
+    "note": "Adobe permits royalty-free use in games, but this manifest does not assert permission to redistribute the raw downloaded FBX files."
+  },
+  "assets": [
+    {
+      "path": "rumba-dancing-01.fbx",
+      "originalName": "Rumba Dancing (1).fbx",
+      "bytes": 32681346,
+      "sha256": "f7b86c4893a7668f8157556e0ca6396a9428b6079ca7120a2bf2e335b88274d1",
+      "coverage": ["fbx", "humanoid", "skinning", "animation"]
+    },
+    {
+      "path": "rumba-dancing-02.fbx",
+      "originalName": "Rumba Dancing.fbx",
+      "bytes": 21192688,
+      "sha256": "1a4d63bc49a07a14b952f237a4cdf757a8eafeb66183f2dcb4ca3b75dad1b3ea",
+      "coverage": ["fbx", "humanoid", "skinning", "animation"]
+    },
+    {
+      "path": "shoved-reaction-with-spin.fbx",
+      "originalName": "Shoved Reaction With Spin.fbx",
+      "bytes": 28619504,
+      "sha256": "fb30b9e98e9749964c4bd7802175a4f14342a44ebb6739424e91ce8f6cdf1148",
+      "coverage": ["fbx", "humanoid", "skinning", "root-motion", "animation"]
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "noemancer.project-state/0.2",
+  "updated": "2026-08-23",
+  "status": "active-development",
+  "currentSlice": "production.project-ui-authoring-and-interaction",
+  "authority": {
+    "architecture": "docs/architecture.md",
+    "roadmap": "docs/development-plan.zh-CN.md",
+    "capabilities": "docs/first-acceptance-status.zh-CN.md",
+    "documentationPolicy": "docs/README.md",
+    "historicalResearch": "docs/research/"
+  },
+  "currentFrontier": [
+    "production.project-ui-authoring-and-interaction",
+    "hybrid-pixel.large-sprite-tilemap-production-pressure",
+    "game-migration.hybrid-pixel-hd2d-small-slice"
+  ],
+  "externalEvidencePending": [
+    "performance.gpu-telemetry-compatible-host"
+  ],
+  "completedMilestones": [
+    "engine-production-closure",
+    "editor-experience-foundation",
+    "production.project-ui-authoring-and-input-remap",
+    "production.release-diagnostics-and-license-closure",
+    "game-migration.open-2d-small-slice",
+    "hybrid-pixel.core-profile",
+    "hybrid-pixel.sprite-material-and-mixed-lighting",
+    "hybrid-pixel.pixel-aligned-vfx-and-controlled-post",
+    "hybrid-pixel.profile-authoring-ui",
+    "hybrid-pixel.package-player-production-validation"
+  ],
+  "closedExperiments": [
+    {
+      "id": "hybrid-pixel.semantic-2d-character-rig-prototype",
+      "outcome": "closed-without-production-adr",
+      "evidence": "generated/acceptance/semantic-2d-rig-prototype-current/semantic-2d-rig-prototype-receipt.json",
+      "reason": "Stable identity and isolated edits were proven, but the 2x2x4 workload did not reduce authoring bytes versus direct frame descriptions."
+    }
+  ],
+  "developmentMode": {
+    "protocol": "codex-goal-batched",
+    "orchestratorRole": "sol",
+    "delegation": "proactive-up-to-three-luna-workers-for-independent-non-overlapping-lanes",
+    "selection": "first-unblocked-current-frontier-item",
+    "integration": "orchestrator-owned",
+    "verification": "coherent-subsystem-batch-boundary",
+    "stopConditions": [
+      "user-stop",
+      "milestone-boundary",
+      "repeated-external-blocker",
+      "architecture-conflict-or-new-authority"
+    ]
+  },
+  "milestones": [
+    "engine-production-closure",
+    "editor-experience-foundation",
+    "lumen-run-2d-acceptance",
+    "production-hardening",
+    "performance-evidence-and-optimization",
+    "commercial-raster-quality",
+    "hybrid-pixel-profile"
+  ],
+  "deferredUntilEvidence": [
+    "native-rhi",
+    "slang-production-compiler",
+    "deep-networking",
+    "navigation",
+    "cross-platform-optimization",
+    "semantic-2d-character-production"
+  ],
+  "verification": {
+    "innerLoop": "bounded-edit-lane-compile-when-uncertainty-demands",
+    "integratedBatch": "affected-target-and-smallest-relevant-test-set",
+    "batch": "focused-subsystem-test-and-direct-probe",
+    "fullCTest": "cross-cutting-or-milestone-only",
+    "mcpSmoke": "agent-abi-or-milestone-only",
+    "gpuCapture": "rendering-change-only",
+    "dualBackend": "cross-backend-risk-only"
+  },
+  "historyIsNonAuthoritative": true
+}

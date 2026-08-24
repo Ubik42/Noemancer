@@ -1,0 +1,148 @@
+#pragma once
+
+#include "editor/editor_ui.hpp"
+#include "engine/asset_registry.hpp"
+#include "engine/engine_host.hpp"
+#include "engine/hybrid_pixel_profile.hpp"
+#include "engine/log.hpp"
+#include "engine/world.hpp"
+
+#include <cstdint>
+#include <filesystem>
+#include <future>
+#include <optional>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace noemancer {
+
+class DebugPlayerProcess;
+class GamePersistenceStore;
+class ProjectInputEditSession;
+class ProjectHybridPixelAuthoring;
+
+struct RuntimeInputSample final {
+    std::string source;
+    float value{};
+};
+
+struct RuntimeInputEvent final {
+    std::uint32_t frame{};
+    std::string source;
+    float value{};
+};
+
+struct RunOptions {
+    bool headless{false};
+    std::uint32_t frames{0};
+    LogFormat log_format{LogFormat::Human};
+    std::string capture_frame_path;
+    std::string capture_editor_frame_path;
+    std::optional<ScenePickRequest> probe_pixel;
+    std::optional<float> exposure;
+    std::optional<float> render_scale;
+    std::string shadow_quality{"high"};
+    std::uint32_t texture_streaming_budget_kib{512};
+    std::uint32_t texture_streaming_resident_budget_kib{262144};
+    std::string texture_streaming_workload;
+    std::string temporal_debug_mode{"final"};
+    std::string reference_scene_id;
+    std::uint32_t render_stress_instances{0};
+    bool animation_physics_stress{};
+    std::uint32_t vfx_respawn_interval{0};
+    std::string gpu_backend{"auto"};
+    bool gpu_debug{};
+    bool disable_gpu_driven{};
+    bool disable_ambient_occlusion{};
+    bool gpu_visibility_readback{};
+    std::uint32_t render_stress_offscreen_percent{};
+    std::string ui_locale{"en-US"};
+    std::string project_path;
+    std::vector<RuntimeInputSample> input_samples;
+    std::vector<RuntimeInputEvent> input_events;
+    std::string editor_selected_asset_id;
+    bool editor_project_settings{};
+    std::string runtime_executable;
+    bool player_mode{};
+    std::string player_profile_path;
+    std::string player_display_name;
+    std::string debug_ready_event;
+    std::string debug_wait_event;
+    std::string performance_evidence_path;
+    bool performance_hidden{};
+    std::string performance_workload_id{"lumen-run.vertical-slice/0.1"};
+    std::uint32_t performance_warmup_frames{120};
+    std::uint32_t performance_sample_frames{600};
+    std::uint32_t window_width{1440};
+    std::uint32_t window_height{900};
+};
+
+class Application final {
+public:
+    explicit Application(RunOptions options);
+    ~Application();
+    [[nodiscard]] int run();
+
+private:
+    [[nodiscard]] int run_headless();
+    [[nodiscard]] int run_interactive();
+    void tick_frame(double delta_seconds);
+    void apply_simulation_command(EditorSimulationCommand command);
+    void apply_managed_debug_request(const EditorManagedDebugRequest& request);
+    void apply_package_request(const EditorPackageRequest& request);
+    void apply_project_request(const EditorProjectRequest& request);
+    void apply_project_input_map_request(const ProjectSettingsInputMapPanelRequest& request);
+    void apply_hybrid_pixel_profile_request(const HybridPixelProfilePanelRequest& request);
+    void apply_source_open_request(const EditorSourceOpenRequest& request);
+    void apply_script_build_completion(const EditorScriptBuildCompletion& completion);
+    [[nodiscard]] std::string load_editor_project_json(const std::filesystem::path& project_path);
+    void poll_package_job();
+    void register_sprite_assets(World& world);
+    [[nodiscard]] bool register_cooked_geometry_assets();
+    [[nodiscard]] bool register_animation_clip_assets(World& world);
+    void register_animation_state_machine_assets(World& world);
+    void register_animation_graph_assets(World& world);
+    void register_tilemap_assets(World& world);
+    void register_audio_assets(World& world);
+    void configure_persistence_store(std::string project_id);
+    void process_persistence_requests(World& world);
+    [[nodiscard]] World& active_world() noexcept;
+
+    RunOptions options_;
+    Logger logger_;
+    EngineHost engine_host_;
+    World world_;
+    std::unique_ptr<World> play_world_;
+    bool play_paused_{};
+    bool play_single_step_{};
+    std::uint64_t play_base_revision_{};
+    std::string play_base_scene_json_;
+    AssetRegistry asset_registry_;
+    EditorUi editor_ui_;
+    TilemapRenderBakeCache tilemap_render_bake_cache_;
+    std::string startup_error_json_;
+    std::filesystem::path script_project_root_;
+    std::filesystem::path script_project_path_;
+    std::filesystem::path project_root_;
+    std::vector<InputActionDefinition> project_input_actions_;
+    std::unique_ptr<ProjectInputEditSession> project_input_session_;
+    std::unique_ptr<ProjectHybridPixelAuthoring> project_hybrid_pixel_session_;
+    std::string project_hud_document_json_;
+    std::optional<HybridPixelProfile> hybrid_pixel_profile_;
+    std::uint64_t hybrid_pixel_profile_revision_{1U};
+    std::unique_ptr<GamePersistenceStore> persistence_store_;
+    std::string managed_debug_last_action_json_;
+    bool managed_debug_external_player_{};
+    std::unique_ptr<DebugPlayerProcess> managed_debug_player_;
+    std::future<std::string> package_future_;
+    bool package_busy_{};
+    std::uint32_t cooked_animation_load_count_{};
+    std::uint32_t source_animation_decode_count_{};
+    std::uint32_t offline_animation_compile_count_{};
+    std::uint32_t cooked_geometry_load_count_{};
+    std::uint32_t source_geometry_decode_count_{};
+    std::uint32_t offline_geometry_compile_count_{};
+};
+
+} // namespace noemancer

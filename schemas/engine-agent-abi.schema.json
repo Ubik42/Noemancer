@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noemancer.local/schema/engine-agent-abi-0.2.json",
+  "title": "Noemancer Agent ABI tool manifest",
+  "type": "object",
+  "required": ["protocolVersion", "tools"],
+  "additionalProperties": false,
+  "properties": {
+    "protocolVersion": { "const": "0.2" },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "access",
+          "idempotent",
+          "supportsDryRun",
+          "runtimeState",
+          "taskKind",
+          "inputSchema",
+          "outputSchema"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+          },
+          "description": { "type": "string", "minLength": 1 },
+          "access": { "enum": ["read", "write", "control", "debug"] },
+          "idempotent": { "type": "boolean" },
+          "supportsDryRun": { "type": "boolean" },
+          "runtimeState": {
+            "enum": ["offline", "editor", "running", "paused", "safe-point"]
+          },
+          "taskKind": { "enum": ["immediate", "long-running"] },
+          "inputSchema": { "type": "object" },
+          "outputSchema": { "type": "object" }
+        }
+      }
+    }
+  }
+}

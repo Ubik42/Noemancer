@@ -1,0 +1,436 @@
+{
+  "schema": "noemancer.assets/0.1",
+  "assets": [
+    {
+      "id": "asset.primitive.cube",
+      "displayName": "Cube",
+      "kind": "Geometry",
+      "uri": "builtin://geometry/cube",
+      "license": "Noemancer built-in",
+      "redistribution": "public",
+      "tags": ["primitive", "geometry"]
+    },
+    {
+      "id": "asset.primitive.plane",
+      "displayName": "Plane",
+      "kind": "Geometry",
+      "uri": "builtin://geometry/plane",
+      "license": "Noemancer built-in",
+      "redistribution": "public",
+      "tags": ["primitive", "geometry"]
+    },
+    {
+      "id": "asset.primitive.sphere",
+      "displayName": "Sphere",
+      "kind": "Geometry",
+      "uri": "builtin://geometry/sphere",
+      "license": "Noemancer built-in",
+      "redistribution": "public",
+      "tags": ["primitive", "geometry"]
+    },
+    {
+      "id": "asset.texture.checker",
+      "displayName": "Checker Texture",
+      "kind": "Texture",
+      "uri": "builtin://texture/checker",
+      "license": "Noemancer built-in",
+      "redistribution": "public",
+      "tags": ["texture", "procedural", "fixture", "srgb"]
+    },
+    {
+      "id": "asset.environment.procedural-sky",
+      "displayName": "Procedural Sky Environment",
+      "kind": "Environment",
+      "uri": "builtin://environment/procedural-sky",
+      "license": "Noemancer built-in",
+      "redistribution": "public",
+      "tags": ["environment", "cubemap", "ibl", "procedural", "hdr-source"]
+    },
+    {
+      "id": "asset.animation.test-bob",
+      "displayName": "Deterministic Bob Test Clip",
+      "kind": "Animation",
+      "uri": "builtin://animation/test-bob",
+      "license": "Noemancer built-in",
+      "redistribution": "public",
+      "tags": ["animation", "keyframe", "procedural", "fixture"]
+    },
+    {
+      "id": "asset.scene.bootstrap",
+      "displayName": "Bootstrap Scene",
+      "kind": "Scene",
+      "uri": "asset://scenes/bootstrap.scene.json",
+      "path": "scenes/bootstrap.scene.json",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["scene", "fixture"]
+    },
+    {
+      "id": "asset.test.kenney.alien",
+      "displayName": "Kenney Alien",
+      "kind": "Model",
+      "uri": "asset://test/kenney-alien-cake/alien.glb",
+      "path": "test/kenney-alien-cake/alien.glb",
+      "license": "CC0-1.0",
+      "redistribution": "public",
+      "tags": ["gltf", "mesh", "fixture"]
+    },
+    {
+      "id": "asset.test.kenney.cake",
+      "displayName": "Kenney Birthday Cake",
+      "kind": "Model",
+      "uri": "asset://test/kenney-alien-cake/cakeBirthday.glb",
+      "path": "test/kenney-alien-cake/cakeBirthday.glb",
+      "license": "CC0-1.0",
+      "redistribution": "public",
+      "tags": ["gltf", "mesh", "fixture"]
+    },
+    {
+      "id": "asset.test.kenney.tile",
+      "displayName": "Kenney Ground Tile",
+      "kind": "Model",
+      "uri": "asset://test/kenney-alien-cake/tile.glb",
+      "path": "test/kenney-alien-cake/tile.glb",
+      "license": "CC0-1.0",
+      "redistribution": "public",
+      "tags": ["gltf", "mesh", "fixture"]
+    },
+    {
+      "id": "asset.test.material-reference",
+      "displayName": "Complete glTF Material Reference",
+      "kind": "Model",
+      "uri": "asset://test/material-reference/material-reference.glb",
+      "path": "test/material-reference/material-reference.glb",
+      "contentHash": "sha256:ccdb7f91ee2e88d9c405cea0ecb65f7271fe7bbcc5b183ccc426e409699ac004",
+      "license": "CC0-1.0",
+      "redistribution": "public",
+      "tags": ["gltf", "mesh", "fixture", "pbr", "normal-map", "alpha"]
+    },
+    {
+      "id": "asset.local.mixamo.rumba-01",
+      "displayName": "Rumba Dancing 01",
+      "kind": "AnimatedModel",
+      "uri": "asset://local-test/mixamo/rumba-dancing-01.fbx",
+      "path": "local-test/mixamo/rumba-dancing-01.fbx",
+      "contentHash": "sha256:f7b86c4893a7668f8157556e0ca6396a9428b6079ca7120a2bf2e335b88274d1",
+      "license": "Adobe Mixamo terms",
+      "redistribution": "local-only",
+      "optional": true,
+      "tags": ["fbx", "humanoid", "skinning", "animation"]
+    },
+    {
+      "id": "asset.local.mixamo.rumba-02",
+      "displayName": "Rumba Dancing 02",
+      "kind": "AnimatedModel",
+      "uri": "asset://local-test/mixamo/rumba-dancing-02.fbx",
+      "path": "local-test/mixamo/rumba-dancing-02.fbx",
+      "contentHash": "sha256:1a4d63bc49a07a14b952f237a4cdf757a8eafeb66183f2dcb4ca3b75dad1b3ea",
+      "license": "Adobe Mixamo terms",
+      "redistribution": "local-only",
+      "optional": true,
+      "tags": ["fbx", "humanoid", "skinning", "animation"]
+    },
+    {
+      "id": "asset.local.mixamo.shoved-spin",
+      "displayName": "Shoved Reaction With Spin",
+      "kind": "AnimatedModel",
+      "uri": "asset://local-test/mixamo/shoved-reaction-with-spin.fbx",
+      "path": "local-test/mixamo/shoved-reaction-with-spin.fbx",
+      "contentHash": "sha256:fb30b9e98e9749964c4bd7802175a4f14342a44ebb6739424e91ce8f6cdf1148",
+      "license": "Adobe Mixamo terms",
+      "redistribution": "local-only",
+      "optional": true,
+      "tags": ["fbx", "humanoid", "skinning", "root-motion", "animation"]
+    },
+    {
+      "id": "asset.shader.scene-lit-vertex",
+      "displayName": "Scene Lit Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/scene_lit.vert.hlsl",
+      "path": "shaders/scene_lit.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "forward", "lighting"]
+    },
+    {
+      "id": "asset.shader.scene-lit-fragment",
+      "displayName": "Scene Lit Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/scene_lit.frag.hlsl",
+      "path": "shaders/scene_lit.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "forward", "lighting", "shadow"]
+    },
+    {
+      "id": "asset.shader.scene-gpu-driven-vertex",
+      "displayName": "GPU-driven Scene Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/scene_gpu_driven.vert.hlsl",
+      "path": "shaders/scene_gpu_driven.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "forward", "gpu-driven", "indirect", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.gpu-visibility-compute",
+      "displayName": "GPU Visibility Compute",
+      "kind": "Shader",
+      "uri": "asset://shaders/gpu_visibility.comp.hlsl",
+      "path": "shaders/gpu_visibility.comp.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "gpu-driven", "visibility", "compute", "indirect", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.shadow-depth-vertex",
+      "displayName": "Shadow Depth Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/shadow_depth.vert.hlsl",
+      "path": "shaders/shadow_depth.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "shadow", "depth"]
+    },
+    {
+      "id": "asset.shader.sprite-vertex",
+      "displayName": "Sprite Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/sprite.vert.hlsl",
+      "path": "shaders/sprite.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "sprite", "atlas", "motion-vectors", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.sprite-shadow-vertex",
+      "displayName": "Sprite Shadow Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/sprite_shadow.vert.hlsl",
+      "path": "shaders/sprite_shadow.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "sprite", "shadow", "cutout", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.sprite-fragment",
+      "displayName": "Sprite Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/sprite.frag.hlsl",
+      "path": "shaders/sprite.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "sprite", "cutout", "alpha", "picking", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.shadow-depth-fragment",
+      "displayName": "Shadow Depth Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/shadow_depth.frag.hlsl",
+      "path": "shaders/shadow_depth.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "shadow", "depth"]
+    },
+    {
+      "id": "asset.shader.tone-map-vertex",
+      "displayName": "Tone Map Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/tone_map.vert.hlsl",
+      "path": "shaders/tone_map.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "fullscreen"]
+    },
+    {
+      "id": "asset.shader.tone-map-fragment",
+      "displayName": "ACES Tone Map Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/tone_map.frag.hlsl",
+      "path": "shaders/tone_map.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "hdr", "aces", "tone-map"]
+    },
+    {
+      "id": "asset.shader.gtao-fragment",
+      "displayName": "GTAO Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/gtao.frag.hlsl",
+      "path": "shaders/gtao.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "ambient-occlusion", "gtao"]
+    },
+    {
+      "id": "asset.shader.ao-composite-fragment",
+      "displayName": "Ambient Occlusion Composite Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/ao_composite.frag.hlsl",
+      "path": "shaders/ao_composite.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "ambient-occlusion", "composite"]
+    },
+    {
+      "id": "asset.shader.ao-denoise-fragment",
+      "displayName": "Ambient Occlusion Bilateral Denoise Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/ao_denoise.frag.hlsl",
+      "path": "shaders/ao_denoise.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "ambient-occlusion", "bilateral", "denoise"]
+    },
+    {
+      "id": "asset.shader.auto-exposure-fragment",
+      "displayName": "Log Luminance Auto Exposure Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/auto_exposure.frag.hlsl",
+      "path": "shaders/auto_exposure.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "hdr", "auto-exposure"]
+    },
+    {
+      "id": "asset.shader.bloom-downsample-fragment",
+      "displayName": "HDR Bloom Downsample Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/bloom_downsample.frag.hlsl",
+      "path": "shaders/bloom_downsample.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "hdr", "bloom", "downsample", "emissive"]
+    },
+    {
+      "id": "asset.shader.bloom-upsample-fragment",
+      "displayName": "HDR Bloom Upsample Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/bloom_upsample.frag.hlsl",
+      "path": "shaders/bloom_upsample.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "hdr", "bloom", "upsample", "emissive"]
+    },
+    {
+      "id": "asset.shader.fxaa-vertex",
+      "displayName": "FXAA Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/fxaa.vert.hlsl",
+      "path": "shaders/fxaa.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "anti-aliasing", "fxaa"]
+    },
+    {
+      "id": "asset.shader.fxaa-fragment",
+      "displayName": "FXAA Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/fxaa.frag.hlsl",
+      "path": "shaders/fxaa.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "anti-aliasing", "fxaa"]
+    },
+    {
+      "id": "asset.shader.taa-vertex",
+      "displayName": "Temporal Resolve Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/taa.vert.hlsl",
+      "path": "shaders/taa.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "anti-aliasing", "taa"]
+    },
+    {
+      "id": "asset.shader.taa-fragment",
+      "displayName": "Temporal Resolve Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/taa.frag.hlsl",
+      "path": "shaders/taa.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "post-process", "anti-aliasing", "taa", "motion-vectors", "history"]
+    },
+    {
+      "id": "asset.shader.vfx-sim-compute",
+      "displayName": "VFX Simulation Compute",
+      "kind": "Shader",
+      "uri": "asset://shaders/vfx_sim.comp.hlsl",
+      "path": "shaders/vfx_sim.comp.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "vfx", "compute", "particles", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.vfx-spawn-compute",
+      "displayName": "VFX Spawn Compute",
+      "kind": "Shader",
+      "uri": "asset://shaders/vfx_spawn.comp.hlsl",
+      "path": "shaders/vfx_spawn.comp.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "vfx", "compute", "particles", "spawn", "dead-list", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.vfx-group-compute",
+      "displayName": "VFX Blend Group Compute",
+      "kind": "Shader",
+      "uri": "asset://shaders/vfx_group.comp.hlsl",
+      "path": "shaders/vfx_group.comp.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "vfx", "compute", "particles", "blend", "indirect", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.vfx-sort-alpha-compute",
+      "displayName": "VFX Alpha Sort Compute",
+      "kind": "Shader",
+      "uri": "asset://shaders/vfx_sort_alpha.comp.hlsl",
+      "path": "shaders/vfx_sort_alpha.comp.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "vfx", "compute", "particles", "alpha", "bitonic-sort", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.vfx-billboard-vertex",
+      "displayName": "VFX Billboard Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/vfx_billboard.vert.hlsl",
+      "path": "shaders/vfx_billboard.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "vfx", "particles", "billboard", "indirect", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.vfx-billboard-fragment",
+      "displayName": "VFX Billboard Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/vfx_billboard.frag.hlsl",
+      "path": "shaders/vfx_billboard.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "vfx", "particles", "billboard", "hdr", "taa", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.retained-ui-vertex",
+      "displayName": "Retained UI Vertex",
+      "kind": "Shader",
+      "uri": "asset://shaders/retained_ui.vert.hlsl",
+      "path": "shaders/retained_ui.vert.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "ui", "rmlui", "dxil", "spir-v"]
+    },
+    {
+      "id": "asset.shader.retained-ui-fragment",
+      "displayName": "Retained UI Fragment",
+      "kind": "Shader",
+      "uri": "asset://shaders/retained_ui.frag.hlsl",
+      "path": "shaders/retained_ui.frag.hlsl",
+      "license": "Noemancer project",
+      "redistribution": "public",
+      "tags": ["hlsl", "render", "ui", "rmlui", "alpha-blend", "dxil", "spir-v"]
+    }
+  ]
+}

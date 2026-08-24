@@ -1,0 +1,432 @@
+{
+  "schema": "noemancer.shader-artifact-source-contract/0.1",
+  "sourceExtension": ".hlsl",
+  "shaders": [
+    {
+      "stem": "ao_composite.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 3,
+        "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "ao_denoise.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 3,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "auto_exposure.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 2,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "bloom_downsample.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 1,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "bloom_upsample.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 2,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "fxaa.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 1,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "fxaa.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "gpu_visibility.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 2,
+        "readwriteStorageBuffers": 2
+      },
+      "threadGroup": [
+        64,
+        1,
+        1
+      ]
+    },
+    {
+      "stem": "gtao.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 2,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "retained_ui.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 1,
+        "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "retained_ui.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "scene_gpu_driven.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 2,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "scene_lit.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 10,
+        "uniformBuffers": 1,
+        "storageBuffers": 3,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "scene_lit.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 4,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "shadow_depth.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 1,
+        "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "shadow_depth.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 3,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "sprite.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 6,
+        "uniformBuffers": 1,
+        "storageBuffers": 3,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "sprite.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 2,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "sprite_shadow.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 2,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "taa.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 6,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "taa.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "tone_map.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 3,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "tone_map.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "vfx_billboard.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "vfx_billboard.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 2,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "vfx_group.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 7
+      },
+      "threadGroup": [
+        64,
+        1,
+        1
+      ]
+    },
+    {
+      "stem": "vfx_sim.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 7
+      },
+      "threadGroup": [
+        64,
+        1,
+        1
+      ]
+    },
+    {
+      "stem": "vfx_sort_alpha.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 3
+      },
+      "threadGroup": [
+        256,
+        1,
+        1
+      ]
+    },
+    {
+      "stem": "vfx_spawn.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 7
+      },
+      "threadGroup": [
+        64,
+        1,
+        1
+      ]
+    }
+  ]
+}

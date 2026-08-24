@@ -1,0 +1,41 @@
+{
+  "schema": "noemancer.semantic-2d-character-rig-prototype/0.1",
+  "characterId": "character.courier",
+  "displayName": "Courier",
+  "parts": [
+    {"id":"part.body","displayName":"Body","jointId":"joint.root","sourceAsset":"source.courier.body","materialChannelId":"material.base","zOrder":0,"pivot":[0.5,0.0]},
+    {"id":"part.head","displayName":"Head","jointId":"joint.head","sourceAsset":"source.courier.head","materialChannelId":"material.base","zOrder":1,"pivot":[0.5,0.2]},
+    {"id":"part.satchel","displayName":"Satchel","jointId":"joint.satchel","sourceAsset":"source.courier.satchel","materialChannelId":"material.accent","zOrder":2,"pivot":[0.5,0.5]}
+  ],
+  "joints": [
+    {"id":"joint.root","parentId":"","rest":[0.0,0.0,0.0]},
+    {"id":"joint.head","parentId":"joint.root","rest":[0.0,12.0,0.0]},
+    {"id":"joint.satchel","parentId":"joint.root","rest":[-5.0,6.0,0.0]}
+  ],
+  "materialChannels": [
+    {"id":"material.base","semantic":"base-color","sourceAsset":"source.courier.palette","textureAsset":"texture.courier.base","colorSpace":"srgb","intensity":1.0},
+    {"id":"material.accent","semantic":"emissive-mask","sourceAsset":"source.courier.accent","textureAsset":"texture.courier.emissive","colorSpace":"linear","intensity":0.35,"optional":true}
+  ],
+  "poses": [
+    {"id":"pose.idle.south","directionId":"south","frameKey":"idle.00","partTransforms":[{"partId":"part.body","position":[0.0,0.0],"rotationDegrees":0.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.idle.south"}]},
+    {"id":"pose.idle.east","directionId":"east","frameKey":"idle.00","partTransforms":[{"partId":"part.body","position":[0.5,0.0],"rotationDegrees":0.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.idle.east"}]},
+    {"id":"pose.idle.north","directionId":"north","frameKey":"idle.00","partTransforms":[{"partId":"part.body","position":[0.0,0.0],"rotationDegrees":0.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.idle.north"}]},
+    {"id":"pose.run0.south","directionId":"south","frameKey":"run.00","partTransforms":[{"partId":"part.body","position":[0.0,0.0],"rotationDegrees":-3.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.run0.south"}]},
+    {"id":"pose.run0.east","directionId":"east","frameKey":"run.00","partTransforms":[{"partId":"part.body","position":[0.0,0.0],"rotationDegrees":-5.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.run0.east"}]},
+    {"id":"pose.run0.north","directionId":"north","frameKey":"run.00","partTransforms":[{"partId":"part.body","position":[0.0,0.0],"rotationDegrees":-2.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.run0.north"}]},
+    {"id":"pose.run1.south","directionId":"south","frameKey":"run.01","partTransforms":[{"partId":"part.body","position":[0.0,1.0],"rotationDegrees":3.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.run1.south"}]},
+    {"id":"pose.run1.east","directionId":"east","frameKey":"run.01","partTransforms":[{"partId":"part.body","position":[0.0,1.0],"rotationDegrees":5.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.run1.east"}]},
+    {"id":"pose.run1.north","directionId":"north","frameKey":"run.01","partTransforms":[{"partId":"part.body","position":[0.0,1.0],"rotationDegrees":2.0,"scale":[1.0,1.0],"opacity":1.0,"celKey":"body.run1.north"}]}
+  ],
+  "actions": [
+    {"id":"idle","displayName":"Idle","looping":true,"sampleRate":8.0,"frames":[{"key":"00","poseId":"pose.idle.south","durationMs":125}]},
+    {"id":"run","displayName":"Run","looping":true,"sampleRate":12.0,"frames":[{"key":"00","poseId":"pose.run0.south","durationMs":83},{"key":"01","poseId":"pose.run1.south","durationMs":83}]}
+  ],
+  "directions": [
+    {"id":"south","displayName":"South","angleDegrees":180.0,"mirrorX":false,"poseOverrides":{}},
+    {"id":"east","displayName":"East","angleDegrees":90.0,"overrideOfDirectionId":"south","mirrorX":false,"poseOverrides":{"pose.idle.south":"pose.idle.east","pose.run0.south":"pose.run0.east","pose.run1.south":"pose.run1.east"}},
+    {"id":"west","displayName":"West","angleDegrees":270.0,"mirrorOfDirectionId":"east","mirrorX":true,"poseOverrides":{"pose.idle.south":"pose.idle.east","pose.run0.south":"pose.run0.east","pose.run1.south":"pose.run1.east"}},
+    {"id":"north","displayName":"North","angleDegrees":0.0,"overrideOfDirectionId":"south","mirrorX":false,"poseOverrides":{"pose.idle.south":"pose.idle.north","pose.run0.south":"pose.run0.north","pose.run1.south":"pose.run1.north"}}
+  ],
+  "provenance": {"sourceUri":"project://characters/courier","sourceSha256":"0000000000000000000000000000000000000000000000000000000000000001","generator":"Noemancer prototype fixture","license":"CC0-1.0"}
+}
