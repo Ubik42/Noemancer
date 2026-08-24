@@ -356,7 +356,16 @@ std::filesystem::path default_user_data_root() {
 
 Application::Application(RunOptions options)
     : options_(options), logger_(options.log_format), editor_ui_(world_, asset_registry_) {
+    startup_telemetry_ = options_.startup_telemetry != nullptr
+        ? options_.startup_telemetry : &startup_telemetry_storage_;
+    startup_telemetry_->begin_phase("application.construct");
+    startup_telemetry_->begin_phase("engine.module-registration");
     engine_host_.register_default_modules();
+    if (options_.player_mode) {
+        startup_telemetry_->begin_phase("project.parse");
+    } else if (options_.project_path.empty()) {
+        startup_telemetry_->begin_phase("scene.bootstrap");
+    }
     if(options_.player_mode) {
         const auto scene=load_player_scene(options_.player_profile_path,options_.player_display_name,startup_error_json_);
         if(scene) {
@@ -369,6 +378,7 @@ Application::Application(RunOptions options)
                 {"code","player.hybrid-pixel-profile-invalid"}}.dump();
             if(const auto registry_relative=std::filesystem::path(profile.value("assetRegistry",std::string{})).lexically_normal();
                 !registry_relative.empty()&&!registry_relative.is_absolute()&&*registry_relative.begin()!=std::filesystem::path("..")) {
+                startup_telemetry_->begin_phase("asset.registry");
                 const auto package_root=std::filesystem::path(options_.player_profile_path).parent_path().parent_path();
                 const auto registry_path=(package_root/registry_relative).lexically_normal();
                 asset_registry_=AssetRegistry(registry_path.parent_path());
@@ -394,6 +404,7 @@ Application::Application(RunOptions options)
             }
             const auto assembly_relative=profile.value("managedAssembly",std::string{});
             if(startup_error_json_.empty()&&!assembly_relative.empty()) {
+                startup_telemetry_->begin_phase("managed.load");
                 const auto assembly=(std::filesystem::path(options_.player_profile_path).parent_path().parent_path()/assembly_relative).lexically_normal();
                 const auto load=nlohmann::json::parse(world_.scripting_project_load_assembly_json(
                     assembly,profile.value("managedConfiguration",std::string{"Release"})),nullptr,false);
@@ -405,7 +416,10 @@ Application::Application(RunOptions options)
             if(startup_error_json_.empty()&&!wait_for_debug_release(options_.debug_wait_event))
                 startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
                     {"code","player.debug-wait-failed"}}.dump();
-            if(startup_error_json_.empty())static_cast<void>(world_.load_scene(*scene));
+            if(startup_error_json_.empty()) {
+                startup_telemetry_->begin_phase("scene.load");
+                static_cast<void>(world_.load_scene(*scene));
+            }
         }
     } else if (!options_.project_path.empty()) {
         const auto loaded=load_editor_project_json(options_.project_path);
@@ -420,36 +434,43 @@ Application::Application(RunOptions options)
             : options_.render_stress_instances > 0
                 ? make_render_stress_scene_document(options_.render_stress_instances,options_.render_stress_offscreen_percent)
                 : make_bootstrap_scene_document();
+        startup_telemetry_->begin_phase("scene.load");
         static_cast<void>(world_.load_scene(scene));
+    }
+    if (options_.player_mode || options_.project_path.empty()) {
+        startup_telemetry_->begin_phase("asset.cook");
     }
     if(options_.player_mode&&options_.render_stress_instances>0)
         static_cast<void>(world_.load_scene(make_render_stress_scene_document(
             options_.render_stress_instances,options_.render_stress_offscreen_percent)));
-    for (const auto& asset : asset_registry_.records()) {
-        if (!asset.available || (asset.extension != ".glb" && asset.extension != ".fbx")) continue;
-        if (options_.player_mode) {
-            if(startup_error_json_.empty())startup_error_json_=nlohmann::json{
-                {"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-                {"code","player.source-asset-forbidden"},{"assetId",asset.id},{"extension",asset.extension},
-                {"detail","Packaged Player content must use cooked runtime artifacts, not source FBX/GLB."}}.dump();
-            break;
+    if (options_.player_mode || options_.project_path.empty()) {
+        for (const auto& asset : asset_registry_.records()) {
+            if (!asset.available || (asset.extension != ".glb" && asset.extension != ".fbx")) continue;
+            if (options_.player_mode) {
+                if(startup_error_json_.empty())startup_error_json_=nlohmann::json{
+                    {"schemaVersion","noemancer.player-load/0.1"},{"success",false},
+                    {"code","player.source-asset-forbidden"},{"assetId",asset.id},{"extension",asset.extension},
+                    {"detail","Packaged Player content must use cooked runtime artifacts, not source FBX/GLB."}}.dump();
+                break;
+            }
+            const auto source = asset_registry_.source_path(asset);
+            const auto decoded = asset.extension == ".fbx" ? decode_fbx_asset(source) : decode_glb_mesh(source);
+            ++source_animation_decode_count_;
+            ++source_geometry_decode_count_;
+            if (decoded.valid && !decoded.skins.empty() && !decoded.animations.empty()) {
+                ++offline_animation_compile_count_;
+                static_cast<void>(world_.register_gltf_animations(asset.id, decoded));
+            }
         }
-        const auto source = asset_registry_.source_path(asset);
-        const auto decoded = asset.extension == ".fbx" ? decode_fbx_asset(source) : decode_glb_mesh(source);
-        ++source_animation_decode_count_;
-        ++source_geometry_decode_count_;
-        if (decoded.valid && !decoded.skins.empty() && !decoded.animations.empty()) {
-            ++offline_animation_compile_count_;
-            static_cast<void>(world_.register_gltf_animations(asset.id, decoded));
-        }
+        if(startup_error_json_.empty()&&!register_animation_clip_assets(world_))
+            startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
+                {"code","player.cooked-animation-load-failed"}}.dump();
+        startup_telemetry_->begin_phase("asset.registry-bind");
+        register_animation_state_machine_assets(world_);register_animation_graph_assets(world_);
+        register_sprite_assets(world_);
+        register_tilemap_assets(world_);
+        register_audio_assets(world_);
     }
-    if(startup_error_json_.empty()&&!register_animation_clip_assets(world_))
-        startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.cooked-animation-load-failed"}}.dump();
-    register_animation_state_machine_assets(world_);register_animation_graph_assets(world_);
-    register_sprite_assets(world_);
-    register_tilemap_assets(world_);
-    register_audio_assets(world_);
     // An editor launched without a project is a product entry surface, not a
     // renderer/VFX fixture.  Stress and reference-scene paths seed their own
     // explicit content; the normal Project Hub must never surprise the user
@@ -459,24 +480,36 @@ Application::Application(RunOptions options)
         startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.editor-startup/0.1"},{"success",false},
             {"code","editor.asset-selection-not-found"},{"assetId",options_.editor_selected_asset_id}}.dump();
     editor_ui_.set_project_settings_open(options_.editor_project_settings);
+    startup_telemetry_->finish_phase();
 }
 
 Application::~Application() = default;
+
+void Application::log_startup_telemetry(
+    const std::string_view mode,
+    const std::string_view outcome) {
+    if (startup_telemetry_ == nullptr) return;
+    startup_telemetry_->finish_phase();
+    logger_.info("runtime.startup_telemetry", startup_telemetry_->json(mode, outcome));
+}
 
 std::string Application::load_editor_project_json(const std::filesystem::path& project_path) {
     using Json=nlohmann::json;
     if(package_busy_||play_world_||managed_debug_external_player_)
         return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",false},
             {"code","project.session-busy"},{"detail","Stop Play, debugging and packaging before switching projects."}}.dump();
+    startup_telemetry_->begin_phase("project.parse");
     const auto loaded=load_project(project_path);
     if(!loaded)return project_load_errors_json(loaded);
 
+    startup_telemetry_->begin_phase("asset.registry");
     AssetRegistry next_registry;
     if(!loaded.project->asset_roots.empty()) {
         next_registry=AssetRegistry(loaded.project->root/loaded.project->asset_roots.front());
         for(std::size_t index=1U;index<loaded.project->asset_roots.size();++index)
             static_cast<void>(next_registry.add_root(loaded.project->root/loaded.project->asset_roots[index]));
     }
+    startup_telemetry_->begin_phase("scene.load");
     const auto scene_receipt=world_.load_scene(*loaded.startup_scene);
     if(!scene_receipt.success)return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",false},
         {"code","project.scene-load-failed"},{"detail","The startup scene could not become the Edit World."}}.dump();
@@ -503,12 +536,14 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
         hybrid_pixel_profile_,loaded.project->root/"noemancer.project.json");
     script_project_root_.clear();script_project_path_.clear();Json compile=nullptr;
     if(loaded.project->script_project) {
+        startup_telemetry_->begin_phase("managed.build");
         script_project_root_=loaded.project->root;script_project_path_=loaded.project->root / *loaded.project->script_project;
         const auto configured=Json::parse(world_.scripting_project_configure_json(script_project_root_,script_project_path_),nullptr,false);
         if(configured.is_object()&&configured.value("success",false))
             compile=Json::parse(world_.scripting_project_compile_json("Debug"),nullptr,false);
         else compile=configured;
     }
+    startup_telemetry_->begin_phase("asset.cook");
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.extension!=".glb"&&asset.extension!=".fbx"))continue;
         const auto source=asset_registry_.source_path(asset);
@@ -520,6 +555,7 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
     // project switching half-committed after the new World and Registry have
     // already become authoritative. Player startup remains fail-closed.
     static_cast<void>(register_animation_clip_assets(world_));
+    startup_telemetry_->begin_phase("asset.registry-bind");
     register_animation_state_machine_assets(world_);register_animation_graph_assets(world_);
     register_sprite_assets(world_);register_tilemap_assets(world_);register_audio_assets(world_);
     EditorProjectContext context{.project_id=loaded.project->project_id,.name=loaded.project->name,
@@ -1007,12 +1043,18 @@ void Application::register_audio_assets(World& world) {
 int Application::run() {
     if (!startup_error_json_.empty()) {
         logger_.error("project.load", startup_error_json_);
+        log_startup_telemetry(options_.player_mode ? "player" :
+            options_.project_path.empty() ? "editor" : "source-project", "project-load-failed");
         return 21;
     }
+    startup_telemetry_->begin_phase("engine.initialize");
     if (!engine_host_.initialize(options_.headless)) {
         logger_.error("engine.initialize", engine_host_.last_error());
+        log_startup_telemetry(options_.player_mode ? "player" :
+            options_.project_path.empty() ? "editor" : "source-project", "engine-initialize-failed");
         return 20;
     }
+    startup_telemetry_->finish_phase();
     editor_ui_.set_engine_status(engine_host_.status_json());
     logger_.info("engine.modules", engine_host_.status_json());
     const auto result = options_.headless ? run_headless() : run_interactive();
@@ -1259,6 +1301,7 @@ int Application::run_headless() {
     const auto frame_count = options_.frames == 0 ? 3U : options_.frames;
     logger_.info("runtime.start", "headless");
     logger_.info("runtime.native_dependencies",native_runtime_dependencies_json());
+    startup_telemetry_->begin_phase("runtime.headless-loop");
     nlohmann::json input_injections = nlohmann::json::array();
     for (const auto& sample : options_.input_samples) {
         input_injections.push_back(nlohmann::json::parse(
@@ -1276,6 +1319,7 @@ int Application::run_headless() {
             static_cast<void>(active_world().vfx_spawn_json("vfx.debug-impact",{2.5F,2.2F,1.0F},0x4e4f454dULL+frame));
         }
         tick_frame(1.0 / 60.0);
+        startup_telemetry_->mark_frame(static_cast<std::uint64_t>(frame) + 1U);
     }
     if (!options_.input_samples.empty()||!options_.input_events.empty()) {
         logger_.info("runtime.input_probe", nlohmann::json{
@@ -1304,6 +1348,8 @@ int Application::run_headless() {
         {"scripting",scripting_observation},
         {"projectUi",project_ui_observation}}
         .dump());
+    log_startup_telemetry(options_.player_mode ? "player" :
+        options_.project_path.empty() ? "engine-fixture" : "source-project", "success");
     std::ostringstream message;
     message << "frames=" << frame_count << " entities=" << world_.entity_count();
     if(options_.player_mode) {
@@ -1331,10 +1377,14 @@ int Application::run_headless() {
 int Application::run_interactive() {
     const bool performance_run=!options_.performance_evidence_path.empty();
     const bool runtime_surface_mode=options_.player_mode||options_.animation_physics_stress;
+    startup_telemetry_->begin_phase("sdl.initialize");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         logger_.error("sdl.init", SDL_GetError());
+        log_startup_telemetry(options_.player_mode ? "player" :
+            options_.project_path.empty() ? "editor" : "source-project", "sdl-initialize-failed");
         return 10;
     }
+    startup_telemetry_->begin_phase("gpu.initialize");
     InputSourceAdapter input_sources;
     static_cast<void>(input_sources.connect_device({InputDeviceKind::keyboard,0,"keyboard.0","Keyboard",true}));
     static_cast<void>(input_sources.connect_device({InputDeviceKind::mouse,0,"mouse.0","Mouse",true}));
@@ -1405,12 +1455,16 @@ int Application::run_interactive() {
     SDL_GPUDevice* device = SDL_CreateGPUDevice(shader_formats, options_.gpu_debug, requested_backend);
     if (device == nullptr) {
         logger_.error("sdl.gpu_device", SDL_GetError());
+        log_startup_telemetry(options_.player_mode ? "player" :
+            options_.project_path.empty() ? "editor" : "source-project", "gpu-device-failed");
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 12;
     }
     if (!SDL_ClaimWindowForGPUDevice(device, window)) {
         logger_.error("sdl.gpu_window", SDL_GetError());
+        log_startup_telemetry(options_.player_mode ? "player" :
+            options_.project_path.empty() ? "editor" : "source-project", "gpu-window-failed");
         SDL_DestroyGPUDevice(device);
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -1432,6 +1486,7 @@ int Application::run_interactive() {
     logger_.info("render.present_mode",
         present_mode == SDL_GPU_PRESENTMODE_IMMEDIATE ? "immediate" : "vsync");
 
+    startup_telemetry_->begin_phase("renderer.initialize");
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     auto& io = ImGui::GetIO();
@@ -1510,6 +1565,8 @@ int Application::run_interactive() {
     }
     if (!scene_renderer->initialize()) {
         logger_.error("render.scene_initialize", scene_renderer->last_error());
+        log_startup_telemetry(options_.player_mode ? "player" :
+            options_.project_path.empty() ? "editor" : "source-project", "renderer-initialize-failed");
         scene_renderer.reset();
         ImGui_ImplSDLGPU3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
@@ -1520,6 +1577,7 @@ int Application::run_interactive() {
         SDL_Quit();
         return 16;
     }
+    startup_telemetry_->begin_phase("ui.initialize");
     RetainedUiRuntime retained_ui;
     RetainedUiGpuAdapter retained_ui_gpu(device,texture_resources,"ui.game");
     RetainedUiGpuAdapter retained_inspector_gpu(device,texture_resources,"ui.editor.inspector");
@@ -1644,6 +1702,7 @@ int Application::run_interactive() {
         if(performance_run&&!options_.performance_hidden)static_cast<void>(SDL_SetWindowOpacity(window,0.01F));
         if(!performance_run||!options_.performance_hidden)SDL_ShowWindow(window);
     }
+    startup_telemetry_->begin_phase("runtime.interactive-loop");
     logger_.info("runtime.start", SDL_GetGPUDeviceDriver(device));
     logger_.info("runtime.native_dependencies",native_runtime_dependencies_json());
     if(!options_.player_mode)logger_.info("editor.semantic_snapshot", editor_ui_.semantic_snapshot_json());
@@ -2242,6 +2301,7 @@ int Application::run_interactive() {
             performance_scene_render_record_milliseconds.push_back(performance_scene_render_record);
         }
         ++frame;
+        startup_telemetry_->mark_frame(static_cast<std::uint64_t>(frame));
     }
 
     bool gpu_visibility_readback_passed=true;
@@ -2295,6 +2355,9 @@ int Application::run_interactive() {
     SDL_DestroyWindow(window);
     for(auto* gamepad:open_gamepads)SDL_CloseGamepad(gamepad);
     SDL_Quit();
+    log_startup_telemetry(options_.player_mode ? "player" :
+        options_.project_path.empty() ? "editor" : "source-project",
+        performance_evidence_written && gpu_visibility_readback_passed ? "success" : "runtime-failed");
     logger_.info("runtime.stop", "interactive");
     if(!performance_evidence_written)return 24;
     return gpu_visibility_readback_passed?0:25;

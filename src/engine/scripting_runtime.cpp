@@ -5,8 +5,10 @@
 #include <atomic>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <mutex>
 #include <regex>
@@ -31,6 +33,131 @@ std::atomic<std::uint64_t> next_managed_session{1};
 struct ProcessCompileArtifact final { std::string result_json; std::string assembly; };
 std::mutex process_compile_cache_mutex;
 std::unordered_map<std::string,ProcessCompileArtifact> process_compile_cache;
+
+constexpr std::size_t managed_cache_max_files = 4096U;
+constexpr std::uintmax_t managed_cache_max_bytes = 256U * 1024U * 1024U;
+constexpr std::size_t managed_cache_max_entries = 32U;
+constexpr std::uintmax_t managed_cache_total_max_bytes = 256U * 1024U * 1024U;
+
+std::string hex_hash(std::uint64_t value) {
+    std::ostringstream output;
+    output << std::hex << value;
+    return output.str();
+}
+
+std::string file_content_fingerprint(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return {};
+    std::array<char, 64U * 1024U> buffer{};
+    std::uint64_t hash = 1469598103934665603ULL;
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto count = input.gcount();
+        for (std::streamsize index = 0; index < count; ++index) {
+            hash ^= static_cast<unsigned char>(buffer[static_cast<std::size_t>(index)]);
+            hash *= 1099511628211ULL;
+        }
+    }
+    if (input.bad()) return {};
+    return hex_hash(hash);
+}
+
+std::optional<std::string> environment_value(const char* name) {
+#ifdef _WIN32
+    char* value{};
+    std::size_t size{};
+    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) return std::nullopt;
+    std::string result(value, size == 0U ? 0U : size - 1U);
+    std::free(value);
+    return result;
+#else
+    const auto* value = std::getenv(name);
+    if (value == nullptr) return std::nullopt;
+    return std::string(value);
+#endif
+}
+
+std::filesystem::path managed_compile_cache_root() {
+    if (const auto configured = environment_value("NOEMANCER_MANAGED_COMPILE_CACHE");
+        configured && !configured->empty())
+        return std::filesystem::path(*configured);
+    if (const auto local_app_data = environment_value("LOCALAPPDATA");
+        local_app_data && !local_app_data->empty())
+        return std::filesystem::path(*local_app_data) / "Noemancer" / "managed-compile-cache";
+    std::error_code error;
+    const auto temporary = std::filesystem::temp_directory_path(error);
+    return (error ? std::filesystem::path(".") : temporary) / "noemancer-managed-compile-cache";
+}
+
+bool safe_relative_cache_path(const std::filesystem::path& relative) {
+    if (relative.empty() || relative.is_absolute()) return false;
+    for (const auto& part : relative) if (part == ".." || part == ".") return false;
+    return true;
+}
+
+struct ManagedCacheFile final {
+    std::filesystem::path relative;
+    std::uintmax_t bytes{};
+    std::string fingerprint;
+};
+
+struct ManagedCacheEntry final {
+    std::string fingerprint;
+    std::string configuration;
+    std::filesystem::path assembly_relative;
+    std::vector<ManagedCacheFile> files;
+    std::uintmax_t total_bytes{};
+};
+
+void prune_managed_compile_cache() {
+    struct OnDiskEntry final {
+        std::filesystem::path path;
+        std::filesystem::file_time_type modified{};
+        std::uintmax_t bytes{};
+    };
+    const auto root = managed_compile_cache_root();
+    std::error_code error;
+    if (!std::filesystem::is_directory(root, error) || error) return;
+    std::vector<OnDiskEntry> entries;
+    for (const auto& fingerprint : std::filesystem::directory_iterator(root, error)) {
+        if (error || !fingerprint.is_directory(error)) continue;
+        for (const auto& configuration : std::filesystem::directory_iterator(fingerprint.path(), error)) {
+            if (error || !configuration.is_directory(error) ||
+                (configuration.path().filename() != "Debug" && configuration.path().filename() != "Release")) continue;
+            if (!std::filesystem::is_regular_file(configuration.path() / "manifest.json", error) || error) continue;
+            std::uintmax_t bytes{};
+            for (const auto& file : std::filesystem::recursive_directory_iterator(configuration.path(), error)) {
+                if (error || !file.is_regular_file(error)) continue;
+                const auto size = file.file_size(error);
+                if (error || size > managed_cache_total_max_bytes || bytes > managed_cache_total_max_bytes - size) {
+                    error.clear(); bytes = managed_cache_total_max_bytes + 1U; break;
+                }
+                bytes += size;
+            }
+            const auto modified = std::filesystem::last_write_time(configuration.path(), error);
+            if (error) { error.clear(); continue; }
+            entries.push_back({configuration.path(), modified, bytes});
+        }
+    }
+    std::ranges::sort(entries, [](const auto& left, const auto& right) { return left.modified < right.modified; });
+    std::uintmax_t total_bytes{};
+    for (const auto& entry : entries) {
+        if (total_bytes > std::numeric_limits<std::uintmax_t>::max() - entry.bytes)
+            total_bytes = std::numeric_limits<std::uintmax_t>::max();
+        else
+            total_bytes += entry.bytes;
+    }
+    while (entries.size() > managed_cache_max_entries || total_bytes > managed_cache_total_max_bytes) {
+        if (entries.empty()) break;
+        const auto oldest = entries.front();
+        std::filesystem::remove_all(oldest.path, error);
+        if (!error) {
+            if (total_bytes >= oldest.bytes) total_bytes -= oldest.bytes; else total_bytes = 0;
+        }
+        error.clear();
+        entries.erase(entries.begin());
+    }
+}
 
 std::tuple<int, int, int> version_key(const std::string& version) {
     std::array<int, 3> parts{};
@@ -166,24 +293,187 @@ std::vector<std::filesystem::path> project_source_inputs(const std::filesystem::
 
 std::string source_fingerprint(const std::filesystem::path& project_file, const std::string_view configuration) {
     const auto inputs=project_source_inputs(project_file);
-    std::error_code error;
     std::uint64_t hash = 1469598103934665603ULL;
     auto mix = [&](const std::string_view value) {
         for (const auto byte : value) { hash ^= static_cast<unsigned char>(byte); hash *= 1099511628211ULL; }
     };
+    const auto mix_file = [&](const std::filesystem::path& root, const std::filesystem::path& input,
+                              const std::string_view prefix = {}) {
+        const auto relative = input.lexically_relative(root).generic_string();
+        mix(prefix); mix(relative);
+        const auto content = file_content_fingerprint(input);
+        if (!content.empty()) mix(content);
+    };
+    // The identity is deliberately content- and relative-path-based.  Runtime
+    // project snapshots live in a fresh temporary directory on every launch;
+    // absolute paths or mtimes would make a safe cross-process cache impossible.
+    mix("noemancer-managed-source/2");
     mix(configuration);
-    for (const auto& input : inputs) {
-        mix(input.generic_string());
-        error.clear();
-        const auto size = std::filesystem::file_size(input, error);
-        if (!error) mix(std::to_string(size));
-        error.clear();
-        const auto time = std::filesystem::last_write_time(input, error).time_since_epoch().count();
-        if (!error) mix(std::to_string(time));
+    const auto project_root = project_file.parent_path();
+    for (const auto& input : inputs) mix_file(project_root, input, "project/");
+    // ProjectReference points at the public Managed API.  A project source
+    // fingerprint must invalidate when that API changes, even if gameplay C#
+    // itself is untouched.  Keep the identity independent of checkout roots.
+    const auto managed_root = std::filesystem::path(NOEMANCER_SOURCE_DIR) / "managed" / "Noemancer.Managed";
+    for (const auto& input : project_source_inputs(managed_root / "Noemancer.Managed.csproj"))
+        mix_file(managed_root, input, "sdk/");
+    const auto global_json = std::filesystem::path(NOEMANCER_SOURCE_DIR) / "global.json";
+    std::error_code error;
+    if (std::filesystem::is_regular_file(global_json, error)) mix_file(global_json.parent_path(), global_json, "sdk/");
+    const auto dotnet = std::filesystem::path(NOEMANCER_SOURCE_DIR) / "_tools" / "dotnet" / "dotnet.exe";
+    if (std::filesystem::is_regular_file(dotnet, error)) mix_file(dotnet.parent_path(), dotnet, "compiler/");
+    // Directory.Build.* files in the project root or its ancestors can alter
+    // compilation without appearing in the project-local source walk.
+    for (auto directory = project_root; !directory.empty(); directory = directory.parent_path()) {
+        for (const auto* name : {"Directory.Build.props", "Directory.Build.targets"}) {
+            const auto input = directory / name;
+            error.clear();
+            if (std::filesystem::is_regular_file(input, error)) mix_file(directory, input, "build/");
+        }
+        if (directory == directory.root_path()) break;
     }
     std::ostringstream output;
     output << std::hex << hash;
     return output.str();
+}
+
+std::filesystem::path managed_cache_entry_root(const std::string_view fingerprint,
+                                               const std::string_view configuration) {
+    return managed_compile_cache_root() / std::string(fingerprint) / std::string(configuration);
+}
+
+std::optional<ManagedCacheEntry> read_managed_cache_entry(const std::string_view fingerprint,
+                                                          const std::string_view configuration) {
+    if (fingerprint.empty() || (configuration != "Debug" && configuration != "Release")) return std::nullopt;
+    if (fingerprint.find_first_not_of("0123456789abcdef") != std::string_view::npos) return std::nullopt;
+    const auto root = managed_cache_entry_root(fingerprint, configuration);
+    std::ifstream manifest_file(root / "manifest.json", std::ios::binary);
+    if (!manifest_file) return std::nullopt;
+    std::ostringstream manifest_text;
+    manifest_text << manifest_file.rdbuf();
+    const auto manifest = Json::parse(manifest_text.str(), nullptr, false);
+    if (manifest.is_discarded() || !manifest.is_object() ||
+        manifest.value("schema", std::string{}) != "noemancer.managed-compile-cache/0.1" ||
+        manifest.value("fingerprint", std::string{}) != fingerprint ||
+        manifest.value("configuration", std::string{}) != configuration ||
+        !manifest.contains("assembly") || !manifest.at("assembly").is_string() ||
+        !manifest.contains("files") || !manifest.at("files").is_array() ||
+        manifest.at("files").size() == 0U || manifest.at("files").size() > managed_cache_max_files)
+        return std::nullopt;
+    ManagedCacheEntry entry{.fingerprint = std::string(fingerprint), .configuration = std::string(configuration),
+                            .assembly_relative = manifest.at("assembly").get<std::string>()};
+    if (!safe_relative_cache_path(entry.assembly_relative)) return std::nullopt;
+    for (const auto& item : manifest.at("files")) {
+        if (!item.is_object() || !item.contains("path") || !item.at("path").is_string() ||
+            !item.contains("bytes") || !item.at("bytes").is_number_unsigned() ||
+            !item.contains("fingerprint") || !item.at("fingerprint").is_string()) return std::nullopt;
+        ManagedCacheFile file{.relative = item.at("path").get<std::string>(),
+                              .bytes = item.at("bytes").get<std::uintmax_t>(),
+                              .fingerprint = item.at("fingerprint").get<std::string>()};
+        if (!safe_relative_cache_path(file.relative) || file.bytes > managed_cache_max_bytes ||
+            file.fingerprint.empty() || entry.total_bytes > managed_cache_max_bytes - file.bytes) return std::nullopt;
+        entry.total_bytes += file.bytes;
+        const auto source = root / file.relative;
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(source, error) || error ||
+            std::filesystem::file_size(source, error) != file.bytes || error ||
+            file_content_fingerprint(source) != file.fingerprint) return std::nullopt;
+        entry.files.push_back(std::move(file));
+    }
+    if (std::ranges::find(entry.files, entry.assembly_relative, &ManagedCacheFile::relative) == entry.files.end())
+        return std::nullopt;
+    return entry;
+}
+
+bool materialize_managed_cache_entry(const ManagedCacheEntry& entry,
+                                     const std::filesystem::path& cache_root,
+                                     const std::filesystem::path& output_root) {
+    std::error_code error;
+    std::filesystem::create_directories(output_root, error);
+    if (error) return false;
+    for (const auto& file : entry.files) {
+        const auto destination = output_root / file.relative;
+        const auto relative = destination.lexically_relative(output_root);
+        if (!safe_relative_cache_path(relative)) return false;
+        std::filesystem::create_directories(destination.parent_path(), error);
+        if (error || !std::filesystem::copy_file(cache_root / file.relative, destination,
+                                                 std::filesystem::copy_options::overwrite_existing, error) || error)
+            return false;
+        error.clear();
+        if (std::filesystem::file_size(destination, error) != file.bytes || error ||
+            file_content_fingerprint(destination) != file.fingerprint) return false;
+    }
+    return std::filesystem::is_regular_file(output_root / entry.assembly_relative, error) && !error;
+}
+
+std::optional<ManagedCacheEntry> write_managed_cache_entry(const std::string_view fingerprint,
+                                                           const std::string_view configuration,
+                                                           const std::filesystem::path& output_root,
+                                                           const std::filesystem::path& assembly) {
+    if (fingerprint.empty() || (configuration != "Debug" && configuration != "Release")) return std::nullopt;
+    std::error_code error;
+    const auto relative_assembly = assembly.lexically_relative(output_root);
+    if (!safe_relative_cache_path(relative_assembly)) return std::nullopt;
+    ManagedCacheEntry entry{.fingerprint = std::string(fingerprint), .configuration = std::string(configuration),
+                            .assembly_relative = relative_assembly};
+    if (!std::filesystem::is_directory(output_root, error) || error) return std::nullopt;
+    for (std::filesystem::recursive_directory_iterator iterator(output_root, error), end;
+         iterator != end && !error; iterator.increment(error)) {
+        if (!iterator->is_regular_file(error)) continue;
+        const auto relative = iterator->path().lexically_relative(output_root);
+        const auto bytes = iterator->file_size(error);
+        const auto fingerprint_value = file_content_fingerprint(iterator->path());
+        if (error || !safe_relative_cache_path(relative) || fingerprint_value.empty() ||
+            bytes > managed_cache_max_bytes || entry.files.size() >= managed_cache_max_files ||
+            entry.total_bytes > managed_cache_max_bytes - bytes) return std::nullopt;
+        entry.total_bytes += bytes;
+        entry.files.push_back({relative, bytes, fingerprint_value});
+    }
+    if (error || entry.files.empty() ||
+        std::ranges::find(entry.files, relative_assembly, &ManagedCacheFile::relative) == entry.files.end())
+        return std::nullopt;
+
+    const auto final_root = managed_cache_entry_root(fingerprint, configuration);
+    const auto temporary_root = final_root.parent_path() /
+        (std::string(configuration) + ".tmp-" + std::to_string(next_managed_session.fetch_add(1)));
+    std::filesystem::remove_all(temporary_root, error);
+    error.clear();
+    std::filesystem::create_directories(temporary_root, error);
+    if (error) return std::nullopt;
+    const auto cleanup = [&] { std::error_code ignored; std::filesystem::remove_all(temporary_root, ignored); };
+    for (const auto& file : entry.files) {
+        const auto destination = temporary_root / file.relative;
+        std::filesystem::create_directories(destination.parent_path(), error);
+        if (error || !std::filesystem::copy_file(output_root / file.relative, destination,
+                                                 std::filesystem::copy_options::overwrite_existing, error) || error) {
+            cleanup();
+            return std::nullopt;
+        }
+    }
+    const Json manifest = {
+        {"schema", "noemancer.managed-compile-cache/0.1"}, {"fingerprint", entry.fingerprint},
+        {"configuration", entry.configuration}, {"assembly", entry.assembly_relative.generic_string()},
+        {"bytes", entry.total_bytes}, {"files", Json::array()}
+    };
+    auto writable_manifest = manifest;
+    for (const auto& file : entry.files)
+        writable_manifest["files"].push_back({{"path", file.relative.generic_string()}, {"bytes", file.bytes},
+                                               {"fingerprint", file.fingerprint}});
+    std::ofstream manifest_output(temporary_root / "manifest.json", std::ios::binary | std::ios::trunc);
+    if (!manifest_output) { cleanup(); return std::nullopt; }
+    manifest_output << writable_manifest.dump();
+    manifest_output.close();
+    if (!manifest_output) { cleanup(); return std::nullopt; }
+    std::filesystem::create_directories(final_root.parent_path(), error);
+    if (error) { cleanup(); return std::nullopt; }
+    if (std::filesystem::exists(final_root, error)) {
+        cleanup();
+        return read_managed_cache_entry(fingerprint, configuration);
+    }
+    std::filesystem::rename(temporary_root, final_root, error);
+    if (error) { cleanup(); return std::nullopt; }
+    prune_managed_compile_cache();
+    return entry;
 }
 
 std::filesystem::path configured_debug_adapter_path() {
@@ -452,11 +742,14 @@ std::string ManagedScriptRuntime::observe_json() const {
         {"properties",Json::parse(instance.properties_json)},{"sceneOwned",instance.scene_owned}});
     auto managed_result = Json::parse(last_managed_result_, nullptr, false);
     if (managed_result.is_discarded()) managed_result = nullptr;
+    auto compile = Json::parse(last_compile_result_, nullptr, false);
+    if (compile.is_discarded()) compile = nullptr;
     return Json{{"schemaVersion", "noemancer.managed-script-host/0.3"}, {"revision", revision_},
         {"backend", "coreclr-hostfxr/1.0"}, {"status", host_status_}, {"ready", host_ready_},
         {"sessionId",session_id_},
         {"hostfxrPath", hostfxr_path_}, {"runtimeConfig", runtime_config_path_}, {"managedAssembly", managed_assembly_path_},
-        {"lastManagedResult", std::move(managed_result)}, {"instances", std::move(instances)}}.dump();
+        {"lastManagedResult", std::move(managed_result)}, {"lastCompile", std::move(compile)},
+        {"instances", std::move(instances)}}.dump();
 }
 
 std::string ManagedScriptRuntime::attach_json(const std::string_view instance_id, const std::string_view entity_id,
@@ -581,11 +874,15 @@ std::string ManagedScriptRuntime::load_project_assembly_json(const std::filesyst
 }
 
 std::string ManagedScriptRuntime::compile_project_json(const std::string_view configuration) {
+    const auto compile_started = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [&] {
+        return std::round(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compile_started).count() * 100.0) / 100.0;
+    };
     const auto valid_configuration = configuration == "Debug" || configuration == "Release";
     if (script_project_.empty() || !valid_configuration) {
         return Json{{"schemaVersion", "noemancer.script-compile-result/0.1"}, {"success", false},
             {"code", script_project_.empty() ? "scripting.project-not-configured" : "scripting.invalid-configuration"},
-            {"configuration", configuration}, {"cacheHit", false}, {"diagnostics", Json::array()}}.dump();
+            {"configuration", configuration}, {"cacheHit", false}, {"durationMs", elapsed_ms()}, {"diagnostics", Json::array()}}.dump();
     }
     const auto fingerprint = source_fingerprint(script_project_, configuration);
     last_configuration_=std::string(configuration);
@@ -595,6 +892,7 @@ std::string ManagedScriptRuntime::compile_project_json(const std::string_view co
         auto cached = Json::parse(last_compile_result_);
         cached["cacheHit"] = true;
         cached["cacheScope"] = "runtime-instance";
+        cached["durationMs"] = elapsed_ms();
         return cached.dump();
     }
     const auto cache_key=script_project_.generic_string()+":"+fingerprint;
@@ -604,10 +902,33 @@ std::string ManagedScriptRuntime::compile_project_json(const std::string_view co
         if(cached!=process_compile_cache.end()&&std::filesystem::is_regular_file(cached->second.assembly)) {
             auto result=Json::parse(cached->second.result_json);
             result["cacheHit"]=true;result["cacheScope"]="process";result["fingerprint"]=fingerprint;
-            result["assembly"]=cached->second.assembly;result["revision"]=++compile_revision_;
+            result["assembly"]=cached->second.assembly;result["revision"]=++compile_revision_;result["durationMs"]=elapsed_ms();
             compile_fingerprint_=fingerprint;project_build_fingerprint_=fingerprint;
             project_assembly_path_=cached->second.assembly;last_compile_result_=result.dump();
             if(type_catalog_fingerprint_!=fingerprint)type_catalog_json_.clear();
+            return last_compile_result_;
+        }
+    }
+    const auto output_root = script_project_.parent_path() / "bin" / std::string(configuration);
+    if (const auto cached = read_managed_cache_entry(fingerprint, configuration); cached) {
+        const auto cache_root = managed_cache_entry_root(fingerprint, configuration);
+        if (materialize_managed_cache_entry(*cached, cache_root, output_root)) {
+            Json result{{"schemaVersion", "noemancer.script-compile-result/0.1"}, {"success", true},
+                {"code", "scripting.managed-cache-hit"}, {"configuration", configuration}, {"cacheHit", true},
+                {"cacheScope", "disk"}, {"fingerprint", fingerprint},
+                {"cacheArtifact", {{"schema", "noemancer.managed-compile-cache/0.1"},
+                                    {"fileCount", cached->files.size()}, {"bytes", cached->total_bytes}}},
+                {"project", script_project_.generic_string()},
+                {"assembly", (output_root / cached->assembly_relative).generic_string()},
+                {"diagnostics", Json::array()}, {"output", ""}, {"revision", ++compile_revision_},
+                {"durationMs", elapsed_ms()}};
+            compile_fingerprint_=fingerprint;project_build_fingerprint_=fingerprint;
+            project_assembly_path_=result.at("assembly").get<std::string>();last_compile_result_=result.dump();
+            if(type_catalog_fingerprint_!=fingerprint)type_catalog_json_.clear();
+            {
+                std::scoped_lock lock(process_compile_cache_mutex);
+                process_compile_cache[cache_key]={last_compile_result_,project_assembly_path_};
+            }
             return last_compile_result_;
         }
     }
@@ -616,13 +937,16 @@ std::string ManagedScriptRuntime::compile_project_json(const std::string_view co
         {"code", "scripting.dotnet-sdk-not-found"}, {"configuration", configuration}, {"cacheHit", false},
         {"cacheScope", "none"},
         {"fingerprint", fingerprint}, {"project", script_project_.generic_string()}, {"diagnostics", Json::array()},
-        {"output", ""}, {"assembly", ""}, {"revision", compile_revision_}};
+        {"output", ""}, {"assembly", ""}, {"revision", compile_revision_}, {"durationMs", 0.0},
+        {"buildDurationMs", 0.0}, {"cacheArtifact", nullptr}};
 #ifdef _WIN32
     if (std::filesystem::is_regular_file(dotnet)) {
+        const auto build_started = std::chrono::steady_clock::now();
         const auto process = run_process(dotnet, {L"build", script_project_.wstring(), L"--configuration",
             std::wstring(configuration.begin(), configuration.end()), L"--nologo", L"--tl:off", L"--verbosity:minimal",
             L"-p:GenerateFullPaths=true", L"-p:PreferredUILang=en-US",
             L"-p:NoemancerSdkRoot=" + std::filesystem::path(NOEMANCER_SOURCE_DIR).wstring()}, script_project_.parent_path());
+        result["buildDurationMs"] = std::round(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - build_started).count() * 100.0) / 100.0;
         result["exitCode"] = process.exit_code;
         result["output"] = process.output.size() <= 64U * 1024U ? process.output : process.output.substr(process.output.size() - 64U * 1024U);
         result["diagnostics"] = compiler_diagnostics(process.output);
@@ -652,6 +976,13 @@ std::string ManagedScriptRuntime::compile_project_json(const std::string_view co
             if (!assembly.empty()) {
                 project_assembly_path_ = assembly.generic_string();
                 project_build_fingerprint_ = fingerprint;
+                if (const auto cache = write_managed_cache_entry(fingerprint, configuration, bin_root, assembly); cache) {
+                    result["cacheArtifact"] = {{"schema", "noemancer.managed-compile-cache/0.1"},
+                        {"fileCount", cache->files.size()}, {"bytes", cache->total_bytes}};
+                    result["cacheScope"] = "disk-write";
+                } else {
+                    result["cacheScope"] = "none";
+                }
             }
         }
     }
@@ -660,6 +991,7 @@ std::string ManagedScriptRuntime::compile_project_json(const std::string_view co
 #endif
     ++compile_revision_;
     result["revision"] = compile_revision_;
+    result["durationMs"] = elapsed_ms();
     compile_fingerprint_ = fingerprint;
     last_compile_result_ = result.dump();
     if(result.value("success",false)&&!project_assembly_path_.empty()) {

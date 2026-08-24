@@ -6,6 +6,7 @@
 #include "engine/hybrid_pixel_profile.hpp"
 #include "engine/log.hpp"
 #include "engine/world.hpp"
+#include "runtime/performance_evidence.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <optional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace noemancer {
@@ -77,6 +79,9 @@ struct RunOptions {
     std::uint32_t performance_sample_frames{600};
     std::uint32_t window_width{1440};
     std::uint32_t window_height{900};
+    // Optional process-entry clock supplied by main().  Tests and embedded
+    // hosts may omit it; Application owns a bounded fallback clock then.
+    StartupTelemetry* startup_telemetry{};
 };
 
 class Application final {
@@ -109,8 +114,11 @@ private:
     void register_audio_assets(World& world);
     void configure_persistence_store(std::string project_id);
     void process_persistence_requests(World& world);
+    void log_startup_telemetry(std::string_view mode, std::string_view outcome);
     [[nodiscard]] World& active_world() noexcept;
 
+    StartupTelemetry startup_telemetry_storage_;
+    StartupTelemetry* startup_telemetry_{};
     RunOptions options_;
     Logger logger_;
     EngineHost engine_host_;

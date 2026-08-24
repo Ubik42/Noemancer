@@ -1,11 +1,63 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+#include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace noemancer {
+
+// Startup timing is deliberately a small, bounded runtime observation rather
+// than a profiler.  It records only the phase boundaries owned by the runtime
+// bootstrap and the three acceptance frame markers (1, 3 and 64).  The
+// implementation keeps third-party JSON types private and serializes one
+// stable machine-readable projection at the end of startup.
+class StartupTelemetry final {
+public:
+    StartupTelemetry() noexcept;
+
+    void begin_phase(std::string_view name) noexcept;
+    void finish_phase() noexcept;
+    void mark_frame(std::uint64_t frame) noexcept;
+
+    [[nodiscard]] std::string json(
+        std::string_view mode,
+        std::string_view outcome) const;
+
+    static constexpr std::size_t max_phases() noexcept { return kMaxPhases; }
+    static constexpr std::size_t max_frame_markers() noexcept { return kMaxFrameMarkers; }
+
+private:
+    struct Phase final {
+        std::string_view name{};
+        std::chrono::steady_clock::time_point started{};
+        std::chrono::steady_clock::time_point finished{};
+        bool complete{};
+    };
+
+    struct FrameMarker final {
+        std::uint64_t frame{};
+        std::chrono::steady_clock::time_point captured{};
+    };
+
+    static constexpr std::size_t kMaxPhases = 32U;
+    static constexpr std::size_t kMaxFrameMarkers = 3U;
+
+    [[nodiscard]] double elapsed_milliseconds(
+        std::chrono::steady_clock::time_point point) const noexcept;
+
+    std::chrono::steady_clock::time_point started_;
+    std::array<Phase, kMaxPhases> phases_{};
+    std::array<FrameMarker, kMaxFrameMarkers> frame_markers_{};
+    std::size_t phase_count_{};
+    std::size_t active_phase_{kMaxPhases};
+    std::size_t frame_marker_count_{};
+    bool phase_overflow_{};
+};
 
 struct PerformanceEvidenceInput final {
     std::string workload_id;

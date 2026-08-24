@@ -19,6 +19,18 @@
 namespace noemancer {
 namespace {
 
+constexpr std::array<std::uint64_t, StartupTelemetry::max_frame_markers()> startup_frame_markers{
+    1U, 3U, 64U};
+
+std::string_view startup_frame_marker_kind(const std::uint64_t frame) noexcept {
+    switch (frame) {
+    case 1U: return "first-frame";
+    case 3U: return "third-frame";
+    case 64U: return "sixty-fourth-frame";
+    default: return "acceptance-frame";
+    }
+}
+
 double percentile(const std::vector<double>& sorted, const double fraction) {
     if (sorted.empty()) return 0.0;
     const auto position = fraction * static_cast<double>(sorted.size() - 1U);
@@ -80,6 +92,83 @@ std::string configuration_name() {
 }
 
 } // namespace
+
+StartupTelemetry::StartupTelemetry() noexcept
+    : started_(std::chrono::steady_clock::now()) {}
+
+double StartupTelemetry::elapsed_milliseconds(
+    const std::chrono::steady_clock::time_point point) const noexcept {
+    return std::chrono::duration<double, std::milli>(point - started_).count();
+}
+
+void StartupTelemetry::begin_phase(const std::string_view name) noexcept {
+    finish_phase();
+    if (phase_count_ >= kMaxPhases) {
+        phase_overflow_ = true;
+        return;
+    }
+    phases_[phase_count_] = Phase{name, std::chrono::steady_clock::now(), {}, false};
+    active_phase_ = phase_count_;
+    ++phase_count_;
+}
+
+void StartupTelemetry::finish_phase() noexcept {
+    if (active_phase_ >= phase_count_) return;
+    auto& phase = phases_[active_phase_];
+    if (!phase.complete) {
+        phase.finished = std::chrono::steady_clock::now();
+        phase.complete = true;
+    }
+    active_phase_ = kMaxPhases;
+}
+
+void StartupTelemetry::mark_frame(const std::uint64_t frame) noexcept {
+    if (frame_marker_count_ >= kMaxFrameMarkers ||
+        std::find(startup_frame_markers.begin(), startup_frame_markers.end(), frame) == startup_frame_markers.end()) {
+        return;
+    }
+    frame_markers_[frame_marker_count_] = FrameMarker{frame, std::chrono::steady_clock::now()};
+    ++frame_marker_count_;
+}
+
+std::string StartupTelemetry::json(
+    const std::string_view mode,
+    const std::string_view outcome) const {
+    using Json = nlohmann::json;
+    const auto now = std::chrono::steady_clock::now();
+    Json phases = Json::array();
+    for (std::size_t index = 0U; index < phase_count_; ++index) {
+        const auto& phase = phases_[index];
+        const auto end = phase.complete ? phase.finished : now;
+        phases.push_back({
+            {"name", phase.name},
+            {"startOffsetMs", elapsed_milliseconds(phase.started)},
+            {"durationMs", std::max(0.0, std::chrono::duration<double, std::milli>(end - phase.started).count())},
+            {"complete", phase.complete}});
+    }
+    Json frame_markers = Json::array();
+    for (std::size_t index = 0U; index < frame_marker_count_; ++index) {
+        const auto& marker = frame_markers_[index];
+        frame_markers.push_back({
+            {"frame", marker.frame},
+            {"kind", startup_frame_marker_kind(marker.frame)},
+            {"elapsedMs", elapsed_milliseconds(marker.captured)}});
+    }
+    const auto first_frame = frame_marker_count_ > 0U && frame_markers_[0].frame == 1U
+        ? elapsed_milliseconds(frame_markers_[0].captured) : 0.0;
+    return Json{
+        {"schemaVersion", "noemancer.runtime-startup-telemetry/0.1"},
+        {"mode", mode},
+        {"outcome", outcome},
+        {"clock", "steady_clock"},
+        {"bounded", true},
+        {"limits", {{"maxPhases", kMaxPhases}, {"maxFrameMarkers", kMaxFrameMarkers}}},
+        {"phaseOverflow", phase_overflow_},
+        {"totalMs", elapsed_milliseconds(now)},
+        {"firstFrameMs", first_frame},
+        {"phases", std::move(phases)},
+        {"frameMarkers", std::move(frame_markers)}}.dump();
+}
 
 bool write_performance_evidence(const std::filesystem::path& path,
     const PerformanceEvidenceInput& input, std::string& error) {

@@ -24,7 +24,9 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 
 ## Codex `/goal`（Ralph Loop）快速开发模式
 
-当前 `/goal` 目标文本：持续把 `D:\cs\Noemancer`（Noemancer）推进为可独立创建、编辑、调试、打包并发布真实游戏的完整通用引擎，并以 `D:\3D` 下的外部游戏工程作为生产验收客户。每次恢复完整读取并服从仓库规范与四份权威状态，从 `currentFrontier` 首个未阻塞项开始；采用 Sol 主代理集成、最多三个写集互不重叠的 `luna_worker` 并行实际开发，优先代码、测试、Fixture 和证据脚本。子 Agent 只用于能独立形成实质改动的工作，启动后尽快落盘 checkpoint；长时间无产物或协调成本超过实现收益时由主代理中断并接管。每批完成最大连贯子系统改动，再按风险做最小充分验证；公共 Schema、共享 Runtime/World、构建或依赖变化才运行全量测试，Agent ABI 变化才做 MCP 烟测，渲染只使用隐藏 D3D12/Vulkan 证据且不使用 Computer Use。保持 Engine/Runtime Adapter/Editor/Agent Authority 边界，成熟中间件优先，第三方类型不进入持久化或公共协议，游戏规则留在项目 C#。HD2D 小型外部迁移已退出；当前依据它测得的源码首次视觉启动延迟优化开发循环，不能用减少验收内容掩盖慢路径。仅在用户明确暂停、里程碑验收、需要新产品授权/架构冲突或同一外部阻塞连续出现时停止。
+当前 `/goal` 使用稳定目标，不在 Prompt 内复制会迅速过期的切片名或性能数字；瞬时队列只由 `docs/current-state.json.currentFrontier` 表达。可直接使用的目标文本如下：
+
+> 持续把 `D:\cs\Noemancer`（Noemancer）推进为可由人类与 AI Agent 共同创建、编辑、调试、运行、打包和发布真实游戏的完整通用引擎，并以 `D:\3D` 下的独立游戏工程作为生产验收客户。每次恢复先完整读取仓库 `AGENTS.md`、`docs/current-state.json`、`docs/architecture.md`、`docs/development-plan.zh-CN.md` 与 `docs/first-acceptance-status.zh-CN.md`；只从 `currentFrontier` 首个未阻塞项选择最大连贯、可审查的通用引擎批次，历史研究不作当前指令。采用 Sol 主代理集成与最多三个写集互不重叠的 `luna_worker` 并行实际开发；优先交付代码、聚焦测试、Fixture 和结构化证据，不用多个只读审计 lane 填满并发，也不等待子 Agent 而让主线程空转。保持 `noemancer_engine <- noemancer_editor <- runtime` 依赖方向；成熟中间件优先并封装在 plain-data Adapter 后，第三方类型不得进入 Scene、Prefab、项目 C# 或公共 RPC。GUI、CLI、Agent、脚本与测试必须共用领域 Authority；公共写操作逐步具备 Plan/Apply/Receipt、revision、dry-run、事务与 undo。游戏规则留在项目 C#，不得把验收游戏专用逻辑固化进引擎。每批执行“读取真实路径—并行实现—主代理集成审查—风险分级验证—原地改写过时权威状态—提交并推送—继续下一项”；不逐文件编译，不用减少 workload 伪造性能提升，不为无关变化运行全量测试。测试必须无交互、无 CRT 弹窗；GPU 验证使用隐藏进程和本地捕获，不使用 Computer Use。只在用户明确停止、里程碑需要人工验收、确需新的产品/架构授权，或同一外部阻塞反复出现且没有安全替代路径时停止；旧对话中的暂停文字、已完成切片和单个慢测试都不是停止理由。每个批次边界保持工作树可恢复、文档无矛盾、证据落在 `generated/`、代码已推送。
 
 当前长期开发由 Codex `/goal` 持续恢复，并采用批量 Ralph Loop，而不是每改一个文件就停下来测试或汇报：
 
@@ -138,7 +140,9 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 
 游戏复刻、兼容引擎和开源游戏迁移是引擎的验收客户，不替代通用引擎主线。`game-migration.hybrid-pixel-hd2d-small-slice` 已退出：外部 `D:\3D\NoemancerHd2dSlice` 只含项目 C#、Scene/Prefab、程序生成灰盒 Sprite/Tilemap、混合 2D/3D 光照、像素 VFX、项目 UI 和 Input，没有 Native C++ 或引擎分叉。`generated/acceptance/hd2d-small-slice-current-v3/evidence.json` 证明源码与原子 Release Package Player 的 Hybrid Profile、Input、UI 与脚本状态相等；两路隐藏 D3D12 均提交 50 个 lit Sprite/Tile cell、5 个 3D opaque instance 和真实 GPU VFX，960×540 画面可读，包内 60 帧 CPU p95 为 3.62 ms，源项目树未改变。Noemancer Platformer 继续作为基础回归客户；首个 Clean-room 纵切 `D:\3D\StarfallGauntlet` 已按 OpenTyrian 级纵向射击行为范围完成。
 
-当前切片为 `development-loop.source-project-first-visual-latency`。同一 HD2D workload 的 clean Debug source-project D3D12 visual 为 54.63 秒，Release Package build 为 19.15 秒，包内 visual 为 2.15 秒；帧内性能并非瓶颈。下一批先把启动过程拆成项目解析、C# 编译、Registry/PNG、离线 Cook、D3D/Shader、首帧与采样阶段，确认 Debug libktx/Basis、无谓重复 Cook 或缓存位置的真实占比，再让 Editor/源码 Player 复用正确的内容/配方缓存或 Release/offline worker。退出条件是固定 workload 的首次与缓存命中数据都显著改善，产物身份、源码/包体一致性和 Package Release 路径不退化；不靠跳过 Sprite/Tilemap/VFX、缩短语义加载或报告假 GPU 数据达标。
+`development-loop.source-project-first-visual-latency` 已退出。旧 54.63 秒数字是 Debug 64 帧验收总时长，不是首帧；`noemancer.runtime-startup-telemetry/0.1` 现从进程入口有界记录真实 phase 与第 1/3/64 帧。固定 HD2D 1 帧隐藏 D3D12 对照为 Debug `firstFrameMs=16453.51`、Release `1690.07`；Debug 主要耗在 Retained UI 初始化 7796.92 ms 与首帧 loop 7116.90 ms，项目 C# 仅 12.65 ms、Asset Cook 0.01 ms。官方 `Noemancer Editor.cmd` 因此默认 Release，显式 `-Config Debug` 仍用于原生调试。项目 C# 的跨进程内容寻址缓存把真实冷编译约 1489 ms 降到磁盘命中约 12 ms，修改源码后约 1567 ms 正确失效；缓存原子写入、逐文件复验并受 32 条/256 MiB 全局预算约束。证据位于 `generated/acceptance/startup-telemetry-20260824-170450/` 与 `generated/acceptance/managed-compile-cache-evidence.json`。
+
+当前切片为 `agent.open-editor-live-session-transport`。`serve --project` 已能为无 UI 自动化持有独立项目 Authority，但它不能代表另一个正在显示、选择、Play、Undo 的 Editor。下一批先定义本机 Session Discovery、一次性/进程绑定认证、协议版本与能力协商、单 Editor Authority 路由、revision-bound Observation/Plan/Apply/Receipt、断线与退出清理，再把 CLI/MCP 接到同一 Transport Adapter。退出条件是 Agent 可发现并明确选择一个已打开 Editor，在不创建第二 World/Undo journal 的前提下读取当前选择与有界语义状态、提交一个可撤销事务，并由 GUI 立即看到同一 revision；默认仅本机、无隐式远程监听、无未认证写入。
 
 该最小纵切的退出不等于完整射击游戏生产栈：当前 Prefab 生成/销毁仍重建完整 Scene，项目碰撞使用有界实体观察上的半径判断；只有后续更大迁移或性能证据表明需要时，才增加池化生成和原生批量重叠查询。Hybrid Pixel/HD2D 项目仍在 Pixel Grid、Sprite normal/depth/material、混合光照和像素 VFX 的核心 Profile 成立后启动。任何迁移都不得因单个游戏的特殊需求向 Engine/Runtime C++ 写入专用规则；需求只有在能抽象为稳定通用能力，并通过独立 Fixture、Schema/命令、最小回归与性能证据后，才回写引擎。
 

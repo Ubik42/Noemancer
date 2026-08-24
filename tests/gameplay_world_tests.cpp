@@ -49,7 +49,8 @@ int main() {
     const auto compiled=nlohmann::json::parse(world.scripting_project_compile_json("Debug"));
     const auto cached_compile=nlohmann::json::parse(world.scripting_project_compile_json("Debug"));
     const auto project_observation=nlohmann::json::parse(world.scripting_project_observation_json());
-    if(!configured.at("success")||!compiled.at("success")||compiled.at("cacheHit")||compiled.at("assembly").get<std::string>().empty()||
+    if(!configured.at("success")||!compiled.at("success")||
+       (compiled.at("cacheHit")&&compiled.at("cacheScope")!="disk")||compiled.at("assembly").get<std::string>().empty()||
        !compiled.at("diagnostics").empty()||!cached_compile.at("success")||!cached_compile.at("cacheHit")||
        project_observation.at("schemaVersion")!="noemancer.script-project-state/0.3"||
        project_observation.at("scriptProject").get<std::string>().find("ManagedFixture.csproj")==std::string::npos||

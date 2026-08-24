@@ -4,7 +4,7 @@ param(
     [Alias('Project')]
     [string]$ProjectPath = '',
 
-    [string]$Config = 'Debug',
+    [string]$Config = 'Release',
 
     [switch]$NoBuild,
     [switch]$VerifyOnly,
@@ -46,7 +46,9 @@ Usage:
 PROJECT_PATH is optional. When omitted, the editor opens the Noemancer Project
 Hub. -VerifyOnly performs a headless project/runtime check and never
 opens a GUI window. The launcher resolves the repository from its own script
-location, so the caller's current directory does not matter.
+location, so the caller's current directory does not matter. Release is the
+interactive product default; pass -Config Debug when debugging native engine
+code.
 '@ | Write-Output
 }
 

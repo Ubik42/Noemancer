@@ -7,6 +7,7 @@
 #include "engine/project_workspace.hpp"
 #include "engine/world.hpp"
 #include "runtime/application.hpp"
+#include "runtime/performance_evidence.hpp"
 #include "runtime/windows_package_service.hpp"
 
 #include <nlohmann/json.hpp>
@@ -342,6 +343,8 @@ int main(int argc, char** argv) {
     const auto diagnostics_directory=process_report_directory().string();
     noemancer::configure_process_diagnostics(noemancer::process_diagnostics_options{
         "noemancer.runtime",diagnostics_directory});
+    noemancer::StartupTelemetry startup_telemetry;
+    startup_telemetry.begin_phase("process.argument-parse");
     if (argc > 1) {
         const std::string_view first_argument = argv[1];
         if (first_argument == "package") return run_package_cli(argc, argv);
@@ -367,6 +370,7 @@ int main(int argc, char** argv) {
 
     std::string_view command = "run";
     noemancer::RunOptions options{};
+    options.startup_telemetry=&startup_telemetry;
     if(argc>0&&argv[0]!=nullptr)options.runtime_executable=std::filesystem::absolute(argv[0]).string();
     if((argc==1||(argc>1&&argv[1][0]=='-'))&&!options.runtime_executable.empty()) {
         const auto executable=std::filesystem::path(options.runtime_executable);
@@ -641,6 +645,7 @@ int main(int argc, char** argv) {
         std::cerr<<"Partial visibility stress is reserved for the explicit GPU visibility readback probe\n";return 2;
     }
 
+    startup_telemetry.finish_phase();
     try {
         noemancer::Application application(options);
         return application.run();
@@ -653,9 +658,21 @@ int main(int argc, char** argv) {
             {"detail", error.what()}
         };
         std::cerr << evidence.dump() << '\n';
+        startup_telemetry.finish_phase();
+        std::cerr << nlohmann::json{
+            {"level", "info"}, {"event", "runtime.startup_telemetry"},
+            {"message", startup_telemetry.json(options.player_mode ? "player" :
+                options.project_path.empty() ? "editor" : "source-project", "unhandled-exception")}
+        }.dump() << '\n';
         return 70;
     } catch (...) {
         std::cerr << R"({"level":"fatal","event":"runtime.unhandled-nonstandard-exception","role":"noemancer.runtime","exitCode":71})" << '\n';
+        startup_telemetry.finish_phase();
+        std::cerr << nlohmann::json{
+            {"level", "info"}, {"event", "runtime.startup_telemetry"},
+            {"message", startup_telemetry.json(options.player_mode ? "player" :
+                options.project_path.empty() ? "editor" : "source-project", "unhandled-exception")}
+        }.dump() << '\n';
         return 71;
     }
 }
