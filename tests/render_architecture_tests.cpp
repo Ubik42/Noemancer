@@ -372,6 +372,31 @@ int main() {
         std::cerr<<"Resolved sprites did not cross the renderer-neutral extraction boundary\n";
         return 11;
     }
+    // A cooked SpriteAtlas page is still renderer-neutral at this boundary:
+    // the runtime overlay changes only the texture identity, page-local rect
+    // and derived UVs; the source Sprite authoring contract remains intact.
+    auto atlas_entity=sprite_entity;
+    atlas_entity.id="entity.sprite.courier.atlas-page";
+    atlas_entity.tilemap_renderer.reset();
+    atlas_entity.tilemap_cells.clear();
+    atlas_entity.sprite_frame->texture_asset="texture.courier.atlas.page.0";
+    atlas_entity.sprite_frame->texture_width=32U;
+    atlas_entity.sprite_frame->texture_height=32U;
+    atlas_entity.sprite_frame->frame.x=2U;
+    atlas_entity.sprite_frame->frame.y=3U;
+    atlas_entity.sprite_frame->frame.width=16U;
+    atlas_entity.sprite_frame->frame.height=24U;
+    const auto atlas_snapshot=noemancer::RenderWorldExtractor::extract(10,45,{atlas_entity});
+    const auto atlas_json=nlohmann::json::parse(noemancer::render_world_json(atlas_snapshot));
+    if(atlas_snapshot.sprites.size()!=1U||atlas_snapshot.sprites[0].texture_asset!="texture.courier.atlas.page.0"||
+       atlas_snapshot.sprites[0].texture_size!=std::array<std::uint32_t,2>{32U,32U}||
+       atlas_snapshot.sprites[0].pixel_rect!=std::array<std::uint32_t,4>{2U,3U,16U,24U}||
+       atlas_snapshot.sprites[0].uv_rect!=std::array<float,4>{2.0F/32.0F,3.0F/32.0F,18.0F/32.0F,27.0F/32.0F}||
+       atlas_json.at("sprites").at(0).at("textureAsset")!="texture.courier.atlas.page.0"||
+       atlas_json.at("sprites").at(0).at("pixelRect")!=nlohmann::json::array({2U,3U,16U,24U})) {
+        std::cerr<<"SpriteAtlas page binding did not preserve renderer-neutral page-local geometry\n";
+        return 18;
+    }
     noemancer::TilemapRenderBakeCache bake_cache;
     auto cache_entity=sprite_entity;cache_entity.tilemap_cells[0].chunk_content_fingerprint="chunk-a";
     cache_entity.tilemap_early_visibility_applied=true;cache_entity.tilemap_resolved_chunk_count=2;

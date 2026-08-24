@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-24",
   "status": "active-development",
-  "currentSlice": "hybrid-pixel.large-sprite-tilemap-production-pressure",
-  "currentStep": "sprite-atlas.actual-package-player-and-cross-process-page-cache-evidence",
+  "currentSlice": "game-migration.hybrid-pixel-hd2d-small-slice",
+  "currentStep": "hd2d.external-project-slice-and-general-capability-gap-discovery",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "hybrid-pixel.large-sprite-tilemap-production-pressure",
     "game-migration.hybrid-pixel-hd2d-small-slice"
   ],
   "externalEvidencePending": [
@@ -30,7 +29,8 @@
     "hybrid-pixel.sprite-material-and-mixed-lighting",
     "hybrid-pixel.pixel-aligned-vfx-and-controlled-post",
     "hybrid-pixel.profile-authoring-ui",
-    "hybrid-pixel.package-player-production-validation"
+    "hybrid-pixel.package-player-production-validation",
+    "hybrid-pixel.large-sprite-tilemap-production-pressure"
   ],
   "closedExperiments": [
     {

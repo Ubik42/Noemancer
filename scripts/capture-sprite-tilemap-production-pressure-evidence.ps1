@@ -17,7 +17,13 @@ param(
     [int]$VisibleChunkRadius = 8,
     [ValidateRange(10, 900)]
     [int]$TimeoutSeconds = 120,
-    [switch]$KeepStaging
+    [switch]$KeepStaging,
+    [switch]$CommitPackage,
+    [switch]$ValidatePlayer,
+    [ValidateRange(1, 600)]
+    [int]$PlayerFrames = 256,
+    [ValidateRange(60, 600)]
+    [int]$PlayerSampleFrames = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,6 +33,7 @@ $script:StagePath = $null
 $script:StageKept = $false
 $script:SourceTreeBefore = $null
 $script:SourceTreeAfter = $null
+$script:PackageCommitRequested = ($CommitPackage -or $ValidatePlayer)
 
 function Add-Issue {
     param(
@@ -220,6 +227,11 @@ function New-PressureSpriteFixture {
         entities = @(
             [ordered]@{ guid = 'entity.pressure.root'; name = 'Pressure Sprite'; parent = $null; components = [ordered]@{
                 Transform = [ordered]@{ position = @(0, 0, 0); scale = @(1, 1, 1) }
+                # The primitive keeps the optional hidden GPU Player probe
+                # focused on a real renderable entity while the SpriteRenderer
+                # remains the workload under test.  It is built-in and adds no
+                # source asset to the Cook/package closure.
+                MeshRenderer = [ordered]@{ meshAsset = 'asset.primitive.cube'; castsShadows = $true; receivesShadows = $true; visible = $true }
                 SpriteRenderer = [ordered]@{ spriteAsset = $spriteId; clip = ('pressure.clip.{0:D3}' -f 0); playbackSpeed = 1; playing = $true; flipX = $false; flipY = $false; sortingLayer = 'pressure'; sortingOrder = 0; visible = $true }
             } }
         )
@@ -288,6 +300,126 @@ function Invoke-PressureCommand {
     return [ordered]@{ process = $raw; report = $report; sparseRequested = $sparse; arguments = $arguments }
 }
 
+function Test-Ktx2Payload {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $magic = [byte[]]@(0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A)
+    if ($bytes.Length -lt $magic.Length) { return $false }
+    for ($index = 0; $index -lt $magic.Length; $index++) {
+        if ($bytes[$index] -ne $magic[$index]) { return $false }
+    }
+    return $true
+}
+
+function Test-PackagedSpriteAtlasClosure {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][string]$SpriteAssetId
+    )
+    $report = [ordered]@{
+        packageRoot = $PackageRoot
+        registryPath = $null
+        parent = $null
+        pages = @()
+        pagePayloads = @()
+        sourceAtlasFiles = @()
+        valid = $false
+    }
+    $registryPath = Join-Path $PackageRoot 'content/assets/registry.json'
+    $report.registryPath = $registryPath
+    if (-not (Test-Path -LiteralPath $registryPath -PathType Leaf)) {
+        Add-Issue -Code 'package.registry-missing' -Message "Committed package has no content/assets/registry.json: $registryPath" -ExitCode 5
+        return $report
+    }
+    $registryDocument = $null
+    try { $registryDocument = Read-Json -Path $registryPath }
+    catch {
+        Add-Issue -Code 'package.registry-invalid-json' -Message "Committed package registry is not valid JSON: $($_.Exception.Message)" -ExitCode 5
+        return $report
+    }
+    if ($null -eq $registryDocument.assets) {
+        Add-Issue -Code 'package.registry-assets-missing' -Message 'Committed package registry does not contain an assets array.' -ExitCode 5
+        return $report
+    }
+    $records = @($registryDocument.assets)
+    $parent = $records | Where-Object { $_.id -eq $SpriteAssetId } | Select-Object -First 1
+    if ($null -eq $parent -or [string]$parent.kind -ne 'SpriteAtlas') {
+        Add-Issue -Code 'package.atlas-parent-missing' -Message "Committed package registry has no SpriteAtlas parent for $SpriteAssetId." -ExitCode 5
+    } else {
+        $report.parent = [ordered]@{ id = [string]$parent.id; kind = [string]$parent.kind; path = [string]$parent.path; sourceAssetId = [string]$parent.sourceAssetId }
+    }
+    $pages = @($records | Where-Object {
+        $_.kind -eq 'SpriteAtlasPage' -and (
+            $_.sourceAssetId -eq $SpriteAssetId -or [string]$_.id -like ($SpriteAssetId + '.atlas.page.*'))
+    })
+    if ($pages.Count -eq 0) {
+        Add-Issue -Code 'package.atlas-pages-missing' -Message "Committed package registry has no SpriteAtlasPage outputs for $SpriteAssetId." -ExitCode 5
+    }
+    # Registry paths are intentionally relative to content/assets (the same
+    # root used by the generated package manifest), not the broader content
+    # directory.  Keeping this explicit catches a page that is listed but not
+    # actually present in the committed closure.
+    $contentRoot = [IO.Path]::GetFullPath((Join-Path $PackageRoot 'content/assets'))
+    $pageReports = [System.Collections.Generic.List[object]]::new()
+    foreach ($page in $pages) {
+        $relativePath = [string]$page.path
+        $payloadPath = if ($relativePath) { Join-Path $contentRoot $relativePath } else { '' }
+        $payloadValid = ($relativePath -and (Test-Path -LiteralPath $payloadPath -PathType Leaf) -and
+            ([IO.Path]::GetExtension($relativePath) -ieq '.ktx2') -and (Test-Ktx2Payload -Path $payloadPath))
+        $actualHash = if ($payloadValid) { 'sha256:' + (Get-Sha256 -Path $payloadPath) } else { $null }
+        $hashMatches = ($payloadValid -and [string]$page.contentHash -eq $actualHash)
+        $pageReport = [ordered]@{
+            id = [string]$page.id; kind = [string]$page.kind; path = $relativePath
+            payloadExists = [bool](Test-Path -LiteralPath $payloadPath -PathType Leaf)
+            ktx2 = $payloadValid; expectedHash = [string]$page.contentHash
+            actualHash = $actualHash; hashMatches = $hashMatches
+        }
+        [void]$pageReports.Add($pageReport)
+        if (-not $payloadValid) {
+            Add-Issue -Code 'package.atlas-page-payload-missing' -Message "SpriteAtlasPage $($page.id) does not resolve to a valid KTX2 payload inside the package." -ExitCode 5
+        } elseif (-not $hashMatches) {
+            Add-Issue -Code 'package.atlas-page-hash-mismatch' -Message "SpriteAtlasPage $($page.id) payload hash does not match the packaged registry." -ExitCode 5
+        }
+    }
+    $report.pages = @($pageReports)
+    $sourceFiles = @(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File -Force | Where-Object {
+        $_.Name -ieq 'pressure-atlas.png'
+    })
+    $report.sourceAtlasFiles = @($sourceFiles | ForEach-Object { [IO.Path]::GetRelativePath($PackageRoot, $_.FullName).Replace('\', '/') })
+    if ($sourceFiles.Count -gt 0) {
+        Add-Issue -Code 'package.source-atlas-included' -Message 'Committed package closure contains the source pressure-atlas.png.' -ExitCode 5
+    }
+    $report.valid = ($null -ne $report.parent -and $pages.Count -gt 0 -and
+        @($pageReports | Where-Object { -not $_.ktx2 -or -not $_.hashMatches }).Count -eq 0 -and
+        $sourceFiles.Count -eq 0)
+    return $report
+}
+
+function Test-PlayerAtlasBindingOutput {
+    param(
+        [Parameter(Mandatory = $true)]$ProcessResult,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $bindingLines = @($ProcessResult.stdout -split "`r?`n" | Where-Object { $_ -match 'sprite\.atlas-binding' })
+    # The runtime event envelope records successful atlas registration as
+    # message.code="ok" (failed registrations use an explicit success=false
+    # field).  Accept both representations so the evidence remains stable
+    # across human/JSON logger versions without accepting an unrelated line.
+    $successLines = @($bindingLines | Where-Object { $_ -match 'success.*true' -or $_ -match 'code.*ok' })
+    $report = [ordered]@{
+        label = $Label; exitCode = $ProcessResult.exitCode; timedOut = $ProcessResult.timedOut
+        bindingLineCount = $bindingLines.Count; success = ($successLines.Count -gt 0)
+    }
+    if ($ProcessResult.timedOut -or $ProcessResult.exitCode -ne 0) {
+        Add-Issue -Code ("player.$Label-failed") -Message "$Label Player process failed or timed out (exitCode=$($ProcessResult.exitCode))." -ExitCode 5
+    }
+    if ($successLines.Count -eq 0) {
+        Add-Issue -Code ("player.$Label-atlas-binding-missing") -Message "$Label Player stdout did not contain a successful sprite.atlas-binding event." -ExitCode 5
+    }
+    return $report
+}
+
 $receiptPath = [IO.Path]::GetFullPath($OutputPath)
 $artifactRoot = Join-Path ([IO.Path]::GetDirectoryName($receiptPath)) ([IO.Path]::GetFileNameWithoutExtension($receiptPath) + '-artifacts')
 $commandRoot = Join-Path $artifactRoot 'commands'
@@ -299,6 +431,11 @@ $apply = $null
 $inspect = $null
 $tilemap = $null
 $package = $null
+$packageRegistry = $null
+$packagePath = $null
+$playerExecutable = $null
+$playerHeadless = $null
+$playerD3D12 = $null
 $toolManifest = $null
 
 try {
@@ -357,17 +494,78 @@ try {
     elseif ([string]$report.schemaVersion -notmatch '^noemancer\.tilemap-pressure/0\.[2-9][0-9]*$') { Add-Issue -Code 'tilemap.schema-too-old' -Message "Unexpected Tilemap pressure schema: $($report.schemaVersion)" -ExitCode 5 }
     elseif ($null -eq $report.workload -or $report.workload.totalChunks -lt 1024 -or $null -eq $report.culling -or $null -eq $report.stableResidency -or [string]$report.scope -notmatch 'not-gpu-timing') { Add-Issue -Code 'tilemap.pressure-shape-invalid' -Message 'Tilemap pressure report lacks bounded workload, culling, stable residency, or non-GPU scope evidence.' -ExitCode 5 }
 
-    $packagePath = Join-Path $artifactRoot 'package'
+    $packageDirectoryName = if ($script:PackageCommitRequested) { 'package-commit' } else { 'package' }
+    $packagePath = Join-Path $artifactRoot $packageDirectoryName
+    $packageArguments = @(
+        'package', '--project', $script:StagePath, '--output', $packagePath,
+        '--target-profile', 'windows-x64-debug'
+    )
+    if (-not $script:PackageCommitRequested) { $packageArguments += '--dry-run' }
+    $packageArguments += '--format'
+    $packageArguments += 'json'
     try {
-        $package = Invoke-HiddenProcess -FilePath $RuntimePath -Arguments @('package', '--project', $script:StagePath, '--output', $packagePath, '--target-profile', 'windows-x64-debug', '--dry-run', '--format', 'json') -TimeoutSeconds $TimeoutSeconds
-        if ($package.exitCode -ne 0) { Add-Issue -Code 'package.dry-run-failed' -Message ($package.stderr.Trim()) -ExitCode 4 }
-        else {
+        $package = Invoke-HiddenProcess -FilePath $RuntimePath -Arguments $packageArguments -TimeoutSeconds $TimeoutSeconds
+        if ($package.exitCode -ne 0) {
+            $packageCode = if ($script:PackageCommitRequested) { 'package.commit-failed' } else { 'package.dry-run-failed' }
+            Add-Issue -Code $packageCode -Message ($package.stderr.Trim()) -ExitCode 4
+        } else {
             try {
                 $packageResult = $package.stdout | ConvertFrom-Json
-                if ($packageResult.success -ne $true) { Add-Issue -Code 'package.dry-run-invalid' -Message 'Package dry-run returned success=false.' -ExitCode 5 }
-            } catch { Add-Issue -Code 'package.invalid-json' -Message 'Package dry-run did not return JSON.' -ExitCode 4 }
+                if ($packageResult.success -ne $true) {
+                    $packageCode = if ($script:PackageCommitRequested) { 'package.commit-invalid' } else { 'package.dry-run-invalid' }
+                    Add-Issue -Code $packageCode -Message 'Package command returned success=false.' -ExitCode 5
+                } elseif ($script:PackageCommitRequested -and -not (Test-Path -LiteralPath $packagePath -PathType Container)) {
+                    Add-Issue -Code 'package.commit-output-missing' -Message "Package reported success but did not create its output directory: $packagePath" -ExitCode 5
+                } elseif ($script:PackageCommitRequested) {
+                    $packageRegistry = Test-PackagedSpriteAtlasClosure -PackageRoot $packagePath -SpriteAssetId $fixture.spriteId
+                }
+            } catch {
+                $packageCode = if ($script:PackageCommitRequested) { 'package.invalid-json' } else { 'package.invalid-json' }
+                Add-Issue -Code $packageCode -Message 'Package command did not return JSON.' -ExitCode 4
+            }
         }
-    } catch { Add-Issue -Code 'package.process-exception' -Message $_.Exception.Message -ExitCode 4 }
+    } catch {
+        $packageCode = if ($script:PackageCommitRequested) { 'package.process-exception' } else { 'package.process-exception' }
+        Add-Issue -Code $packageCode -Message $_.Exception.Message -ExitCode 4
+    }
+
+    if ($ValidatePlayer) {
+        if (-not $script:PackageCommitRequested -or $null -eq $package -or $package.exitCode -ne 0 -or
+            -not (Test-Path -LiteralPath $packagePath -PathType Container) -or $null -eq $packageRegistry -or
+            $packageRegistry.valid -ne $true) {
+            Add-Issue -Code 'player.package-not-ready' -Message 'Player validation requires a successfully committed package with a valid SpriteAtlas closure.' -ExitCode 5
+        } else {
+            $profilePath = Join-Path $packagePath 'config/game-profile.json'
+            $packagedExecutables = @(Get-ChildItem -LiteralPath (Join-Path $packagePath 'bin') -Filter '*.exe' -File -ErrorAction SilentlyContinue)
+            if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+                Add-Issue -Code 'player.profile-missing' -Message "Committed package has no game profile: $profilePath" -ExitCode 5
+            } elseif ($packagedExecutables.Count -eq 0) {
+                Add-Issue -Code 'player.executable-missing' -Message "Committed package has no executable under bin: $packagePath" -ExitCode 5
+            } else {
+                $playerExecutable = $packagedExecutables | Select-Object -First 1 -ExpandProperty FullName
+                try {
+                    $playerHeadless = Invoke-HiddenProcess -FilePath $playerExecutable -Arguments @(
+                        'player', '--profile', $profilePath, '--headless', '--frames', [string]$PlayerFrames, '--format', 'json'
+                    ) -TimeoutSeconds $TimeoutSeconds
+                    $playerHeadlessReport = Test-PlayerAtlasBindingOutput -ProcessResult $playerHeadless -Label 'headless'
+                } catch {
+                    Add-Issue -Code 'player.headless-process-exception' -Message $_.Exception.Message -ExitCode 5
+                }
+                try {
+                    $performanceEvidencePath = Join-Path $artifactRoot 'player-d3d12-performance.json'
+                    $playerD3D12 = Invoke-HiddenProcess -FilePath $playerExecutable -Arguments @(
+                        'player', '--profile', $profilePath, '--gpu-backend', 'direct3d12',
+                        '--performance-evidence', $performanceEvidencePath, '--performance-hidden',
+                        '--performance-warmup-frames', '1', '--performance-sample-frames', [string]$PlayerSampleFrames,
+                        '--format', 'json'
+                    ) -TimeoutSeconds $TimeoutSeconds
+                    $playerD3D12Report = Test-PlayerAtlasBindingOutput -ProcessResult $playerD3D12 -Label 'hidden-d3d12'
+                } catch {
+                    Add-Issue -Code 'player.hidden-d3d12-process-exception' -Message $_.Exception.Message -ExitCode 5
+                }
+            }
+        }
+    }
 
     Write-Utf8Json -Path (Join-Path $commandRoot 'tools.json') -Value $toolManifest
     if ($registry) { Write-Utf8Json -Path (Join-Path $commandRoot 'asset-registry.json') -Value $registry }
@@ -378,8 +576,13 @@ try {
     if ($package) {
         $packageDocument = $null
         try { $packageDocument = $package.stdout | ConvertFrom-Json } catch { }
-        Write-Utf8Json -Path (Join-Path $commandRoot 'package.json') -Value ([ordered]@{ process = $package; result = $packageDocument })
+        Write-Utf8Json -Path (Join-Path $commandRoot 'package.json') -Value ([ordered]@{
+            process = $package; result = $packageDocument; commitRequested = $script:PackageCommitRequested; output = $packagePath
+        })
     }
+    if ($packageRegistry) { Write-Utf8Json -Path (Join-Path $commandRoot 'package-registry.json') -Value $packageRegistry }
+    if ($playerHeadless) { Write-Utf8Json -Path (Join-Path $commandRoot 'player-headless.json') -Value ([ordered]@{ process = $playerHeadless; report = $playerHeadlessReport }) }
+    if ($playerD3D12) { Write-Utf8Json -Path (Join-Path $commandRoot 'player-hidden-d3d12.json') -Value ([ordered]@{ process = $playerD3D12; report = $playerD3D12Report }) }
 } catch {
     if ($script:ExitCode -eq 0) { Add-Issue -Code 'unexpected.failure' -Message $_.Exception.Message -ExitCode 1 }
 } finally {
@@ -398,8 +601,22 @@ try {
         tilemap = if ($tilemap) { [ordered]@{ arguments = $tilemap.arguments; sparseRequested = $tilemap.sparseRequested; report = $tilemap.report } } else { $null }
         registry = if ($registry) { [ordered]@{ exitCode = $registry.exitCode; assetCount = if ($registry.response.result) { $registry.response.result.assetCount } else { $null }; errorCount = if ($registry.response.result) { $registry.response.result.errorCount } else { $null } } } else { $null }
         cook = if ($cook) { [ordered]@{ exitCode = $cook.exitCode; valid = if ($cook.response.result) { $cook.response.result.valid } else { $false }; inputCount = if ($cook.response.result) { @($cook.response.result.inputs).Count } else { 0 }; apply = if ($apply) { [ordered]@{ exitCode = $apply.exitCode; success = if ($apply.response.result) { $apply.response.result.success } else { $false }; artifactCount = if ($apply.response.result) { @($apply.response.result.artifacts).Count } else { 0 } } } else { $null } } } else { $null }
-        package = if ($package) { [ordered]@{ exitCode = $package.exitCode; timedOut = $package.timedOut } } else { $null }
-        scope = 'headless-source-registry-cook-package-and-deterministic-render-extraction; no GPU timing or fabricated GPU data'
+        package = if ($package) {
+            [ordered]@{
+                exitCode = $package.exitCode; timedOut = $package.timedOut; commitRequested = $script:PackageCommitRequested
+                output = $packagePath; registry = $packageRegistry
+            }
+        } else { $null }
+        player = if ($ValidatePlayer) {
+            [ordered]@{
+                executable = $playerExecutable; frames = $PlayerFrames; sampleFrames = $PlayerSampleFrames
+                headless = if ($playerHeadless) { $playerHeadlessReport } else { $null }
+                hiddenD3D12 = if ($playerD3D12) { $playerD3D12Report } else { $null }
+            }
+        } else { $null }
+        scope = if ($ValidatePlayer) {
+            'hidden-source-registry-cook-committed-package-headless-player-hidden-d3d12-and-deterministic-render-extraction; no fabricated GPU data'
+        } else { 'headless-source-registry-cook-package-and-deterministic-render-extraction; no GPU timing or fabricated GPU data' }
     }
     try { Write-Utf8Json -Path (Join-Path $artifactRoot 'quality.json') -Value $quality } catch { Add-Issue -Code 'quality.write-failed' -Message $_.Exception.Message -ExitCode 7 }
     $receipt = [ordered]@{
@@ -407,8 +624,17 @@ try {
         pass = ($script:Issues.Count -eq 0); startedAtUtc = $startedAt.ToString('o'); completedAtUtc = [DateTime]::UtcNow.ToString('o')
         source = [ordered]@{ project = [IO.Path]::GetFullPath($Project); treeBefore = $script:SourceTreeBefore; treeAfter = $script:SourceTreeAfter; unchanged = ($script:SourceTreeBefore -and $script:SourceTreeAfter -and $script:SourceTreeBefore.sha256 -eq $script:SourceTreeAfter.sha256) }
         staging = [ordered]@{ path = if ($script:StageKept) { $script:StagePath } else { $null }; kept = $script:StageKept }
-        budgets = [ordered]@{ spriteFrameCount = $SpriteFrameCount; spriteClipCount = $SpriteClipCount; tilemapChunkColumns = $TilemapChunkColumns; tilemapChunkRows = $TilemapChunkRows; tilemapChunkSize = $TilemapChunkSize; visibleChunkRadius = $VisibleChunkRadius; timeoutSeconds = $TimeoutSeconds }
-        artifacts = [ordered]@{ quality = [IO.Path]::GetRelativePath((Split-Path -Parent $receiptPath), (Join-Path $artifactRoot 'quality.json')).Replace('\', '/'); commands = [IO.Path]::GetRelativePath((Split-Path -Parent $receiptPath), $commandRoot).Replace('\', '/') }
+        budgets = [ordered]@{
+            spriteFrameCount = $SpriteFrameCount; spriteClipCount = $SpriteClipCount; tilemapChunkColumns = $TilemapChunkColumns
+            tilemapChunkRows = $TilemapChunkRows; tilemapChunkSize = $TilemapChunkSize; visibleChunkRadius = $VisibleChunkRadius
+            timeoutSeconds = $TimeoutSeconds; commitPackage = [bool]$CommitPackage; validatePlayer = [bool]$ValidatePlayer
+            playerFrames = $PlayerFrames; playerSampleFrames = $PlayerSampleFrames
+        }
+        artifacts = [ordered]@{
+            quality = [IO.Path]::GetRelativePath((Split-Path -Parent $receiptPath), (Join-Path $artifactRoot 'quality.json')).Replace('\', '/')
+            commands = [IO.Path]::GetRelativePath((Split-Path -Parent $receiptPath), $commandRoot).Replace('\', '/')
+            package = if ($packagePath) { [IO.Path]::GetRelativePath((Split-Path -Parent $receiptPath), $packagePath).Replace('\', '/') } else { $null }
+        }
         issues = @($script:Issues); exitCode = $script:ExitCode
     }
     try { Write-Utf8Json -Path $receiptPath -Value $receipt } catch { $script:ExitCode = 7; Write-Error $_.Exception.Message }

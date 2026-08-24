@@ -443,6 +443,17 @@ private:
     std::size_t sprite_draws_saved_{0};
     std::size_t sprite_draws_missing_texture_{0};
     std::size_t sprite_material_textures_missing_{0};
+    // Runtime-only accounting for validated SpriteAtlas manifests.  IDs stay
+    // private; status_json publishes bounded counts and explicit truncation.
+    std::size_t sprite_atlas_manifests_discovered_{};
+    std::size_t sprite_atlas_manifests_valid_{};
+    std::size_t sprite_atlas_manifests_invalid_{};
+    std::size_t sprite_atlas_declared_page_assets_{};
+    std::size_t sprite_atlas_unique_page_assets_{};
+    std::size_t sprite_atlas_page_textures_uploaded_{};
+    std::size_t sprite_atlas_page_textures_missing_{};
+    std::size_t sprite_atlas_page_textures_available_{};
+    bool sprite_atlas_counts_truncated_{};
     std::size_t sprite_lit_instances_{0};
     std::size_t sprite_unlit_instances_{0};
     std::size_t sprite_shadow_receivers_{0};

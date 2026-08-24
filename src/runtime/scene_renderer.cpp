@@ -50,6 +50,10 @@ constexpr SDL_GPUTextureFormat exposure_format = SDL_GPU_TEXTUREFORMAT_R16_FLOAT
 constexpr std::uint32_t shadow_size = 2048;
 constexpr std::uint32_t shadow_cascade_count = 4;
 constexpr std::uint32_t local_shadow_layer_count = 8;
+// Renderer status never emits page IDs. Keep the private accounting set and
+// every published count bounded even if a malformed Registry contains a very
+// large number of atlas manifests.
+constexpr std::size_t sprite_atlas_status_max_items = 65536U;
 
 void hash_bytes(std::uint64_t& hash,const void* data,const std::size_t size) {
     constexpr std::uint64_t prime=1099511628211ULL;
@@ -1065,12 +1069,43 @@ bool SceneRenderer::create_material_resources() {
 }
 
 bool SceneRenderer::create_sprite_resources() {
+    sprite_atlas_manifests_discovered_=0;
+    sprite_atlas_manifests_valid_=0;
+    sprite_atlas_manifests_invalid_=0;
+    sprite_atlas_declared_page_assets_=0;
+    sprite_atlas_unique_page_assets_=0;
+    sprite_atlas_page_textures_uploaded_=0;
+    sprite_atlas_page_textures_missing_=0;
+    sprite_atlas_page_textures_available_=0;
+    sprite_atlas_counts_truncated_=false;
+    std::unordered_set<std::string> atlas_page_assets;
+    const auto count_atlas_status = [this](std::size_t& counter, const std::size_t amount=1U) {
+        const auto bounded_amount=std::min(amount,sprite_atlas_status_max_items);
+        if (counter>sprite_atlas_status_max_items-bounded_amount) {
+            counter=sprite_atlas_status_max_items;
+            sprite_atlas_counts_truncated_=true;
+            return;
+        }
+        counter+=bounded_amount;
+        if (amount!=bounded_amount) sprite_atlas_counts_truncated_=true;
+    };
+    const auto finalize_atlas_status = [&]() {
+        sprite_atlas_unique_page_assets_=atlas_page_assets.size();
+        sprite_atlas_page_textures_available_=0;
+        for (const auto& page_asset_id : atlas_page_assets) {
+            const auto handle=texture_resources_.find(page_asset_id,"sprite-base-color-srgb");
+            if (handle&&texture_resources_.resolve(*handle)!=nullptr)
+                count_atlas_status(sprite_atlas_page_textures_available_);
+        }
+        sprite_atlas_page_textures_missing_=sprite_atlas_unique_page_assets_-
+            std::min(sprite_atlas_unique_page_assets_,sprite_atlas_page_textures_available_);
+    };
     SDL_GPUSamplerCreateInfo sampler_info{};
     sampler_info.min_filter=SDL_GPU_FILTER_NEAREST;sampler_info.mag_filter=SDL_GPU_FILTER_NEAREST;
     sampler_info.mipmap_mode=SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
     sampler_info.address_mode_u=sampler_info.address_mode_v=sampler_info.address_mode_w=SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     sprite_nearest_sampler_=SDL_CreateGPUSampler(device_,&sampler_info);
-    if(!sprite_nearest_sampler_){last_error_=SDL_GetError();return false;}
+    if(!sprite_nearest_sampler_){last_error_=SDL_GetError();finalize_atlas_status();return false;}
     SDL_GPUBufferCreateInfo instance_info{SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
         static_cast<Uint32>(sprite_instance_capacity*sizeof(GpuSpriteInstance)),0};
     sprite_instance_buffer_=SDL_CreateGPUBuffer(device_,&instance_info);
@@ -1084,7 +1119,8 @@ bool SceneRenderer::create_sprite_resources() {
         static_cast<Uint32>(sprite_instance_capacity*sizeof(std::uint32_t)),0};
     sprite_draw_index_upload_=SDL_CreateGPUTransferBuffer(device_,&draw_index_transfer_info);
     if(!sprite_instance_buffer_||!sprite_instance_upload_||!sprite_draw_index_buffer_||!sprite_draw_index_upload_){
-        last_error_="Unable to allocate Sprite stable instance storage: "+std::string(SDL_GetError());return false;}
+        last_error_="Unable to allocate Sprite stable instance storage: "+std::string(SDL_GetError());
+        finalize_atlas_status();return false;}
     SDL_SetGPUBufferName(device_,sprite_instance_buffer_,"sprite.instances");
     SDL_SetGPUBufferName(device_,sprite_draw_index_buffer_,"sprite.draw-indices");
     std::unordered_set<std::string> srgb_assets;
@@ -1103,8 +1139,11 @@ bool SceneRenderer::create_sprite_resources() {
         }
     }
     for(const auto& asset:asset_registry_.records()) {
-        if(!asset.available||asset.kind!="SpriteAtlas")continue;
-        const auto source=read_binary(asset_registry_.source_path(asset));if(source.empty())continue;
+        if(asset.kind!="SpriteAtlas")continue;
+        count_atlas_status(sprite_atlas_manifests_discovered_);
+        if(!asset.available){count_atlas_status(sprite_atlas_manifests_invalid_);continue;}
+        const auto source=read_binary(asset_registry_.source_path(asset));
+        if(source.empty()){count_atlas_status(sprite_atlas_manifests_invalid_);continue;}
         const auto manifest=nlohmann::json::parse(std::string_view(
             reinterpret_cast<const char*>(source.data()),source.size()),nullptr,false);
         if(manifest.is_object()&&manifest.contains("authoringDocument")&&
@@ -1119,10 +1158,24 @@ bool SceneRenderer::create_sprite_resources() {
         }
         const auto parsed=parse_sprite_atlas_artifact_json(std::string_view(
             reinterpret_cast<const char*>(source.data()),source.size()));
-        if(!parsed||!parsed.artifact)continue;
-        for(const auto& page:parsed.artifact->pages)srgb_assets.insert(page.asset_id);
+        if(!parsed||!parsed.artifact){count_atlas_status(sprite_atlas_manifests_invalid_);continue;}
+        count_atlas_status(sprite_atlas_manifests_valid_);
+        for(const auto& page:parsed.artifact->pages) {
+            count_atlas_status(sprite_atlas_declared_page_assets_);
+            if(page.asset_id.empty())continue;
+            if(!atlas_page_assets.contains(page.asset_id)) {
+                if(atlas_page_assets.size()<sprite_atlas_status_max_items)
+                    atlas_page_assets.insert(page.asset_id);
+                else sprite_atlas_counts_truncated_=true;
+            }
+            srgb_assets.insert(page.asset_id);
+        }
     }
+    const auto atlas_page_asset = [&atlas_page_assets](const std::string_view asset_id) {
+        return atlas_page_assets.contains(std::string(asset_id));
+    };
     for(const auto& asset:asset_registry_.records()) {
+        const bool is_atlas_page=atlas_page_asset(asset.id);
         const bool needs_srgb=srgb_assets.contains(asset.id);const bool needs_linear=linear_assets.contains(asset.id);
         if(!asset.available||(asset.extension!=".png"&&asset.extension!=".ktx2")||(!needs_srgb&&!needs_linear))continue;
         const auto bytes=read_binary(asset_registry_.source_path(asset));
@@ -1164,7 +1217,7 @@ bool SceneRenderer::create_sprite_resources() {
             if((needs_srgb&&!upload(true,texture))||(needs_linear&&!upload(false,linear_texture))) {
                 if(texture&&!texture_stream_lookup_.contains(texture))SDL_ReleaseGPUTexture(device_,texture);
                 if(linear_texture&&!texture_stream_lookup_.contains(linear_texture))SDL_ReleaseGPUTexture(device_,linear_texture);
-                return false;
+                finalize_atlas_status();return false;
             }
         } else {
             const auto decoded=decode_png_rgba8(std::span<const std::byte>(
@@ -1177,7 +1230,8 @@ bool SceneRenderer::create_sprite_resources() {
                (needs_linear&&!create_rgba8_texture(width,height,pixels,rgba8.size(),false,linear_texture))) {
                 if(texture)SDL_ReleaseGPUTexture(device_,texture);
                 if(linear_texture)SDL_ReleaseGPUTexture(device_,linear_texture);
-               last_error_=asset.id+": sprite GPU texture upload failed - "+SDL_GetError();return false;
+               last_error_=asset.id+": sprite GPU texture upload failed - "+SDL_GetError();
+               finalize_atlas_status();return false;
             }
         }
         const auto acquire_png=[&](SDL_GPUTexture* uploaded,const bool srgb) {
@@ -1203,9 +1257,11 @@ bool SceneRenderer::create_sprite_resources() {
                 if(linear_texture&&!texture_resources_.find(asset.id,"sprite-linear-data")) {
                     SDL_ReleaseGPUTexture(device_,linear_texture);linear_texture=nullptr;
                 }
-                last_error_=asset.id+": stable sprite texture registration failed";return false;
+                last_error_=asset.id+": stable sprite texture registration failed";
+                finalize_atlas_status();return false;
             }
             sprite_textures_.emplace(asset.id,handle);++sprite_textures_uploaded_;
+            if(is_atlas_page)count_atlas_status(sprite_atlas_page_textures_uploaded_);
         }
         if(linear_texture) {
             SDL_SetGPUTextureName(device_,linear_texture,("sprite.linear-texture."+asset.id).c_str());
@@ -1213,11 +1269,13 @@ bool SceneRenderer::create_sprite_resources() {
             if(!handle.valid())handle=acquire_png(linear_texture,false);
             if(!handle.valid()){
                 SDL_ReleaseGPUTexture(device_,linear_texture);linear_texture=nullptr;
-                last_error_=asset.id+": stable sprite linear texture registration failed";return false;
+                last_error_=asset.id+": stable sprite linear texture registration failed";
+                finalize_atlas_status();return false;
             }
             sprite_linear_textures_.emplace(asset.id,handle);
         }
     }
+    finalize_atlas_status();
     return true;
 }
 
@@ -4130,6 +4188,17 @@ std::string SceneRenderer::status_json() const {
         << "\"sprites\":{\"pipelineCreated\":" << (sprite_cutout_pipeline_&&sprite_alpha_pipeline_?"true":"false")
         << ",\"textureCount\":" << sprite_textures_uploaded_ << ",\"instancesSubmitted\":" << sprite_instances_submitted_
         << ",\"drawsSubmitted\":" << sprite_draws_submitted_ << ",\"drawsSaved\":" << sprite_draws_saved_
+        << ",\"atlasRuntime\":{\"schemaVersion\":\"noemancer.sprite-atlas-runtime/0.1\",\"manifestsDiscovered\":"
+        << sprite_atlas_manifests_discovered_ << ",\"manifestsValid\":" << sprite_atlas_manifests_valid_
+        << ",\"manifestsInvalid\":" << sprite_atlas_manifests_invalid_
+        << ",\"declaredPageAssets\":" << sprite_atlas_declared_page_assets_
+        << ",\"uniquePageAssets\":" << sprite_atlas_unique_page_assets_
+        << ",\"pageTexturesUploaded\":" << sprite_atlas_page_textures_uploaded_
+        << ",\"pageTexturesMissing\":" << sprite_atlas_page_textures_missing_
+        << ",\"pageTexturesAvailable\":" << sprite_atlas_page_textures_available_
+        << ",\"countsTruncated\":" << (sprite_atlas_counts_truncated_?"true":"false")
+        << ",\"sourceSpriteCompatibility\":{\"authoring\":\"single-texture-sprite-asset\",\"overlay\":\"runtime-only-page-binding\",\"fallback\":\"source-texture-asset\"}"
+        << ",\"scope\":\"validated-manifest/page-asset/resource-table-counts; no-GPU-timing-claim\"}"
         << ",\"maximumInstancesPerDraw\":" << sprite_instance_capacity
         << ",\"instanceStorage\":{\"path\":\"graphics-storage-buffer\",\"capacity\":" << sprite_instance_capacity
         << ",\"allocated\":" << (sprite_instance_buffer_&&sprite_instance_upload_?"true":"false")
@@ -4316,6 +4385,10 @@ void SceneRenderer::release() {
     texture_streaming_levels_this_frame_=0;texture_streaming_pending_levels_=0;texture_streaming_completed_streams_=0;
     texture_streaming_cursor_=0;
     sprite_draws_saved_=0;sprite_draws_missing_texture_=0;sprite_material_textures_missing_=0;
+    sprite_atlas_manifests_discovered_=0;sprite_atlas_manifests_valid_=0;sprite_atlas_manifests_invalid_=0;
+    sprite_atlas_declared_page_assets_=0;sprite_atlas_unique_page_assets_=0;
+    sprite_atlas_page_textures_uploaded_=0;sprite_atlas_page_textures_missing_=0;
+    sprite_atlas_page_textures_available_=0;sprite_atlas_counts_truncated_=false;
     sprite_lit_instances_=0;sprite_unlit_instances_=0;sprite_shadow_receivers_=0;sprite_shadow_casters_=0;
     sprite_instances_uploaded_=0;sprite_instances_dropped_=0;sprite_instance_upload_bytes_=0;sprite_instance_upload_bytes_total_=0;
     sprite_instance_dirty_ranges_=0;sprite_instances_reused_=0;
