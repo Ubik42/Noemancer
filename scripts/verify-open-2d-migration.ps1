@@ -1,6 +1,6 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
-    [string]$ProjectRoot = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '_games\starfall-gauntlet'),
+    [string]$ProjectRoot = $(if ($env:NOEMANCER_STARFALL_PROJECT) { $env:NOEMANCER_STARFALL_PROJECT } else { Join-Path ([IO.Path]::GetPathRoot($PSScriptRoot)) '3D\StarfallGauntlet' }),
 
     [ValidateSet('Debug', 'Release')]
     [string]$Config = 'Debug',

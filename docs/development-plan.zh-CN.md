@@ -7,7 +7,7 @@
 
 ## 产品目标
 
-先把 Noemancer 做成一个自洽、可独立创建和编辑项目的通用引擎，再用 `D:\cs\_games\lumen-run` 中用户可见名称为 **Noemancer Platformer** 的平台跳跃工程验证 2D 游戏生产闭环，最后扩展 Hybrid Pixel / HD2D Profile。游戏规则应位于项目 C#，不能为了快速演示固化进引擎 C++。目录名、`game.lumen-run` 与 `lumen.*` 稳定 ID 暂作兼容身份；旧证据中的 “Lumen Run” 均指同一工程，不再作为产品显示名。
+先把 Noemancer 做成一个自洽、可独立创建和编辑项目的通用引擎，再用 `D:\3D\NoemancerPlatformer` 平台跳跃工程验证 2D 游戏生产闭环，最后扩展 Hybrid Pixel / HD2D Profile。游戏规则应位于项目 C#，不能为了快速演示固化进引擎 C++。`game.lumen-run` 与 `lumen.*` 稳定 ID 暂作兼容身份；旧证据中的 “Lumen Run” 均指同一工程，不再作为产品或目录名称。
 
 Noemancer 的差异化集中在：
 
@@ -24,7 +24,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 
 ## Codex `/goal`（Ralph Loop）快速开发模式
 
-当前 `/goal` 目标文本：持续把 `D:\cs\Noemancer`（Noemancer）推进为可独立创建、编辑、调试、打包并发布真实游戏的完整通用引擎，并以 `D:\cs\_games\lumen-run` 中的 Noemancer Platformer 作为持续生产验收项目。每次恢复完整读取并服从仓库规范与四份权威状态，从 `currentFrontier` 首个未阻塞项开始；采用 Sol 主代理集成、最多三个写集互不重叠的 `luna_worker` 并行实际开发，优先代码、测试、Fixture 和证据脚本。子 Agent 只用于能独立形成实质改动的工作，启动后尽快落盘 checkpoint；长时间无产物或协调成本超过实现收益时由主代理中断并接管。每批完成最大连贯子系统改动，再按风险做最小充分验证；公共 Schema、共享 Runtime/World、构建或依赖变化才运行全量测试，Agent ABI 变化才做 MCP 烟测，渲染只使用隐藏 D3D12/Vulkan 证据且不使用 Computer Use。保持 Engine/Runtime Adapter/Editor/Agent Authority 边界，成熟中间件优先，第三方类型不进入持久化或公共协议，游戏规则留在项目 C#。Semantic 2D Character Rig 原型已因缺少量化收益关闭；恢复后从项目 UI 作者交互、大型 Sprite/Tilemap 生产压力，再到 HD2D 小型迁移依次推进。仅在用户明确暂停、里程碑验收、需要新产品授权/架构冲突或同一外部阻塞连续出现时停止。
+当前 `/goal` 目标文本：持续把 `D:\cs\Noemancer`（Noemancer）推进为可独立创建、编辑、调试、打包并发布真实游戏的完整通用引擎，并以 `D:\3D\NoemancerPlatformer` 作为持续生产验收项目。每次恢复完整读取并服从仓库规范与四份权威状态，从 `currentFrontier` 首个未阻塞项开始；采用 Sol 主代理集成、最多三个写集互不重叠的 `luna_worker` 并行实际开发，优先代码、测试、Fixture 和证据脚本。子 Agent 只用于能独立形成实质改动的工作，启动后尽快落盘 checkpoint；长时间无产物或协调成本超过实现收益时由主代理中断并接管。每批完成最大连贯子系统改动，再按风险做最小充分验证；公共 Schema、共享 Runtime/World、构建或依赖变化才运行全量测试，Agent ABI 变化才做 MCP 烟测，渲染只使用隐藏 D3D12/Vulkan 证据且不使用 Computer Use。保持 Engine/Runtime Adapter/Editor/Agent Authority 边界，成熟中间件优先，第三方类型不进入持久化或公共协议，游戏规则留在项目 C#。Semantic 2D Character Rig 原型已因缺少量化收益关闭；恢复后从项目 UI 作者交互、大型 Sprite/Tilemap 生产压力，再到 HD2D 小型迁移依次推进。仅在用户明确暂停、里程碑验收、需要新产品授权/架构冲突或同一外部阻塞连续出现时停止。
 
 当前长期开发由 Codex `/goal` 持续恢复，并采用批量 Ralph Loop，而不是每改一个文件就停下来测试或汇报：
 
@@ -130,7 +130,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 
 ### P8：游戏迁移与制作验证（通用引擎完成后的下游验收）
 
-游戏复刻、兼容引擎和开源游戏迁移是引擎的验收客户，不替代通用引擎主线。当前先补项目 UI 交互作者闭环和大型 Sprite/Tilemap 生产压力，再启动 HD2D 小型迁移；不是把尚缺的通用能力写进游戏特例。Lumen Run 继续随每项通用能力做最小真实项目验证；首个 Clean-room 纵切 `D:\cs\_games\starfall-gauntlet` 已按 OpenTyrian 级纵向射击行为范围完成，但没有复制 OpenTyrian/Tyrian 代码、数据、名称或素材。项目只有 C# 玩法规则和 Noemancer 内置灰盒资源，已贯通输入、移动、射击、敌人波次、Tag、碰撞判定、得分/生命 HUD、Prefab 生成/销毁、源项目运行、原子 Package 与包内 Player。迁移同时把脚本观察升级为缓存的类型化 `EntityView`/位置/组件/Tag，把线速度纳入公共属性与 Managed Command Buffer，并修复动态克隆脚本身份、运行态 Transform/Velocity 保留和 Gameplay Effect 清理。机器收据及隐藏 D3D12 画面位于 `generated/acceptance/open-2d-migration-current/`。
+游戏复刻、兼容引擎和开源游戏迁移是引擎的验收客户，不替代通用引擎主线。当前先补项目 UI 交互作者闭环和大型 Sprite/Tilemap 生产压力，再启动 HD2D 小型迁移；不是把尚缺的通用能力写进游戏特例。Noemancer Platformer 继续随每项通用能力做最小真实项目验证；首个 Clean-room 纵切 `D:\3D\StarfallGauntlet` 已按 OpenTyrian 级纵向射击行为范围完成，但没有复制 OpenTyrian/Tyrian 代码、数据、名称或素材。项目只有 C# 玩法规则和 Noemancer 内置灰盒资源，已贯通输入、移动、射击、敌人波次、Tag、碰撞判定、得分/生命 HUD、Prefab 生成/销毁、源项目运行、原子 Package 与包内 Player。迁移同时把脚本观察升级为缓存的类型化 `EntityView`/位置/组件/Tag，把线速度纳入公共属性与 Managed Command Buffer，并修复动态克隆脚本身份、运行态 Transform/Velocity 保留和 Gameplay Effect 清理。机器收据及隐藏 D3D12 画面位于 `generated/acceptance/open-2d-migration-current/`。
 
 该最小纵切的退出不等于完整射击游戏生产栈：当前 Prefab 生成/销毁仍重建完整 Scene，项目碰撞使用有界实体观察上的半径判断；只有后续更大迁移或性能证据表明需要时，才增加池化生成和原生批量重叠查询。Hybrid Pixel/HD2D 项目仍在 Pixel Grid、Sprite normal/depth/material、混合光照和像素 VFX 的核心 Profile 成立后启动。任何迁移都不得因单个游戏的特殊需求向 Engine/Runtime C++ 写入专用规则；需求只有在能抽象为稳定通用能力，并通过独立 Fixture、Schema/命令、最小回归与性能证据后，才回写引擎。
 

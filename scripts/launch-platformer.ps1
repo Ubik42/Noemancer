@@ -10,9 +10,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $engineRoot = Split-Path -Parent $PSScriptRoot
-$workspaceRoot = Split-Path -Parent $engineRoot
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-    $ProjectRoot = Join-Path $workspaceRoot '_games\lumen-run'
+    $ProjectRoot = if ($env:NOEMANCER_PLATFORMER_PROJECT) {
+        $env:NOEMANCER_PLATFORMER_PROJECT
+    } else {
+        Join-Path ([IO.Path]::GetPathRoot($engineRoot)) '3D\NoemancerPlatformer'
+    }
 }
 $ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)
 $engineScript = Join-Path $PSScriptRoot 'engine.ps1'

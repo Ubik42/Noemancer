@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ProjectRoot = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '_games\lumen-run'),
+    [string]$ProjectRoot = $(if ($env:NOEMANCER_PLATFORMER_PROJECT) { $env:NOEMANCER_PLATFORMER_PROJECT } else { Join-Path ([IO.Path]::GetPathRoot($PSScriptRoot)) '3D\NoemancerPlatformer' }),
     [string]$AcceptancePath = '',
     [ValidateSet('Debug', 'Release')][string]$Config = 'Debug',
     [string]$OutputRoot = ''
