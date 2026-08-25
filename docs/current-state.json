@@ -1,9 +1,9 @@
 {
   "schemaVersion": "noemancer.project-state/0.2",
-  "updated": "2026-08-24",
+  "updated": "2026-08-25",
   "status": "active-development",
-  "currentSlice": "editor.high-dpi-responsive-chrome",
-  "currentStep": "make-imgui-and-retained-editor-chrome-responsive-at-1.5x-and-2x",
+  "currentSlice": "asset.gltf-external-resource-jpeg-and-large-scene-readiness",
+  "currentStep": "adopt-jpeg-decoder-and-close-external-gltf-large-scene-path",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,6 +12,17 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
+    "asset.gltf-external-resource-jpeg-and-large-scene-readiness",
+    "performance.editor-retained-ui-command-recording",
+    "performance.gpu-pass-timestamp-foundation",
+    "render.dynamic-sky-atmosphere",
+    "render.screen-space-hiz-history-and-temporal-denoising",
+    "render.ssr-production-path",
+    "render.ssgi-production-path",
+    "render.bindless-gpu-scene-and-occlusion-decision",
+    "render.shadow-scalability-vsm-decision",
+    "render.native-rhi-raytracing-foundation",
+    "render.rtgi-production-path",
     "editor.high-dpi-responsive-chrome",
     "editor.redistributable-cjk-arabic-fallback-and-cluster-editing"
   ],
@@ -43,7 +54,8 @@
     "editor.retained-safe-authoring-actions",
     "editor.retained-authoring-actions",
     "editor.project-hub-recent-workspaces",
-    "editor.dpi-localization-visual-matrix"
+    "editor.dpi-localization-visual-matrix",
+    "commercial-raster.render-lab-classic-scene-contract"
   ],
   "closedExperiments": [
     {

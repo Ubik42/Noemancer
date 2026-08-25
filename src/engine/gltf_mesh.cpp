@@ -1,4 +1,5 @@
 #include "engine/gltf_mesh.hpp"
+#include "engine/content_hash.hpp"
 #include "engine/image_decoder.hpp"
 
 #if __has_include(<fastgltf/core.hpp>) && __has_include(<fastgltf/tools.hpp>)
@@ -12,11 +13,14 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <unordered_map>
@@ -37,6 +41,104 @@ struct AccessorView final {
     std::size_t components{};
     bool normalized{};
 };
+
+struct BoundedFileRead final {
+    bool valid{};
+    std::string code;
+    std::string detail;
+    std::vector<std::byte> storage;
+};
+
+BoundedFileRead read_bounded_file(const std::filesystem::path& path,
+                                  const std::uint64_t maximum_bytes) {
+    BoundedFileRead result;
+    std::error_code error;
+    const auto status=std::filesystem::status(path,error);
+    if(error||!std::filesystem::is_regular_file(status)){
+        result.code="gltf.dependency-unavailable";
+        result.detail="Source or dependency is not an available regular file.";
+        return result;
+    }
+    const auto size=std::filesystem::file_size(path,error);
+    if(error){
+        result.code="gltf.dependency-stat-failed";
+        result.detail="Source or dependency size could not be read.";
+        return result;
+    }
+    if(size>maximum_bytes||size>std::numeric_limits<std::size_t>::max()||
+       size>static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())){
+        result.code="gltf.dependency-budget-exceeded";
+        result.detail="Source or dependency exceeds its immutable snapshot byte budget.";
+        return result;
+    }
+    std::ifstream input(path,std::ios::binary);
+    if(!input){
+        result.code="gltf.dependency-unavailable";
+        result.detail="Source or dependency could not be opened.";
+        return result;
+    }
+    result.storage.resize(static_cast<std::size_t>(size));
+    if(!result.storage.empty())input.read(reinterpret_cast<char*>(result.storage.data()),
+        static_cast<std::streamsize>(result.storage.size()));
+    if(!input||static_cast<std::size_t>(input.gcount())!=result.storage.size()){
+        result.storage.clear();result.code="gltf.dependency-read-failed";
+        result.detail="Source or dependency changed or could not be read completely.";
+        return result;
+    }
+    const auto size_after=std::filesystem::file_size(path,error);
+    if(error||size_after!=size){
+        result.storage.clear();result.code="gltf.dependency-changed";
+        result.detail="Source or dependency changed while its snapshot was captured.";
+        return result;
+    }
+    result.valid=true;result.code="ok";return result;
+}
+
+std::optional<std::string> decode_uri_path(const std::string_view uri){
+    if(uri.empty()||uri.starts_with("//")||uri.find_first_of("?#\\")!=std::string_view::npos)
+        return std::nullopt;
+    const auto hex=[](const char value)->int{
+        if(value>='0'&&value<='9')return value-'0';
+        if(value>='a'&&value<='f')return value-'a'+10;
+        if(value>='A'&&value<='F')return value-'A'+10;
+        return -1;
+    };
+    std::string decoded;decoded.reserve(uri.size());
+    for(std::size_t index=0;index<uri.size();++index){
+        if(uri[index]!='%'){
+            const auto byte=static_cast<unsigned char>(uri[index]);
+            if(byte<0x20U||byte==0x7fU)return std::nullopt;
+            decoded.push_back(uri[index]);continue;
+        }
+        if(index+2U>=uri.size())return std::nullopt;
+        const int high=hex(uri[index+1U]),low=hex(uri[index+2U]);
+        if(high<0||low<0)return std::nullopt;
+        const auto byte=static_cast<unsigned char>((high<<4)|low);
+        if(byte==0U||byte<0x20U||byte==0x7fU||byte=='\\')return std::nullopt;
+        decoded.push_back(static_cast<char>(byte));index+=2U;
+    }
+    return decoded;
+}
+
+std::optional<std::filesystem::path> normalized_dependency_path(const std::string_view uri){
+    const auto decoded=decode_uri_path(uri);if(!decoded)return std::nullopt;
+    const std::filesystem::path candidate(*decoded);
+    if(candidate.empty()||candidate.is_absolute()||candidate.has_root_name()||
+       candidate.has_root_directory())return std::nullopt;
+    const auto normalized=candidate.lexically_normal();
+    if(normalized.empty()||normalized==".")return std::nullopt;
+    for(const auto& part:normalized)if(part=="..")return std::nullopt;
+    if(normalized.generic_string().find(':')!=std::string::npos)return std::nullopt;
+    return normalized;
+}
+
+bool path_is_within(const std::filesystem::path& root,
+                    const std::filesystem::path& candidate){
+    auto root_part=root.begin(),candidate_part=candidate.begin();
+    for(;root_part!=root.end();++root_part,++candidate_part)
+        if(candidate_part==candidate.end()||*root_part!=*candidate_part)return false;
+    return true;
+}
 
 std::uint32_t read_u32(const std::span<const std::byte> bytes, const std::size_t offset) {
     if (offset + 4U > bytes.size()) return 0U;
@@ -367,6 +469,182 @@ GltfBinaryContainer read_glb_container(const std::filesystem::path& path) {
     return result;
 }
 
+GltfSourceSnapshot read_gltf_source_snapshot(const std::filesystem::path& path,
+                                             const GltfSourceSnapshotLimits& limits){
+    GltfSourceSnapshot result;
+    if(limits.maximum_document_bytes==0U||limits.maximum_dependency_bytes==0U||
+       limits.maximum_total_bytes==0U||limits.maximum_dependencies==0U){
+        result.code="gltf.invalid-snapshot-limits";
+        result.detail="glTF snapshot limits must all be positive.";return result;
+    }
+    std::error_code error;
+    const auto source_path=std::filesystem::weakly_canonical(path,error);
+    std::string extension=source_path.extension().string();
+    std::ranges::transform(extension,extension.begin(),[](const unsigned char value){
+        return static_cast<char>(std::tolower(value));
+    });
+    if(error||extension!=".gltf"){
+        result.code="gltf.unsupported-container";
+        result.detail="External resource snapshots require a JSON .gltf source.";return result;
+    }
+    const auto source_root=source_path.parent_path();
+    auto source=read_bounded_file(source_path,limits.maximum_document_bytes);
+    if(!source.valid){result.code=source.code;result.detail=source.detail;return result;}
+    if(source.storage.size()>limits.maximum_total_bytes){
+        result.code="gltf.total-budget-exceeded";
+        result.detail="glTF document exceeds the total immutable snapshot budget.";return result;
+    }
+    result.source_path=source_path;result.source_bytes=source.storage.size();
+    result.total_bytes=source.storage.size();result.storage=std::move(source.storage);
+    const auto source_hash=sha256_bytes(result.storage);
+    if(!source_hash.success){result.code=source_hash.code;result.detail=source_hash.detail;return result;}
+    result.content_hash=source_hash.value;
+
+    Json document;
+    try{
+        document=Json::parse(std::string(reinterpret_cast<const char*>(result.storage.data()),
+                                         result.storage.size()));
+    }catch(const std::exception& exception){
+        result.code="gltf.invalid-json";result.detail=exception.what();return result;
+    }
+    if(!document.is_object()){
+        result.code="gltf.invalid-json";result.detail="glTF document root must be an object.";
+        return result;
+    }
+
+    std::unordered_map<std::string,std::size_t> lookup;
+    const auto collect=[&](const Json& entries,const std::string_view kind)->bool{
+        if(!entries.is_array()){
+            result.code="gltf.invalid-json";
+            result.detail="glTF buffer and image collections must be arrays.";return false;
+        }
+        for(const auto& entry:entries){
+            if(!entry.is_object()){
+                result.code="gltf.invalid-json";
+                result.detail="glTF buffer and image entries must be objects.";return false;
+            }
+            if(!entry.contains("uri"))continue;
+            if(!entry.at("uri").is_string()){
+                result.code="gltf.invalid-uri";
+                result.detail="glTF dependency URI must be a string.";return false;
+            }
+            const auto uri=entry.at("uri").get<std::string>();
+            // fastgltf owns data URI decoding. Its encoded payload is already
+            // bounded by maximum_document_bytes and is not an external file.
+            if(uri.starts_with("data:"))continue;
+            const auto relative=normalized_dependency_path(uri);
+            if(!relative){
+                result.code="gltf.external-uri-unsafe";
+                result.detail="External glTF URIs must be normalized relative file paths.";
+                return false;
+            }
+            const auto normalized=relative->generic_string();
+            if(const auto found=lookup.find(normalized);found!=lookup.end()){
+                if(result.dependencies[found->second].kind!=kind)
+                    result.dependencies[found->second].kind="shared";
+                continue;
+            }
+            if(result.dependencies.size()>=limits.maximum_dependencies){
+                result.code="gltf.dependency-count-exceeded";
+                result.detail="glTF external dependency count exceeds the snapshot budget.";
+                return false;
+            }
+            error.clear();
+            const auto dependency_path=std::filesystem::weakly_canonical(source_root/ *relative,error);
+            if(error||!path_is_within(source_root,dependency_path)){
+                result.code="gltf.external-uri-outside-root";
+                result.detail="External glTF dependency resolves outside the source directory.";
+                return false;
+            }
+            auto bytes=read_bounded_file(dependency_path,limits.maximum_dependency_bytes);
+            if(!bytes.valid){
+                result.code=bytes.code;result.detail=bytes.detail+" URI: "+uri;return false;
+            }
+            if(result.total_bytes>limits.maximum_total_bytes||
+               bytes.storage.size()>limits.maximum_total_bytes-result.total_bytes){
+                result.code="gltf.total-budget-exceeded";
+                result.detail="External glTF dependencies exceed the total snapshot budget.";
+                return false;
+            }
+            const auto hash=sha256_bytes(bytes.storage);
+            if(!hash.success){result.code=hash.code;result.detail=hash.detail;return false;}
+            GltfExternalResourceSnapshot dependency;
+            dependency.uri=uri;dependency.normalized_relative_path=normalized;
+            dependency.kind=std::string(kind);dependency.content_hash=hash.value;
+            dependency.source_bytes=bytes.storage.size();dependency.storage=std::move(bytes.storage);
+            result.total_bytes+=dependency.source_bytes;
+            lookup.emplace(normalized,result.dependencies.size());
+            result.dependencies.push_back(std::move(dependency));
+        }
+        return true;
+    };
+    if(!collect(document.value("buffers",Json::array()),"buffer")||
+       !collect(document.value("images",Json::array()),"image")){
+        result.dependencies.clear();return result;
+    }
+    result.valid=true;result.code="ok";
+    result.detail="JSON glTF document and external dependencies captured as immutable bounded snapshots.";
+    return result;
+}
+
+GltfDependencyVerification verify_gltf_source_snapshot(
+    const GltfSourceSnapshot& snapshot,const GltfSourceSnapshotLimits& limits){
+    GltfDependencyVerification result;
+    const auto changed=[&](const std::string& path,const std::string& detail){
+        result.unchanged=false;result.code="gltf.dependency-changed";
+        result.normalized_relative_path=path;result.detail=detail;
+    };
+    if(!snapshot.valid||snapshot.source_path.empty()||snapshot.content_hash.empty()){
+        result.code="gltf.invalid-snapshot";
+        result.detail="A valid immutable glTF source snapshot is required.";return result;
+    }
+    const auto source=sha256_file(snapshot.source_path,static_cast<std::size_t>(
+        std::min<std::uint64_t>(limits.maximum_document_bytes,
+                                std::numeric_limits<std::size_t>::max())));
+    if(!source.success||source.value!=snapshot.content_hash||source.bytes!=snapshot.source_bytes){
+        changed("<document>","glTF source document no longer matches its immutable snapshot.");
+        return result;
+    }
+    if(source.bytes>limits.maximum_total_bytes){
+        changed("<document>","Current glTF source exceeds the total snapshot budget.");return result;
+    }
+    const auto root=snapshot.source_path.parent_path();
+    std::uint64_t total=source.bytes;
+    for(const auto& dependency:snapshot.dependencies){
+        const auto relative=normalized_dependency_path(dependency.normalized_relative_path);
+        if(!relative){
+            changed(dependency.normalized_relative_path,
+                    "glTF snapshot contains an invalid normalized path.");return result;
+        }
+        std::error_code error;
+        const auto path=std::filesystem::weakly_canonical(root/ *relative,error);
+        if(error||!path_is_within(root,path)){
+            changed(dependency.normalized_relative_path,
+                    "glTF dependency no longer resolves beneath the source directory.");
+            return result;
+        }
+        const auto hash=sha256_file(path,static_cast<std::size_t>(
+            std::min<std::uint64_t>(limits.maximum_dependency_bytes,
+                                    std::numeric_limits<std::size_t>::max())));
+        if(!hash.success||hash.value!=dependency.content_hash||hash.bytes!=dependency.source_bytes){
+            changed(dependency.normalized_relative_path,
+                    "glTF dependency no longer matches its immutable snapshot.");return result;
+        }
+        if(total>limits.maximum_total_bytes||hash.bytes>limits.maximum_total_bytes-total){
+            changed(dependency.normalized_relative_path,
+                    "Current glTF dependency set exceeds the total snapshot budget.");return result;
+        }
+        total+=hash.bytes;
+    }
+    if(total!=snapshot.total_bytes){
+        changed("<dependency-set>","glTF dependency byte total no longer matches its snapshot.");
+        return result;
+    }
+    result.unchanged=true;result.code="ok";
+    result.detail="glTF source and dependencies still match the immutable snapshot.";
+    return result;
+}
+
 void compute_decoded_scene_bounds(DecodedSceneAsset& asset) {
     for (auto& primitive:asset.primitives) {
         std::array<float,3> minimum{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()};
@@ -572,10 +850,100 @@ void fastgltf_decode_material(const fastgltf::Asset& asset, const fastgltf::Prim
     if (material.occlusionTexture.has_value()) decoded.occlusion_strength = material.occlusionTexture->strength;
 }
 
-GltfMeshData decode_glb_mesh_fastgltf(const GltfBinaryContainer& container, const std::filesystem::path& path) {
+class ScopedGltfSnapshotDirectory final {
+public:
+    explicit ScopedGltfSnapshotDirectory(const GltfSourceSnapshot& snapshot) {
+        static std::atomic_uint64_t next_directory{1U};
+        std::string identity = snapshot.content_hash;
+        if (const auto separator = identity.find(':'); separator != std::string::npos)
+            identity.erase(0U, separator + 1U);
+        if (identity.empty()) identity = "unhashed";
+
+        std::error_code error;
+        const auto temporary_root = std::filesystem::temp_directory_path(error);
+        if (error) {
+            code_ = "gltf.snapshot-staging-unavailable";
+            detail_ = "The temporary directory for the immutable glTF snapshot is unavailable.";
+            return;
+        }
+        for (std::size_t attempt = 0; attempt < 64U; ++attempt) {
+            const auto sequence = next_directory.fetch_add(1U, std::memory_order_relaxed);
+            path_ = temporary_root / ("noemancer-gltf-snapshot-" + identity + "-" + std::to_string(sequence));
+            error.clear();
+            if (std::filesystem::create_directory(path_, error)) break;
+            path_.clear();
+        }
+        if (path_.empty()) {
+            code_ = "gltf.snapshot-staging-unavailable";
+            detail_ = "A unique immutable glTF snapshot directory could not be created.";
+            return;
+        }
+        document_path_ = path_ / "source.gltf";
+        if (!write_file(document_path_, snapshot.storage)) return;
+        for (const auto& dependency : snapshot.dependencies) {
+            const auto dependency_path = path_ / std::filesystem::path(dependency.normalized_relative_path);
+            error.clear();
+            std::filesystem::create_directories(dependency_path.parent_path(), error);
+            if (error) {
+                code_ = "gltf.snapshot-staging-failed";
+                detail_ = "An external glTF dependency directory could not be staged.";
+                return;
+            }
+            if (!write_file(dependency_path, dependency.storage)) return;
+        }
+        valid_ = true;
+        code_ = "ok";
+    }
+
+    ScopedGltfSnapshotDirectory(const ScopedGltfSnapshotDirectory&) = delete;
+    ScopedGltfSnapshotDirectory& operator=(const ScopedGltfSnapshotDirectory&) = delete;
+    ~ScopedGltfSnapshotDirectory() {
+        if (path_.empty()) return;
+        std::error_code ignored;
+        std::filesystem::remove_all(path_, ignored);
+    }
+    [[nodiscard]] bool valid() const noexcept { return valid_; }
+    [[nodiscard]] const std::string& code() const noexcept { return code_; }
+    [[nodiscard]] const std::string& detail() const noexcept { return detail_; }
+    [[nodiscard]] const std::filesystem::path& document_path() const noexcept { return document_path_; }
+
+private:
+    bool write_file(const std::filesystem::path& destination,
+                    const std::span<const std::byte> bytes) {
+        if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
+            code_ = "gltf.snapshot-staging-failed";
+            detail_ = "An immutable glTF snapshot file exceeds the staging stream limit.";
+            return false;
+        }
+        std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            code_ = "gltf.snapshot-staging-failed";
+            detail_ = "An immutable glTF snapshot file could not be created.";
+            return false;
+        }
+        if (!bytes.empty()) output.write(reinterpret_cast<const char*>(bytes.data()),
+                                         static_cast<std::streamsize>(bytes.size()));
+        output.flush();
+        if (!output) {
+            code_ = "gltf.snapshot-staging-failed";
+            detail_ = "An immutable glTF snapshot file could not be written completely.";
+            return false;
+        }
+        return true;
+    }
+    bool valid_{};
+    std::string code_;
+    std::string detail_;
+    std::filesystem::path path_;
+    std::filesystem::path document_path_;
+};
+
+GltfMeshData decode_gltf_mesh_fastgltf(const std::span<const std::byte> storage,
+                                       const std::filesystem::path& path,
+                                       const bool binary_container) {
     GltfMeshData result;
     try {
-        auto input = fastgltf::GltfDataBuffer::FromBytes(container.storage.data(), container.storage.size());
+        auto input = fastgltf::GltfDataBuffer::FromBytes(storage.data(), storage.size());
         if (!input) {
             result.code = "gltf.fastgltf-buffer-failed";
             result.detail = fastgltf::getErrorMessage(input.error());
@@ -589,7 +957,11 @@ GltfMeshData decode_glb_mesh_fastgltf(const GltfBinaryContainer& container, cons
         constexpr auto options = fastgltf::Options::DontRequireValidAssetMember |
             fastgltf::Options::GenerateMeshIndices |
             fastgltf::Options::DecomposeNodeMatrices;
-        auto parsed = parser.loadGltfBinary(input.get(), path.parent_path(), options, fastgltf::Category::All);
+        const auto json_options = options | fastgltf::Options::LoadExternalBuffers |
+            fastgltf::Options::LoadExternalImages;
+        auto parsed = binary_container
+            ? parser.loadGltfBinary(input.get(), path.parent_path(), options, fastgltf::Category::All)
+            : parser.loadGltfJson(input.get(), path.parent_path(), json_options, fastgltf::Category::All);
         if (!parsed) {
             result.code = "gltf.fastgltf-parse-failed";
             result.detail = fastgltf::getErrorMessage(parsed.error());
@@ -878,6 +1250,43 @@ GltfMeshData decode_glb_mesh_fastgltf(const GltfBinaryContainer& container, cons
 
 #endif
 
+GltfMeshData decode_gltf_mesh(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(), [](const unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    if (extension == ".glb") return decode_glb_mesh(path);
+
+    GltfMeshData result;
+    if (extension != ".gltf") {
+        result.code = "gltf.unsupported-container";
+        result.detail = "Only GLB 2 and JSON .gltf sources are supported.";
+        return result;
+    }
+    const auto snapshot = read_gltf_source_snapshot(path);
+    if (!snapshot.valid) {
+        result.code = snapshot.code;
+        result.detail = snapshot.detail;
+        return result;
+    }
+#if NOEMANCER_HAS_FASTGLTF
+    // fastgltf must never resolve authoring-tree dependencies directly. The
+    // source document and every approved external URI are copied from the
+    // engine-owned immutable snapshot into an isolated directory first.
+    ScopedGltfSnapshotDirectory staging(snapshot);
+    if (!staging.valid()) {
+        result.code = staging.code();
+        result.detail = staging.detail();
+        return result;
+    }
+    return decode_gltf_mesh_fastgltf(snapshot.storage, staging.document_path(), false);
+#else
+    result.code = "gltf.fastgltf-unavailable";
+    result.detail = "JSON glTF decoding requires the private fastgltf importer dependency.";
+    return result;
+#endif
+}
+
 GltfMeshData decode_glb_mesh(const std::filesystem::path& path) {
     GltfMeshData result;
     const auto container = read_glb_container(path);
@@ -891,7 +1300,7 @@ GltfMeshData decode_glb_mesh(const std::filesystem::path& path) {
     // The validated container is the ownership boundary; fastgltf only receives
     // a private copy of those bytes and its third-party records never cross this
     // function's plain-data API.
-    const auto fastgltf_result = decode_glb_mesh_fastgltf(container, path);
+    const auto fastgltf_result = decode_gltf_mesh_fastgltf(container.storage, path, true);
     if (fastgltf_result.valid) return fastgltf_result;
 #endif
     try {

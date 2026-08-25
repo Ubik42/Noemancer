@@ -108,6 +108,45 @@ struct GltfBinaryContainer final {
     }
 };
 
+struct GltfExternalResourceSnapshot final {
+    std::string uri;
+    std::string normalized_relative_path;
+    std::string kind;
+    std::string content_hash;
+    std::uint64_t source_bytes{};
+    std::vector<std::byte> storage;
+};
+
+struct GltfSourceSnapshotLimits final {
+    std::uint64_t maximum_document_bytes{64ULL * 1024ULL * 1024ULL};
+    std::uint64_t maximum_dependency_bytes{512ULL * 1024ULL * 1024ULL};
+    std::uint64_t maximum_total_bytes{1024ULL * 1024ULL * 1024ULL};
+    std::size_t maximum_dependencies{4096U};
+};
+
+// External files are discovered before fastgltf runs, normalized beneath the
+// source directory, bounded, hashed and copied into engine-owned storage.
+// JPEG dependencies can be captured, but decoding remains explicitly
+// unsupported by the current PNG-only image decoder.
+struct GltfSourceSnapshot final {
+    bool valid{};
+    std::string code;
+    std::string detail;
+    std::filesystem::path source_path;
+    std::string content_hash;
+    std::uint64_t source_bytes{};
+    std::uint64_t total_bytes{};
+    std::vector<std::byte> storage;
+    std::vector<GltfExternalResourceSnapshot> dependencies;
+};
+
+struct GltfDependencyVerification final {
+    bool unchanged{};
+    std::string code;
+    std::string detail;
+    std::string normalized_relative_path;
+};
+
 struct GltfMeshData final {
     bool valid{};
     std::string code;
@@ -125,6 +164,13 @@ struct GltfMeshData final {
 using DecodedSceneAsset = GltfMeshData;
 
 [[nodiscard]] GltfBinaryContainer read_glb_container(const std::filesystem::path& path);
+[[nodiscard]] GltfSourceSnapshot read_gltf_source_snapshot(
+    const std::filesystem::path& path,
+    const GltfSourceSnapshotLimits& limits = {});
+[[nodiscard]] GltfDependencyVerification verify_gltf_source_snapshot(
+    const GltfSourceSnapshot& snapshot,
+    const GltfSourceSnapshotLimits& limits = {});
+[[nodiscard]] GltfMeshData decode_gltf_mesh(const std::filesystem::path& path);
 [[nodiscard]] GltfMeshData decode_glb_mesh(const std::filesystem::path& path);
 void compute_decoded_scene_bounds(DecodedSceneAsset& asset);
 

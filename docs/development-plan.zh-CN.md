@@ -1,10 +1,9 @@
 # Noemancer 当前开发计划
 
 > 状态：Current
-> 更新日期：2026-08-24
+> 更新日期：2026-08-25
 > 权威范围：当前目标、执行顺序、退出条件和验证层级。
 > 历史进展不保存在本页；旧版长日志可从 Git revision `3e15f66^` 查阅。
-
 ## 产品目标
 
 先把 Noemancer 做成一个自洽、可独立创建和编辑项目的通用引擎，再用 `D:\3D\NoemancerPlatformer` 平台跳跃工程验证 2D 游戏生产闭环，最后扩展 Hybrid Pixel / HD2D Profile。游戏规则应位于项目 C#，不能为了快速演示固化进引擎 C++。`game.lumen-run` 与 `lumen.*` 稳定 ID 暂作兼容身份；旧证据中的 “Lumen Run” 均指同一工程，不再作为产品或目录名称。
@@ -18,6 +17,37 @@ Noemancer 的差异化集中在：
 
 ## 当前执行前沿
 
+### 当前主线：商业渲染强化与公开场景验证
+
+第一阶段通用生产闭环、编辑器基础、Cook/Package/Player、Agent Authority 和 Hybrid Pixel 纵切已经成立，但这不等于引擎只剩边角料。渲染仍有商业化能力缺口，因此产品优先级从 UI 收尾切回 Rendering；高 DPI、可再分发多语字体和 cluster-aware 编辑保留在队列中，不删除也不与渲染批次混写。
+
+独立验收工程 `D:\3D\NoemancerRenderLab` 是渲染真实性客户，不属于引擎源码，也不建立第二套 Scene/Asset Schema。它由正式 Project Workspace Authority 创建，当前包含：
+
+- 内置几何体 Raster 基线：PBR 金属度/粗糙度矩阵、方向/点/聚光、方向与局部阴影、HDR 自发光、Tone Mapping、深度与纹理采样；
+- Khronos CC0 经典资产 Gallery：MetalRoughSpheresNoTextures、BoomBox、Lantern，模型、上游 Metadata、License 和 SHA-256 一并固定；
+- 大型场景候选矩阵：Intel Sponza 与 Amazon Bistro 只按需下载；当前 Khronos/Crytek Sponza 因上游来源许可争议不得进入默认公开 Fixture。
+
+渲染批次的顺序与退出条件：
+
+1. `commercial-raster.render-lab-classic-scene-contract` 已退出：`generated/acceptance/render-lab-classic-scene-20260825-final/` 固定 1440×900 机位、三项 Khronos CC0 GLB、项目/场景/Registry/素材 SHA-256、质量 sidecar、Render Graph/Shader 指纹与 D3D12/Vulkan 双后端；Release Package Player 两后端 CPU Frame p95 为 1.56/1.41 ms，均为 3 Cooked Load、0 Source Decode、0 Offline Compile，包内源模型为 0。SDL_GPU 无 timestamp API，四路 GPU 数据均明确 unavailable。源码 Editor 路径同时暴露出 D3D12/Vulkan 834/1015 ms p95 的严重 UI 命令录制异常，不能拿 Player 结果掩盖。
+2. `asset.gltf-external-resource-jpeg-and-large-scene-readiness`：当前 `.gltf` 外部 buffer/PNG 已通过引擎所有不可变快照、URI 归一化、越界/URL/盘符拒绝、预算、SHA-256 复验、隔离 staging 与 fastgltf 实际三角形/纹理解码；继续 Adopt 成熟 JPEG 解码器并以真实大 Scene 依赖/预算探针退出，保留 Cooked-only Player 和许可证闭包。
+3. `performance.editor-retained-ui-command-recording`：用持久性能分段精确拆出 ImGui、Retained 主表面、Inspector/Outliner/Asset Browser upload/render 与资源 cycling，消除 RenderLab 源项目 1 FPS 级退化；不得通过隐藏面板或降低场景负载规避。
+4. `performance.gpu-pass-timestamp-foundation`：先在 SDL_GPU 路径真实输出 unsupported/capability，再以最小 Native D3D12/Vulkan 诊断 Adapter 建立图内 marker、frame-ring、延迟读回、availability 与 overflow；没有有效值时禁止输出 `0` 冒充 GPU 时间。
+4. `render.dynamic-sky-atmosphere`：Wicked 多 LUT/raymarch 作为高质量参考，Godot Preetham 作为低成本档；真实 Render Graph 具备 transmittance/multi-scatter/sky-view、时间/天气、跨后端降级和 RenderLab 对照。
+5. `render.screen-space-hiz-history-and-temporal-denoising`：先统一深度金字塔、motion/depth/normal history、disocclusion、clamp 与 reset 语义，再供 SSR/SSGI 复用，避免每个效果各造一套 history。
+6. `render.ssr-production-path` 与 `render.ssgi-production-path`：分别具备可见开关、质量档、时域稳定性、洞/漏光诊断、GPU 成本与无历史降级；存在代码但未接默认 Render Graph 不算完成。
+7. `render.bindless-gpu-scene-and-occlusion-decision`：用 descriptor churn、CPU submission、visible ratio 与 GPU 时间复审 bindless、GPU Scene 和 HiZ occlusion；不为了热门名称提前引入半套新 Renderer。
+8. `render.shadow-scalability-vsm-decision`：以当前 CSM/local shadow 的真实场景数据决定 VSM/virtualized shadow map 路线；先写 ADR 和预算，不因名称流行就复制 UE 实现。
+9. `render.native-rhi-raytracing-foundation` → `render.rtgi-production-path`：先证明真实 D3D12 DXR/Vulkan RT 资源、BLAS/TLAS、同步、Shader 和设备能力矩阵，再接 RTGI、Denoiser 与 Raster fallback；SDL_GPU 后端不能伪报硬件光追已成立。
+
+每项高级效果必须同时给出：启用的 Render Graph 节点、可观察参数、固定场景 A/B、GPU/显存预算、历史重置规则、跨后端结果和不支持平台的明确降级。只写 Shader、结构体或测试桩不计完成。
+
+### 参考实现驱动的开发门禁
+
+渲染、物理、动画、音频、资产和平台内核不再默认从零自写。每个高级批次先精读固定提交的成熟实现并形成 adoption record：精确仓库/提交/文件、根许可证和二级 Notice、`Adopt | Port | Adapt | Reject`、关键修改、Artifact ID 与验证证据。优先 Adopt 独立成熟中间件；对许可兼容、输入输出可切断的算法和 Shader 直接 Port；对绑定外部 RHI、全局状态或资源系统的实现 Adapt 其 pass 分解、数据布局、质量档和 failure mode；不能关闭许可、维护或目标 workload 的方案 Reject。
+
+当前固定代码级地图见 [参考实现驱动的高性能渲染计划](research/2026-reference-driven-render-performance-plan.zh-CN.md)。Wicked Engine/Godot 允许按各自 MIT 与二级 Notice 合规移植；原则是“Port shader/math，Adapt orchestration/data ownership”。Unreal Engine 只用于 RDG、VSM、Lumen、TSR、GPU Scene 等生产边界研究，禁止复制受 EULA 管辖的源码、Shader、宏和类型。每项效果必须从公开 RenderLab Project 走到真实 Render Graph、固定 A/B、双后端证据和性能合同；不得靠降低对象、分辨率、灯光、采样或材质复杂度伪造收益。
+
 ### 已完成基底：生产后端去临时实现
 
 miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 BasisLZ/UASTC 与 meshoptimizer Mesh Cook 已接入。Asset Registry 会把 GLB/FBX 从不可变源快照 Cook 为内容与配方共同寻址的 `noemancer/meshbin/0.2`，也会按 base-color/normal/data/emissive/UI 语义把 PNG 编码为 KTX2；Player 直接校验并加载 Cooked Geometry，不带源模型解析或离线编译路径。Runtime 通过私有 libktx Adapter 校验并转码为可移植 RGBA8 上传。第三方类型仍封闭在 Adapter，Headless 参考 Mixer 与 Editor 源模型预览只作为明确边界内的路径，不进入发行包。
@@ -26,7 +56,17 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 
 当前 `/goal` 使用稳定目标，不在 Prompt 内复制会迅速过期的切片名或性能数字；瞬时队列只由 `docs/current-state.json.currentFrontier` 表达。可直接使用的目标文本如下：
 
-> 持续把 `D:\cs\Noemancer`（Noemancer）推进为可由人类与 AI Agent 共同创建、编辑、调试、运行、打包和发布真实游戏的完整通用引擎，并以 `D:\3D` 下的独立游戏工程作为生产验收客户。每次恢复先完整读取仓库 `AGENTS.md`、`docs/current-state.json`、`docs/architecture.md`、`docs/development-plan.zh-CN.md` 与 `docs/first-acceptance-status.zh-CN.md`；只从 `currentFrontier` 首个未阻塞项选择最大连贯、可审查的通用引擎批次，历史研究不作当前指令。采用 Sol 主代理集成与最多三个写集互不重叠的 `luna_worker` 并行实际开发；优先交付代码、聚焦测试、Fixture 和结构化证据，不用多个只读审计 lane 填满并发，也不等待子 Agent 而让主线程空转。保持 `noemancer_engine <- noemancer_editor <- runtime` 依赖方向；成熟中间件优先并封装在 plain-data Adapter 后，第三方类型不得进入 Scene、Prefab、项目 C# 或公共 RPC。GUI、CLI、Agent、脚本与测试必须共用领域 Authority；公共写操作逐步具备 Plan/Apply/Receipt、revision、dry-run、事务与 undo。游戏规则留在项目 C#，不得把验收游戏专用逻辑固化进引擎。每批执行“读取真实路径—并行实现—主代理集成审查—风险分级验证—原地改写过时权威状态—提交并推送—继续下一项”；不逐文件编译，不用减少 workload 伪造性能提升，不为无关变化运行全量测试。测试必须无交互、无 CRT 弹窗；GPU 验证使用隐藏进程和本地捕获，不使用 Computer Use。只在用户明确停止、里程碑需要人工验收、确需新的产品/架构授权，或同一外部阻塞反复出现且没有安全替代路径时停止；旧对话中的暂停文字、已完成切片和单个慢测试都不是停止理由。每个批次边界保持工作树可恢复、文档无矛盾、证据落在 `generated/`、代码已推送。
+> 持续把 `D:\cs\Noemancer` 推进为可由人类与 AI Agent 共同创建、编辑、调试、运行、打包和发布真实游戏的高性能通用引擎，并以 `D:\3D` 下的独立项目，尤其 `D:\3D\NoemancerRenderLab`，作为公开产品路径的真实性客户。每次恢复必须先完整读取仓库 `AGENTS.md`、`docs/current-state.json`、`docs/architecture.md`、`docs/development-plan.zh-CN.md` 与 `docs/first-acceptance-status.zh-CN.md`；瞬时队列只认 `currentFrontier`，旧对话、历史研究、已完成切片和旧暂停文字都不是当前指令。
+>
+> 从 `currentFrontier` 首个未阻塞项选择最大连贯、可审查的通用引擎批次。各领域默认先做 build-vs-buy 与参考实现检索：优先 Adopt 成熟中间件；Port 许可兼容且可隔离的算法、Shader 和数据布局；Adapt 深度耦合实现的 pass 分解、资源策略、质量档和 failure mode；不能满足许可证、维护或目标 workload 时 Reject。每次高级渲染实现前记录精确上游提交/文件、许可证、修改和验证。Wicked/Godot 可合规移植并进入许可证台账；Unreal Engine 只研究生产约束，禁止复制其受 EULA 管辖的实现。第三方类型封闭在 plain-data Adapter 后，不得进入 Scene、Prefab、项目 C#、Semantic State Plane 或公共 RPC。
+>
+> Sol 主代理负责架构、共享接口、集成、权威文档、最终验证和 Git 边界；存在互不重叠且并行收益高的工作时，主动启用最多三个 `luna_worker` 实际开发 lane。优先多个 Writer 加至多一个解除关键不确定性的 Research lane，不用三个只读审计填满并发，不让主线程空等。共享 CMake、公共 Schema、World、Renderer/Render Graph/Editor 集中点和权威状态默认由 Sol 串行集成。
+>
+> 保持 `noemancer_engine <- noemancer_editor <- runtime`。GUI、CLI、Agent、脚本与测试共用领域 Authority；公共写操作逐步具备 Plan/Apply/Receipt、revision、dry-run、事务与 undo。游戏规则留在项目 C#。每项渲染能力必须进入真实 Render Graph 和公开项目路径，并提供稳定身份、参数/质量档、history reset、debug view、unsupported/fallback、固定机位 A/B、D3D12/Vulkan 证据、CPU 成本、可用时逐 Pass GPU 时间和显存语义。只有 Shader、结构体、测试桩或未启用分支不算完成；没有 GPU Timestamp 不得宣称 GPU 改善；不得缩减 workload 伪造优化。
+>
+> 每个 Ralph Loop 执行：读取真实执行路径与固定参考源码 → 划分独立 lane → 累积 coherent subsystem batch → Sol 审查 diff 与许可证/provenance → 用 `scripts/engine.ps1` 编译受影响目标 → 运行最小相关测试和直接探针 → GPU 变化时以隐藏进程捕获且不使用 Computer Use → 原地改写过时权威状态 → governance audit → 提交并推送 → 继续下一未阻塞项。不逐文件编译，不机械增加测试，不因单个慢测试重复全量套件；只有公共 Schema、共享 World/Runtime、构建依赖、跨 RHI 或里程碑才跑全量，Agent ABI 变化才增加 MCP smoke。测试必须无交互、无 CRT 弹窗，证据进入 `generated/`。
+>
+> 保持 dirty worktree 安全，不覆盖、不 reset、不 checkout 用户或并行 Agent 修改。持续推进，仅在用户明确停止、需要人工验收的里程碑、确需新产品/架构授权，或同一外部阻塞连续重复且不存在安全替代路径时停止；普通实现选择、旧任务残留、暂时无 GPU telemetry、单个测试失败或子 Agent 等待都不是自动暂停理由。
 
 当前长期开发由 Codex `/goal` 持续恢复，并采用批量 Ralph Loop，而不是每改一个文件就停下来测试或汇报：
 
@@ -35,8 +75,6 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 3. 同批次允许累计多个相关改动。只有 API/依赖不确定会让后续工作建立在猜测上时才提前编译；否则在集成边界统一编译受影响目标、运行最小相关测试集和一个必要探针。
 4. 主代理审阅真实 diff，解决跨 Lane 接口问题；Worker 的完成报告不直接等于工程完成态。
 5. 满足本项退出条件后，原地更新本页、`current-state.json` 与能力状态中的旧描述，并立即推进下一个未阻塞批次。Git 保存流水历史，权威文档只保存现在时。
-
-若启用并行，多个 Writer 不得触碰同一文件或同一权威状态；关键路径无法独立拆分时由主代理直接实现。循环仅在需要产品决策/新授权、同一外部阻塞反复出现、到达里程碑验收或用户明确暂停时停止。持续性来自 Codex Goal，不是定时任务，也不通过脚本递归发送 Prompt。
 
 互不依赖的后台资产 Job、Play World 差异、调试 Transport 和打包清单可以在写集隔离时并行；共享 CMake、公共 Schema、编辑器状态汇合点和最终 Runtime 接口由主代理串行集成。开发期 Sol/Luna 角色不属于引擎内 Runtime Agent、Semantic State Plane 或 MCP 公共 ABI。
 
@@ -153,6 +191,8 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 `editor.retained-outliner-and-asset-browser` 与 `editor.retained-authoring-actions` 已退出：Outliner 与 Asset Browser 都使用 renderer-neutral 有界文档、独立 RmlUi/SDL_GPU Surface、明确输入坐标、稳定选择和真实项目隐藏整窗证据；Asset Browser 还闭合了真实 Thumbnail Artifact 与 >256 资源导航。`presentation.inlineActionIds` 只是最多八项的可见动作白名单，按钮仍携带语义文档中的完整 binding；Outliner Create/Rename/Copy/Duplicate/Reparent/Delete/Paste 与 Asset Browser Import/Inspect/Build Preview/Cook 经统一 Runtime Adapter 核验 source revision、entity revision、选中实体/资产、Edit/Play 权限、确认状态和 Asset Job 忙碌状态，再调用既有 `EditorModel`，返回 `noemancer.retained-authoring-action-receipt/0.1`。通用 action `input`/`confirmation` 支持有界 text/combo/required checkbox；窄 Outliner 将含表单动作纵向布局，纯按钮 collection 仍横排。Reparent 候选排除自身与后代，领域 Model 仍最终拒绝不存在父级与循环；Delete 未显式确认绝不产生 mutation。没有复制 Scene、Registry、Selection、Thumbnail Cache、后台 Job 或 Undo。ImGui 继续承载 Dockspace、Profiler、Render Debugger、长任务和尚未迁移的低层工具。
 
 `editor.project-hub-recent-workspaces` 与 `editor.dpi-localization-visual-matrix` 已退出。用户级最近工程 Store 使用 `noemancer.recent-workspaces/0.1`、有界严格 JSON、revision、写前重读与原子替换；损坏状态不阻断 Editor，下一次成功打开可恢复。UI 矩阵新增有界 `--ui-scale`、同源 locale 传播、ImGui/RmlUi 统一密度、全 `dp` Retained 样式、原始/可执行溢出诊断和 3×3 隐藏验收。固定 1440×900 下 9/9 运行通过，Inspector 组件高度随 1.0/1.5/2.0 从 32→49→64，项目指纹不变；证据位于 `generated/acceptance/ui-localization-matrix-current-v11/`。这只证明当前 Windows 主机的平台字体 fallback、Inspector RTL 与可滚动 Retained 面板；图像抽查显示 2.0 倍固定小画布的 ImGui 顶栏/工具栏仍会截断，且不是全编辑器 RTL。当前前沿因此是 `editor.high-dpi-responsive-chrome`，随后才是可再分发 CJK/Arabic fallback 与 cluster-aware 编辑；不得把平台字体存在等同于可发行包闭环。
+
+中文产品入口已补上首批纵切：官方 Launcher 默认 `zh-CN` 并允许 `-Locale en-US`，Editor 菜单可即时切换简体中文/English；Project Hub、菜单、Command Bar、主面板标题和既有声明式 Inspector/HUD 词条使用同一当前 locale。Windows ImGui 使用宿主微软雅黑简体中文字形范围，解决当前开发机的 Chrome 缺字。语言偏好持久化、剩余专业面板词条、可再分发字体与跨平台 fallback 仍随 `editor.redistributable-cjk-arabic-fallback-and-cluster-editing` 收口；高 DPI 响应式 Chrome 保留为渲染强化批次之后的首个 Editor 前沿。
 
 该最小纵切的退出不等于完整射击游戏生产栈：当前 Prefab 生成/销毁仍重建完整 Scene，项目碰撞使用有界实体观察上的半径判断；只有后续更大迁移或性能证据表明需要时，才增加池化生成和原生批量重叠查询。Hybrid Pixel/HD2D 项目仍在 Pixel Grid、Sprite normal/depth/material、混合光照和像素 VFX 的核心 Profile 成立后启动。任何迁移都不得因单个游戏的特殊需求向 Engine/Runtime C++ 写入专用规则；需求只有在能抽象为稳定通用能力，并通过独立 Fixture、Schema/命令、最小回归与性能证据后，才回写引擎。
 

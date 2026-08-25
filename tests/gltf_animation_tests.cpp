@@ -18,6 +18,13 @@
 
 namespace {
 
+struct ExternalGltfFixture final {
+    std::filesystem::path root;
+    std::filesystem::path document;
+    std::filesystem::path buffer;
+    std::filesystem::path image;
+};
+
 template <typename T>
 void append(std::vector<std::byte>& bytes, const T value) {
     const auto begin = bytes.size();
@@ -105,10 +112,96 @@ std::filesystem::path make_minimal_skinned_glb(const std::string& alpha_mode="MA
     return path;
 }
 
+void write_text(const std::filesystem::path& path,const std::string& value){
+    std::ofstream output(path,std::ios::binary|std::ios::trunc);
+    output.write(value.data(),static_cast<std::streamsize>(value.size()));
+}
+
+ExternalGltfFixture make_external_gltf_fixture(){
+    ExternalGltfFixture fixture;
+    fixture.root=std::filesystem::temp_directory_path()/"noemancer-gltf-external-snapshot-tests";
+    fixture.document=fixture.root/"scene.gltf";
+    fixture.buffer=fixture.root/"geometry"/"mesh.bin";
+    fixture.image=fixture.root/"textures"/"base.png";
+    std::error_code ignored;std::filesystem::remove_all(fixture.root,ignored);
+    std::filesystem::create_directories(fixture.buffer.parent_path());
+    std::filesystem::create_directories(fixture.image.parent_path());
+    std::vector<std::byte> geometry;
+    for(const float value:std::array{-0.5F,0.0F,0.0F,0.5F,0.0F,0.0F,0.0F,1.0F,0.0F})
+        append(geometry,value);
+    {std::ofstream output(fixture.buffer,std::ios::binary|std::ios::trunc);
+     output.write(reinterpret_cast<const char*>(geometry.data()),static_cast<std::streamsize>(geometry.size()));}
+    constexpr std::array<std::uint8_t,16> pixels{
+        255,0,0,255,0,255,0,255,0,0,255,255,255,255,255,255};
+    const auto png=noemancer::encode_png_rgba8(2U,2U,pixels);
+    {std::ofstream output(fixture.image,std::ios::binary|std::ios::trunc);
+     output.write(reinterpret_cast<const char*>(png.bytes.data()),static_cast<std::streamsize>(png.bytes.size()));}
+    const nlohmann::json document={
+        {"asset",{{"version","2.0"}}},
+        {"buffers",{{{"uri","geometry/mesh.bin"},{"byteLength",geometry.size()}}}},
+        {"bufferViews",{{{"buffer",0},{"byteOffset",0},{"byteLength",geometry.size()}}}},
+        {"accessors",{{{"bufferView",0},{"componentType",5126},{"count",3},{"type","VEC3"}}}},
+        {"images",{{{"uri","textures/base.png"},{"mimeType","image/png"}}}},
+        {"textures",{{{"source",0}}}},
+        {"materials",{{{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}}}}}}},
+        {"meshes",{{{"primitives",{{{"attributes",{{"POSITION",0}}},{"material",0}}}}}}},
+        {"nodes",{{{"mesh",0}}}},
+        {"scenes",{{{"nodes",{0}}}}},
+        {"scene",0}
+    };
+    write_text(fixture.document,document.dump());return fixture;
+}
+
+std::filesystem::path write_uri_fixture(const std::filesystem::path& root,
+                                        const std::string& name,
+                                        const std::string& uri){
+    const auto path=root/name;
+    write_text(path,nlohmann::json{{"asset",{{"version","2.0"}}},
+        {"buffers",{{{"uri",uri},{"byteLength",4}}}}}.dump());
+    return path;
+}
+
 } // namespace
 
 int main() {
     std::error_code ignored;
+    const auto external=make_external_gltf_fixture();
+    const auto snapshot=noemancer::read_gltf_source_snapshot(external.document);
+    if(!snapshot.valid||snapshot.dependencies.size()!=2U||
+       snapshot.dependencies[0].normalized_relative_path!="geometry/mesh.bin"||
+       snapshot.dependencies[1].normalized_relative_path!="textures/base.png"||
+       !snapshot.content_hash.starts_with("sha256:")||
+       snapshot.total_bytes!=snapshot.source_bytes+
+           snapshot.dependencies[0].source_bytes+snapshot.dependencies[1].source_bytes){
+        std::cerr<<snapshot.code<<": "<<snapshot.detail<<'\n';return 15;
+    }
+    if(!noemancer::verify_gltf_source_snapshot(snapshot).unchanged)return 16;
+    const auto external_decoded=noemancer::decode_gltf_mesh(external.document);
+    if(!external_decoded.valid||external_decoded.vertices.size()!=3U||
+       external_decoded.indices.size()!=3U||external_decoded.primitives.size()!=1U||
+       external_decoded.images.size()!=1U||!external_decoded.images[0].valid||
+       external_decoded.images[0].mime_type!="image/png"||
+       external_decoded.primitives[0].base_color_image!=0){
+        std::cerr<<"Immutable external JSON glTF snapshot did not decode through fastgltf: "
+                 <<external_decoded.code<<": "<<external_decoded.detail<<'\n';
+        std::filesystem::remove_all(external.root,ignored);return 17;
+    }
+    const std::array<std::string,4> unsafe_uris{
+        "../outside.bin","%2e%2e/outside.bin","C:/outside.bin","https://invalid/mesh.bin"};
+    for(std::size_t index=0;index<unsafe_uris.size();++index){
+        const auto rejected=noemancer::read_gltf_source_snapshot(
+            write_uri_fixture(external.root,"unsafe-"+std::to_string(index)+".gltf",unsafe_uris[index]));
+        if(rejected.valid||rejected.code!="gltf.external-uri-unsafe")return 18;
+    }
+    noemancer::GltfSourceSnapshotLimits small;small.maximum_dependency_bytes=1U;
+    if(noemancer::read_gltf_source_snapshot(external.document,small).code!=
+       "gltf.dependency-budget-exceeded")return 19;
+    {std::fstream changed(external.buffer,std::ios::binary|std::ios::in|std::ios::out);
+     const char byte='\x01';changed.write(&byte,1);}
+    const auto changed=noemancer::verify_gltf_source_snapshot(snapshot);
+    if(changed.unchanged||changed.normalized_relative_path!="geometry/mesh.bin")return 20;
+    std::filesystem::remove_all(external.root,ignored);
+
     const auto path = make_minimal_skinned_glb();
     const auto container = noemancer::read_glb_container(path);
     if (!container.valid || container.version != 2U || container.source_bytes == 0U ||

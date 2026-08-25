@@ -1,7 +1,7 @@
 # Noemancer 当前能力与验收边界
 
 > 状态：Current evidence index
-> 更新日期：2026-08-24
+> 更新日期：2026-08-25
 > 本页只说明“已经能做什么”和“真实缺口是什么”，不安排开发顺序。
 > 旧版逐批进展日志可从 Git revision `3e15f66^` 查阅，不再作为当前上下文。
 
@@ -25,6 +25,13 @@
 | Gameplay | 项目级 Input Action/Binding（键盘、手柄、scale、dead zone）贯通 Edit/Play/Headless/打包 Player；托管 public state 同步服务热重载、HUD 与 Agent；Lumen Run C# 已按 CharacterMotor2D/velocity 驱动 Sprite idle/run/jump/fall，并以项目音频 Asset ID 响应跳跃、收集、检查点和重生；Prefab、Ability/Effect、Tag、Trigger；动态生命周期保留 live Transform/Velocity、为克隆脚本分配唯一身份并在销毁时清理脚本和 Ability/Effect 引用；Save/Replay `0.2`、C# 语义请求、World 有界队列与 Runtime 原子用户数据槽已贯通；Starfall Gauntlet 已完全在项目 C# 实现移动、射击、波次、战斗、得分/生命和 HUD | 当前 Prefab 生成/销毁仍重建完整 Scene，Starfall 战斗使用项目层半径判定；池化生命周期和批量重叠查询由更大迁移或性能证据触发；存档槽管理界面尚缺 |
 | 网络 | 确定性复制模型、TCP/UDP 双进程验证、结构化状态 | 原始 Transport 是验证纵切，不是生产可靠/加密网络；进入产品需求时迁移 GameNetworkingSockets |
 | Agent | C++ Command Registry、CLI/direct JSON/MCP、Schema discovery、revision、query/delta、plan/apply/receipt、undo/redo、UI/Render/Build/Debug 语义证据；Animation Graph 与 Project UI source authoring已进入同一 ABI；交互式 Editor 发布本机 same-user 命名管道 Session，MCP 可发现/选择并通过主线程操作该 Editor 现有 World、Asset、Project UI 与 undo journal；`editor.context.observe/intent` 还把真实 Project/Scene、Edit/Play、Outliner/Inspector 选择、焦点、Dock/Tab 与最近事务接到同一 EditorUi Authority；无 Session 时保留 `serve --project` 自动化回退 | Standalone 仍是有意隔离的 detached/bootstrap 或 project-owned automation，不追求把每个内部函数包装成工具；后续按新领域能力同步高价值复合命令 |
+
+### GUI、本地化与渲染能力澄清
+
+- Editor 不是“全 RmlUi”或“全声明式”实现：Dock、菜单、Project Hub、Scene View、Animation Graph、Console 与 Agent Context 仍由 Dear ImGui 承载；Edit Inspector 属性区、World Outliner、Asset Browser collection 和项目/游戏 UI 已走 Semantic UI → RmlUi retained/declarative → SDL_GPU。两部分共用领域 Authority，但绘制模型不同。
+- 官方启动器现在默认 `zh-CN`，主菜单提供简体中文/English 即时切换；Project Hub、菜单、Command Bar、主面板标题和已有 Semantic Inspector/HUD 词条已有首批中文。ImGui 在 Windows 优先加载微软雅黑简体中文字形范围。当前仍不是完整汉化，也未持久化用户语言偏好；可再分发 CJK 字体仍属于当前前沿。
+- 当前真实启用的商业 Raster 路径是 Forward PBR 直接光、split-sum IBL、四级 CSM/局部阴影缓存与 PCF、TAA、GTAO 加空间双边降噪、Bloom、曝光/调色和 ACES Tone Mapping。FXAA 只有兼容 Shader/Pipeline/录制分支，默认 Render Graph 未调度，不能标为已启用。RTGI、Virtual/Variance Shadow Maps、Raymarching 动态天空大气、通用 Temporal Denoising、SSR 和 SSGI 均尚未实现；TAA、GTAO 和静态程序化 IBL 不得分别冒充这些能力。
+- 当前已成立的高性能基础还包括 GPU static opaque 视锥 compact/indexed indirect、稳定 batching/细粒度 dirty upload、KTX2 streaming、meshoptimizer Cook、GPU VFX 和 Render World extraction。未成立的是逐 Pass GPU timestamp、occupancy/bandwidth、物理 VRAM residency、Native RHI、DXR/Vulkan RT、bindless descriptor、HiZ/HZB occlusion、共享 Temporal History、动态多 LUT 大气、VSM 与 RTGI；`TextureResourceTable` 只证明稳定资源身份和 slot，当前六平面视锥剔除不是 HiZ。现有 Release 性能合同和 GPU-driven A/B 给出 CPU Frame/Scene Record 与可见集合正确性；当前主机 PresentMon 没有有效 GPU 行，因此不得称为 GPU Pass 性能改善。商业级、领先或极致性能仍是目标，只有同一公开 workload、同画质合同、跨后端且可复现的 GPU 数据才能升级这些表述。
 
 ## 当前可靠证据
 
@@ -94,7 +101,7 @@
 ## 下一阶段边界
 
 1. `production.cooked-animation-artifact` 与 `production.cooked-geometry-runtime` 均已用真实 Package→Player 闭环退出；Editor 源资产成功不再替代包内 Runtime 证据。
-2. 已完成项以 `docs/current-state.json.completedMilestones` 为准；live Editor transport/context、VFS/Package Mount、完整 retained Outliner/Asset Browser、retained authoring、最近工程与 DPI/本地化隐藏矩阵均已退出。当前前沿是 `editor.high-dpi-responsive-chrome`：先让 ImGui 顶栏、工具栏、Dock 最小尺寸与 Retained 面板在 1.5/2.0 倍固定画布上保持可操作，再进入可再分发 CJK/Arabic fallback、全编辑器 RTL 与 cluster-aware 编辑。managed assembly 与离线 FBX/GLB 仍是后端要求下的显式私有物理 Adapter，不作为未完成 VFS 迁移拖住主线。
+2. 已完成项以 `docs/current-state.json.completedMilestones` 为准。RenderLab 公开合同已由 `generated/acceptance/render-lab-classic-scene-20260825-final/` 双后端退出：三项真实 CC0 GLB、固定机位/质量/身份、Cook→Package→Player cooked-only 闭环成立，Package D3D12/Vulkan CPU Frame p95 为 1.56/1.41 ms；GPU timestamp 仍明确 unavailable。当前前沿为外部 `.gltf`/JPEG/大场景，其中外部 buffer/PNG 的安全不可变快照与真实 fastgltf 解码已完成；其后立即修复同一证据揭示的 Editor Retained UI 命令录制 D3D12/Vulkan 834/1015 ms p95 严重退化，再推进 GPU timestamp、大气、共享 HiZ/history/Temporal Denoising、SSR、SSGI、阴影扩展和真实 Ray Tracing/RTGI。高 DPI 与可再分发多语字体仍在队列中。
 3. Project-attached Agent transport 已成立；对另一个已打开 Editor 的远程会话、跨进程共享 durable journal、独立机器矩阵、签名和安装器仍是独立后续工作，不混入当前 VFS 迁移批次。
 
 ## 游戏迁移节奏
