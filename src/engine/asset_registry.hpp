@@ -2,12 +2,15 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace noemancer {
+
+class VirtualFileSystem;
 
 struct AssetRecord final {
     std::string id;
@@ -71,9 +74,20 @@ struct AnimationGraphSourceValidation final {
 class AssetRegistry final {
 public:
     explicit AssetRegistry(std::filesystem::path asset_root = default_asset_root());
+    // Initializes the primary root from an already acquired manifest while
+    // retaining the physical root as the source/cook/write authority.
+    AssetRegistry(std::filesystem::path asset_root, std::string registry_json);
+    // Reads and validates the primary manifest through VFS without exposing a
+    // filesystem path to registry consumers. Asset source paths remain rooted
+    // at the explicit trusted asset_root boundary.
+    AssetRegistry(std::filesystem::path asset_root, std::shared_ptr<const VirtualFileSystem> vfs,
+        std::string registry_uri, std::size_t byte_budget = 8U * 1024U * 1024U);
 
     [[nodiscard]] bool refresh();
     [[nodiscard]] bool add_root(std::filesystem::path asset_root);
+    [[nodiscard]] bool add_root_from_vfs(std::filesystem::path asset_root,
+        std::shared_ptr<const VirtualFileSystem> vfs, std::string registry_uri,
+        std::size_t byte_budget = 8U * 1024U * 1024U);
     [[nodiscard]] const std::vector<AssetRecord>& records() const noexcept;
     [[nodiscard]] const std::vector<std::string>& errors() const noexcept;
     [[nodiscard]] const AssetRecord* find(std::string_view asset_id) const noexcept;
@@ -115,9 +129,17 @@ private:
         std::string manager;
         std::uint64_t transaction_id{};
     };
+    struct RegistrySource final {
+        std::optional<std::string> json;
+        std::optional<std::string> error;
+        std::shared_ptr<const VirtualFileSystem> vfs;
+        std::string uri;
+        std::size_t byte_budget{};
+    };
     [[nodiscard]] AssetSourceEditReceipt apply_source_history(SourceEdit edit,bool undo,std::string_view manager);
     std::filesystem::path asset_root_;
     std::vector<std::filesystem::path> asset_roots_;
+    std::vector<RegistrySource> registry_sources_;
     std::vector<AssetRecord> records_;
     std::vector<std::string> errors_;
     std::vector<SourceEdit> source_undo_stack_;

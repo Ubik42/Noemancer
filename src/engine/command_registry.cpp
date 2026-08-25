@@ -305,6 +305,11 @@ void CommandRegistry::attach_editor_context(
     editor_context_apply_intent_=std::move(apply_intent);
 }
 
+void CommandRegistry::attach_asset_document_reader(
+    std::function<AssetDocumentReadResult(std::string_view, std::size_t)> reader) {
+    asset_document_reader_ = std::move(reader);
+}
+
 void CommandRegistry::register_commands() {
     commands_.push_back(CommandDefinition{
         .name = "engine.status",
@@ -618,17 +623,40 @@ void CommandRegistry::register_commands() {
                 return Json{{"schemaVersion","noemancer.animation-graph-inspection/0.1"},{"valid",false},
                     {"code","animation.graph-not-found"},{"assetId",asset_id},{"fingerprint",nullptr},
                     {"definition",nullptr},{"dependencies",Json::array()}}.dump();
-            const auto registry_inspection=Json::parse(assets_->inspect_json(asset_id),nullptr,false);
-            const auto metadata=registry_inspection.is_object()?registry_inspection.value("importedMetadata",Json(nullptr)):Json(nullptr);
-            const auto inspection_code=registry_inspection.is_object()?registry_inspection.value("code",std::string{"animation.graph-invalid"}):
-                std::string{"animation.graph-inspection-invalid"};
-            const auto inspection_detail=metadata.is_object()?metadata.value("detail",std::string{}):std::string{};
-            if(!registry_inspection.is_object()||!registry_inspection.value("valid",false)||!metadata.is_object()||
-               !metadata.contains("document"))return Json{{"schemaVersion","noemancer.animation-graph-inspection/0.1"},{"valid",false},
-                {"code",inspection_code},{"detail",inspection_detail},
-                {"assetId",asset_id},{"fingerprint",nullptr},
+            AssetDocumentReadResult source;
+            if (asset_document_reader_) {
+                source = asset_document_reader_(asset_id, animation_graph_patch_max_input_bytes);
+            } else {
+                const auto detached = assets_->read_animation_graph_source(asset_id);
+                source = {detached.success, detached.code, detached.detail, asset_id, {}, detached.source};
+            }
+            if (!source.success) return Json{{"schemaVersion","noemancer.animation-graph-inspection/0.1"},{"valid",false},
+                {"code",source.code.empty()?"animation.graph-source-unavailable":source.code},
+                {"detail",source.detail},{"assetId",asset_id},{"fingerprint",nullptr},
                 {"definition",nullptr},{"dependencies",Json::array()}}.dump();
-            const auto parsed=AnimationGraphCodec::parse_json(metadata.at("document").dump());
+            if (!source.asset_id.empty() && source.asset_id != asset_id)
+                return Json{{"schemaVersion","noemancer.animation-graph-inspection/0.1"},{"valid",false},
+                    {"code","animation.graph-reader-identity-mismatch"},
+                    {"detail","The attached document reader returned a different Asset ID."},
+                    {"assetId",asset_id},{"fingerprint",nullptr},{"definition",nullptr},
+                    {"dependencies",Json::array()}}.dump();
+            if (asset_document_reader_ && source.content_hash != asset->content_hash)
+                return Json{{"schemaVersion","noemancer.animation-graph-inspection/0.1"},{"valid",false},
+                    {"code","animation.graph-reader-content-mismatch"},
+                    {"detail","The attached document reader did not verify the current Registry content identity."},
+                    {"assetId",asset_id},{"fingerprint",nullptr},{"definition",nullptr},
+                    {"dependencies",Json::array()}}.dump();
+            if(source.text.size()>animation_graph_patch_max_input_bytes)
+                return Json{{"schemaVersion","noemancer.animation-graph-inspection/0.1"},{"valid",false},
+                    {"code","animation.graph-source-too-large"},
+                    {"detail","The attached Animation Graph source exceeded its requested byte budget."},
+                    {"assetId",asset_id},{"fingerprint",nullptr},{"definition",nullptr},
+                    {"dependencies",Json::array()}}.dump();
+            const auto validation=assets_->validate_animation_graph_source(asset_id,source.text);
+            if(!validation.valid)return Json{{"schemaVersion","noemancer.animation-graph-inspection/0.1"},{"valid",false},
+                {"code",validation.code},{"detail",validation.detail},{"assetId",asset_id},{"fingerprint",nullptr},
+                {"definition",nullptr},{"dependencies",Json::array()}}.dump();
+            const auto parsed=AnimationGraphCodec::parse_json(source.text);
             if(!parsed)return Json{{"schemaVersion","noemancer.animation-graph-inspection/0.1"},{"valid",false},
                 {"code",parsed.code},{"detail",parsed.detail},{"assetId",asset_id},{"fingerprint",nullptr},
                 {"definition",nullptr},{"dependencies",Json::array()}}.dump();

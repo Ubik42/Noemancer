@@ -15,6 +15,7 @@
 #include "engine/sprite_atlas_artifact.hpp"
 #include "engine/simulation_runtime.hpp"
 #include "engine/tilemap_asset.hpp"
+#include "engine/vfs_document_reader.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -538,7 +539,28 @@ Json asset_json(const AssetRecord& asset) {
 } // namespace
 
 AssetRegistry::AssetRegistry(std::filesystem::path asset_root)
-    : asset_root_(std::filesystem::absolute(std::move(asset_root)).lexically_normal()),asset_roots_{asset_root_} {
+    : asset_root_(std::filesystem::absolute(std::move(asset_root)).lexically_normal()),
+      asset_roots_{asset_root_}, registry_sources_(1U) {
+    static_cast<void>(refresh());
+}
+
+AssetRegistry::AssetRegistry(std::filesystem::path asset_root, std::string registry_json)
+    : asset_root_(std::filesystem::absolute(std::move(asset_root)).lexically_normal()),
+      asset_roots_{asset_root_}, registry_sources_(1U) {
+    registry_sources_.front().json = std::move(registry_json);
+    static_cast<void>(refresh());
+}
+
+AssetRegistry::AssetRegistry(std::filesystem::path asset_root,
+    std::shared_ptr<const VirtualFileSystem> vfs,
+    std::string registry_uri, const std::size_t byte_budget)
+    : asset_root_(std::filesystem::absolute(std::move(asset_root)).lexically_normal()),
+      asset_roots_{asset_root_}, registry_sources_(1U) {
+    registry_sources_.front().vfs = std::move(vfs);
+    registry_sources_.front().uri = std::move(registry_uri);
+    registry_sources_.front().byte_budget = byte_budget;
+    if (!registry_sources_.front().vfs)
+        registry_sources_.front().error = "asset.registry-read-failed: asset.registry-vfs-missing: VFS authority is required";
     static_cast<void>(refresh());
 }
 
@@ -547,16 +569,48 @@ bool AssetRegistry::refresh() {
     errors_.clear();
     std::unordered_set<std::string> ids;
     std::unordered_set<std::string> paths;
-    for(const auto& root:asset_roots_) {
+    for(std::size_t root_index = 0; root_index < asset_roots_.size(); ++root_index) {
+        const auto& root = asset_roots_[root_index];
         std::error_code root_error;
         if(!std::filesystem::is_directory(root,root_error)) {errors_.push_back("Asset root is missing: "+root.string());continue;}
-        const auto registry_path=root/"registry.json";
-        std::ifstream input(registry_path,std::ios::binary);
         try {
-          if(input) {
-            const auto document=Json::parse(input);
+          std::optional<Json> manifest;
+          const auto& registry_source = registry_sources_.at(root_index);
+          if (registry_source.vfs) {
+            const auto read = read_vfs_document(*registry_source.vfs, VfsDocumentReadRequest{
+                .uri = registry_source.uri,
+                .kind = VfsDocumentKind::json,
+                .byte_budget = registry_source.byte_budget,
+                .expected_schema = std::string("noemancer.assets/0.1")});
+            if (!read.success) {
+                errors_.push_back(root.generic_string() + ": asset.registry-read-failed: " +
+                    read.code + ": " + read.detail);
+            } else {
+                auto document = Json::parse(read.canonical_json, nullptr, false);
+                if (document.is_discarded())
+                    throw std::invalid_argument("asset.registry-json-invalid: Registry manifest is not valid JSON");
+                manifest = std::move(document);
+            }
+          } else if (registry_source.error) {
+            errors_.push_back(root.generic_string() + ": " + *registry_source.error);
+          } else if (registry_source.json) {
+            auto document = Json::parse(*registry_source.json, nullptr, false);
+            if (document.is_discarded())
+                throw std::invalid_argument("asset.registry-json-invalid: Registry manifest is not valid JSON");
+            manifest = std::move(document);
+          } else {
+            std::ifstream input(root/"registry.json",std::ios::binary);
+            if (input) {
+                auto document = Json::parse(input, nullptr, false);
+                if (document.is_discarded())
+                    throw std::invalid_argument("asset.registry-json-invalid: Registry manifest is not valid JSON");
+                manifest = std::move(document);
+            }
+          }
+          if(manifest) {
+            const auto& document = *manifest;
             if(document.value("schema",std::string{})!="noemancer.assets/0.1"||!document.contains("assets")||!document.at("assets").is_array())
-                throw std::invalid_argument("registry.json must use noemancer.assets/0.1 and contain assets");
+                throw std::invalid_argument("asset.registry-schema-invalid: Registry manifest must use noemancer.assets/0.1 and contain an assets array");
             for (const auto& source : document.at("assets")) {
             const auto asset_id = source.at("id").get<std::string>();
             const auto streaming_policy = parse_authored_streaming_policy(source, asset_id);
@@ -700,7 +754,29 @@ bool AssetRegistry::refresh() {
 bool AssetRegistry::add_root(std::filesystem::path asset_root) {
     asset_root=std::filesystem::absolute(std::move(asset_root)).lexically_normal();
     if(std::ranges::find(asset_roots_,asset_root)!=asset_roots_.end()) return true;
-    asset_roots_.push_back(std::move(asset_root));return refresh();
+    asset_roots_.push_back(std::move(asset_root));
+    registry_sources_.emplace_back();
+    return refresh();
+}
+
+bool AssetRegistry::add_root_from_vfs(std::filesystem::path asset_root,
+    std::shared_ptr<const VirtualFileSystem> vfs, std::string registry_uri,
+    const std::size_t byte_budget) {
+    asset_root = std::filesystem::absolute(std::move(asset_root)).lexically_normal();
+    const auto existing = std::ranges::find(asset_roots_, asset_root);
+    RegistrySource source;
+    source.vfs = std::move(vfs);
+    source.uri = std::move(registry_uri);
+    source.byte_budget = byte_budget;
+    if (!source.vfs)
+        source.error = "asset.registry-read-failed: asset.registry-vfs-missing: VFS authority is required";
+    if (existing == asset_roots_.end()) {
+        asset_roots_.push_back(std::move(asset_root));
+        registry_sources_.push_back(std::move(source));
+    } else {
+        registry_sources_.at(static_cast<std::size_t>(std::distance(asset_roots_.begin(), existing))) = std::move(source);
+    }
+    return refresh();
 }
 
 const std::vector<AssetRecord>& AssetRegistry::records() const noexcept { return records_; }

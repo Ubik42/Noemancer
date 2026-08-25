@@ -67,6 +67,62 @@ int main() {
         return 1;
     }
 
+    // The VFS entry point preserves the established project semantics while
+    // keeping physical authority independent from virtual document identity.
+    noemancer::VirtualFileSystem project_vfs({
+        .max_mounts = 2U, .max_uri_bytes = 256U,
+        .max_read_bytes = 1024U * 1024U, .max_observation_bytes = 1024U});
+    const auto mounted = project_vfs.mount({
+        "project-test", "project://", root,
+        noemancer::VfsMountKind::directory, 0, true});
+    if (!mounted.success) {
+        std::cerr << "Project VFS mount failed: " << mounted.code << '\n';
+        std::filesystem::remove_all(root);
+        return 10;
+    }
+    const auto loaded_vfs = noemancer::load_project(
+        project_vfs, "project://noemancer.project.json", root);
+    if (!loaded_vfs || loaded_vfs.project->root != loaded.project->root ||
+        loaded_vfs.project->schema != loaded.project->schema ||
+        loaded_vfs.project->project_id != loaded.project->project_id ||
+        loaded_vfs.project->startup_scene != loaded.project->startup_scene ||
+        loaded_vfs.project->hud_document_json.empty() ||
+        loaded_vfs.startup_scene->scene_guid != loaded.startup_scene->scene_guid) {
+        std::cerr << "Directory and VFS project loads diverged: "
+                  << noemancer::project_load_errors_json(loaded_vfs) << '\n';
+        std::filesystem::remove_all(root);
+        return 11;
+    }
+    const auto budget_rejected = noemancer::load_project(
+        project_vfs, "project://noemancer.project.json", root,
+        {.manifest_byte_budget = 32U, .referenced_document_byte_budget = 1024U});
+    if (budget_rejected || !has_error(budget_rejected,
+        "vfs.read-budget-exceeded", "project://noemancer.project.json")) {
+        std::cerr << "VFS project manifest budget was not enforced\n";
+        std::filesystem::remove_all(root);
+        return 12;
+    }
+    const auto bad_uri = noemancer::load_project(
+        project_vfs, "project://folder/../noemancer.project.json", root);
+    if (bad_uri || !has_error(bad_uri,
+        "vfs.uri-invalid", "project://folder/../noemancer.project.json")) {
+        std::cerr << "Non-canonical project manifest URI was not rejected\n";
+        std::filesystem::remove_all(root);
+        return 13;
+    }
+    {
+        std::ofstream malformed(root / "malformed.project.json", std::ios::binary);
+        malformed << R"({"schema":"noemancer.project/0.2",broken})";
+    }
+    const auto bad_json = noemancer::load_project(
+        project_vfs, "project://malformed.project.json", root);
+    if (bad_json || !has_error(bad_json,
+        "vfs.document-json-invalid", "project://malformed.project.json")) {
+        std::cerr << "Malformed VFS project JSON was not rejected before parsing\n";
+        std::filesystem::remove_all(root);
+        return 14;
+    }
+
     // Version 0.2 owns the embedded Hybrid Pixel profile.  The profile is
     // parsed by its own strict codec and then retained as engine plain data.
     {

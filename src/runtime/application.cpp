@@ -450,19 +450,36 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
         return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",false},
             {"code","project.session-busy"},{"detail","Stop Play, debugging and packaging before switching projects."}}.dump();
     startup_telemetry_->begin_phase("project.parse");
-    const auto loaded=load_project(project_path);
+    std::error_code project_path_error;
+    auto manifest_path=std::filesystem::absolute(project_path,project_path_error).lexically_normal();
+    if(!project_path_error&&std::filesystem::is_directory(manifest_path,project_path_error))
+        manifest_path/="noemancer.project.json";
+    const auto trusted_project_root=manifest_path.parent_path();
+    auto next_virtual_file_system=std::make_shared<VirtualFileSystem>();
+    const auto project_mount=next_virtual_file_system->mount(VfsMountSpec{
+        .id="project.source",.virtual_root="project://",.source_root=trusted_project_root,
+        .kind=VfsMountKind::directory,.priority=100,.read_only=true});
+    if(!project_mount.success)return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",false},
+        {"code",project_mount.code},{"detail",project_mount.detail}}.dump();
+    const auto manifest_uri="project://"+manifest_path.filename().generic_string();
+    const auto loaded=load_project(*next_virtual_file_system,manifest_uri,trusted_project_root);
     if(!loaded)return project_load_errors_json(loaded);
 
     startup_telemetry_->begin_phase("asset.registry");
     AssetRegistry next_registry;
     if(!loaded.project->asset_roots.empty()) {
-        next_registry=AssetRegistry(loaded.project->root/loaded.project->asset_roots.front());
+        const auto registry_uri=[](const std::filesystem::path& relative) {
+            return "project://"+(relative/"registry.json").generic_string();
+        };
+        next_registry=AssetRegistry(loaded.project->root/loaded.project->asset_roots.front(),
+            next_virtual_file_system,registry_uri(loaded.project->asset_roots.front()));
         for(std::size_t index=1U;index<loaded.project->asset_roots.size();++index)
-            static_cast<void>(next_registry.add_root(loaded.project->root/loaded.project->asset_roots[index]));
+            static_cast<void>(next_registry.add_root_from_vfs(
+                loaded.project->root/loaded.project->asset_roots[index],next_virtual_file_system,
+                registry_uri(loaded.project->asset_roots[index])));
     }
     auto next_asset_vfs_catalog=build_asset_vfs_catalog(next_registry,{
         .mount_identity="project.assets",.mount_kind=VfsMountKind::directory});
-    auto next_virtual_file_system=std::make_shared<VirtualFileSystem>();
     if(next_asset_vfs_catalog.success)for(const auto& mount:next_asset_vfs_catalog.mounts) {
         const auto receipt=next_virtual_file_system->mount(mount);
         if(!receipt.success) {next_asset_vfs_catalog.success=false;next_asset_vfs_catalog.code=receipt.code;
@@ -805,6 +822,15 @@ void Application::rebuild_live_editor_command_registry() {
     auto next = std::make_unique<CommandRegistry>(world_, asset_registry_);
     if (project_ui_session_ && project_ui_session_->valid())
         next->attach_project_ui_authoring(*project_ui_session_);
+    next->attach_asset_document_reader([this](const std::string_view asset_id,const std::size_t byte_budget) {
+        if(!virtual_file_system_)return AssetDocumentReadResult{false,"asset-read.vfs-unavailable",
+            "The live Editor project has no active VFS authority.",std::string(asset_id),{}, {}};
+        const auto read=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset_id,
+            {.byte_budget=byte_budget});
+        return AssetDocumentReadResult{read.success,read.code,read.detail,read.asset_id,
+            read.observed_content_hash,read.success?std::string(
+                reinterpret_cast<const char*>(read.bytes.data()),read.bytes.size()):std::string{}};
+    });
     next->attach_editor_context(
         [this] { return editor_ui_.editor_context_snapshot_json(); },
         [this](const std::string_view arguments) {

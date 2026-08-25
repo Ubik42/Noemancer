@@ -3,6 +3,8 @@
 #include "engine/asset_registry.hpp"
 #include "engine/command_registry.hpp"
 #include "engine/scene_document.hpp"
+#include "engine/vfs_document_reader.hpp"
+#include "engine/virtual_file_system.hpp"
 #include "engine/world.hpp"
 
 #include <filesystem>
@@ -109,6 +111,41 @@ int main() {
        "path":"graph.animation-graph.json","license":"CC0","redistribution":"allowed"}]})";}
     {std::ofstream output(tool_root/"graph.animation-graph.json");output<<valid_graph;}
     noemancer::AssetRegistry assets(tool_root);noemancer::CommandRegistry commands(world,assets);
+    noemancer::VirtualFileSystem document_vfs;
+    if(!document_vfs.mount({"animation-graph-test","asset://roots/0",tool_root,
+        noemancer::VfsMountKind::directory,0,true}).success)return 33;
+    std::size_t attached_read_count{};
+    const auto attach_vfs_reader=[&](noemancer::CommandRegistry& target) {
+        target.attach_asset_document_reader([&](const std::string_view asset_id,const std::size_t byte_budget) {
+            ++attached_read_count;
+            const auto document=noemancer::read_vfs_document(document_vfs,{
+                .uri="asset://roots/0/graph.animation-graph.json",
+                .kind=noemancer::VfsDocumentKind::text,
+                .byte_budget=byte_budget});
+            return noemancer::AssetDocumentReadResult{document.success,document.code,document.detail,
+                std::string(asset_id),document.sha256,document.text};
+        });
+    };
+    attach_vfs_reader(commands);
+    const auto attached_inspection=Json::parse(
+        commands.invoke("animation.graph.inspect",R"({"assetId":"animation.graph.test"})").output_json);
+    if(!attached_inspection.at("ok")||!attached_inspection.at("result").at("valid")||
+       attached_read_count!=1U||attached_inspection.at("result").at("definition").at("assetId")!=
+           "animation.graph.test")return 34;
+    noemancer::CommandRegistry detached_commands(world,assets);
+    const auto detached_inspection=Json::parse(
+        detached_commands.invoke("animation.graph.inspect",R"({"assetId":"animation.graph.test"})").output_json);
+    if(!detached_inspection.at("ok")||!detached_inspection.at("result").at("valid"))return 35;
+    commands.attach_asset_document_reader([](const std::string_view asset_id,const std::size_t) {
+        return noemancer::AssetDocumentReadResult{false,"asset-read.hash-mismatch",
+            "VFS content identity mismatch.",std::string(asset_id),{}, {}};
+    });
+    const auto failed_inspection=Json::parse(
+        commands.invoke("animation.graph.inspect",R"({"assetId":"animation.graph.test"})").output_json);
+    if(failed_inspection.at("result").at("valid")||
+       failed_inspection.at("result").at("code")!="asset-read.hash-mismatch"||
+       !failed_inspection.at("result").at("definition").is_null())return 36;
+    attach_vfs_reader(commands);
     auto wrong_dependency=Json::parse(valid_graph);
     for(auto& node:wrong_dependency["nodes"])if(node.value("id",std::string{})=="aim")node["stateMachineAsset"]="clip.idle";
     const auto wrong_dependency_validation=assets.validate_animation_graph_source("animation.graph.test",wrong_dependency.dump());

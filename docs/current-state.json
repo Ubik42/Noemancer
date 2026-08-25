@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-24",
   "status": "active-development",
-  "currentSlice": "production.vfs-project-and-cooked-asset-migration",
-  "currentStep": "migrate-source-project-and-registry-authority-to-vfs",
+  "currentSlice": "editor.retained-outliner-and-asset-browser",
+  "currentStep": "migrate-outliner-to-retained-semantic-ui",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,7 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "production.vfs-project-and-cooked-asset-migration"
+    "editor.retained-outliner-and-asset-browser"
   ],
   "externalEvidencePending": [
     "performance.gpu-telemetry-compatible-host"
@@ -34,7 +34,8 @@
     "game-migration.hybrid-pixel-hd2d-small-slice",
     "development-loop.source-project-first-visual-latency",
     "agent.open-editor-live-session-transport",
-    "production.virtual-filesystem-and-package-mount"
+    "production.virtual-filesystem-and-package-mount",
+    "production.vfs-project-and-cooked-asset-migration"
   ],
   "closedExperiments": [
     {

@@ -6,6 +6,7 @@
 #include "engine/ktx2_cook_adapter.hpp"
 #include "engine/mesh_runtime_artifact.hpp"
 #include "engine/process_diagnostics.hpp"
+#include "engine/virtual_file_system.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -30,6 +31,91 @@ int main() {
         std::cerr << "Canonical asset registry did not load all project assets\n";
         return 1;
     }
+    const auto vfs_registry_root = std::filesystem::temp_directory_path() /
+        "noemancer-asset-registry-vfs-test";
+    const auto vfs_registry_extra_root = std::filesystem::temp_directory_path() /
+        "noemancer-asset-registry-vfs-extra-test";
+    std::filesystem::remove_all(vfs_registry_root);
+    std::filesystem::remove_all(vfs_registry_extra_root);
+    std::filesystem::create_directories(vfs_registry_root / "text");
+    std::filesystem::create_directories(vfs_registry_extra_root);
+    {
+        std::ofstream source(vfs_registry_root / "text" / "readme.txt", std::ios::binary);
+        source << "trusted source\n";
+        std::ofstream manifest(vfs_registry_root / "registry.json", std::ios::binary);
+        manifest << R"({"schema":"noemancer.assets/0.1","assets":[
+          {"id":"text.vfs","displayName":"VFS Text","kind":"Text","uri":"asset://text/readme.txt",
+           "path":"text/readme.txt","license":"Noemancer project","redistribution":"public"}]})";
+        std::ofstream malformed(vfs_registry_root / "malformed-registry.json", std::ios::binary);
+        malformed << R"({"schema":"noemancer.assets/0.1",broken})";
+        std::ofstream invalid_utf8(vfs_registry_root / "invalid-utf8-registry.json", std::ios::binary);
+        constexpr std::string_view invalid_registry_utf8 =
+            "{\"schema\":\"noemancer.assets/0.1\",\"assets\":[],\"bad\":\"\xc0\xaf\"}";
+        invalid_utf8.write(invalid_registry_utf8.data(),
+            static_cast<std::streamsize>(invalid_registry_utf8.size()));
+    }
+    {
+        std::ofstream manifest(vfs_registry_extra_root / "registry.json", std::ios::binary);
+        manifest << R"({"schema":"noemancer.assets/0.1","assets":[
+          {"id":"builtin.extra","displayName":"Extra","kind":"Texture","uri":"builtin://texture/extra"}]})";
+    }
+    auto registry_vfs = std::make_shared<noemancer::VirtualFileSystem>();
+    const auto primary_mount = registry_vfs->mount({
+        "registry-primary", "registry://", vfs_registry_root,
+        noemancer::VfsMountKind::directory, 0, true});
+    const auto extra_mount = registry_vfs->mount({
+        "registry-extra", "extra-registry://", vfs_registry_extra_root,
+        noemancer::VfsMountKind::directory, 0, true});
+    noemancer::AssetRegistry physical_registry(vfs_registry_root);
+    noemancer::AssetRegistry vfs_registry(
+        vfs_registry_root, registry_vfs, "registry://registry.json", 4096U);
+    const auto physical_projection = nlohmann::json::parse(physical_registry.registry_json());
+    const auto vfs_projection = nlohmann::json::parse(vfs_registry.registry_json());
+    if (!primary_mount.success || !extra_mount.success || !physical_registry.errors().empty() ||
+        !vfs_registry.errors().empty() ||
+        physical_projection.at("assets") != vfs_projection.at("assets") ||
+        vfs_registry.source_path(*vfs_registry.find("text.vfs")) !=
+            (vfs_registry_root / "text" / "readme.txt").lexically_normal()) {
+        std::cerr << "Physical and VFS Registry manifests were not equivalent\n";
+        return 44;
+    }
+    {
+        std::ofstream manifest(vfs_registry_root / "registry.json", std::ios::binary | std::ios::trunc);
+        manifest << R"({"schema":"noemancer.assets/0.1","assets":[
+          {"id":"builtin.refreshed","displayName":"Refreshed","kind":"Texture","uri":"builtin://texture/refreshed"}]})";
+    }
+    if (!vfs_registry.refresh() || vfs_registry.find("builtin.refreshed") == nullptr ||
+        vfs_registry.find("text.vfs") != nullptr) {
+        std::cerr << "Asset Registry refresh did not reread its VFS manifest authority\n";
+        return 47;
+    }
+    if (!vfs_registry.add_root_from_vfs(
+            vfs_registry_extra_root, registry_vfs, "extra-registry://registry.json", 4096U) ||
+        vfs_registry.find("builtin.extra") == nullptr || vfs_registry.records().size() != 2U) {
+        std::cerr << "Additional asset root did not retain VFS Registry authority\n";
+        return 45;
+    }
+    noemancer::AssetRegistry bounded_registry(
+        vfs_registry_root, registry_vfs, "registry://registry.json", 16U);
+    noemancer::AssetRegistry malformed_registry(
+        vfs_registry_root, registry_vfs, "registry://malformed-registry.json", 4096U);
+    noemancer::AssetRegistry invalid_utf8_registry(
+        vfs_registry_root, registry_vfs, "registry://invalid-utf8-registry.json", 4096U);
+    const auto contains_error = [](const noemancer::AssetRegistry& candidate,
+                                   const std::string_view code) {
+        return std::ranges::any_of(candidate.errors(), [code](const std::string& error) {
+            return error.find(code) != std::string::npos;
+        });
+    };
+    if (!contains_error(bounded_registry, "asset.registry-read-failed") ||
+        !contains_error(bounded_registry, "vfs.read-budget-exceeded") ||
+        !contains_error(malformed_registry, "vfs.document-json-invalid") ||
+        !contains_error(invalid_utf8_registry, "vfs.document-utf8-invalid")) {
+        std::cerr << "VFS Registry bounds or malformed-document errors were not stable\n";
+        return 46;
+    }
+    std::filesystem::remove_all(vfs_registry_root);
+    std::filesystem::remove_all(vfs_registry_extra_root);
     const auto streaming_policy_root = std::filesystem::temp_directory_path() /
         "noemancer-asset-streaming-policy-test";
     std::filesystem::remove_all(streaming_policy_root);

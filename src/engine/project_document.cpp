@@ -1,6 +1,7 @@
 #include "engine/project_document.hpp"
 #include "engine/project_input_authoring.hpp"
 #include "engine/semantic_ui.hpp"
+#include "engine/vfs_document_reader.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -14,6 +15,7 @@
 #include <unordered_map>
 #include <sstream>
 #include <unordered_set>
+#include <functional>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -97,23 +99,25 @@ std::optional<std::string> read_text(const std::filesystem::path& path) {
     return contents.str();
 }
 
-} // namespace
+struct ProjectDocumentSource final {
+    std::optional<std::string> text;
+    std::string identity;
+    std::string code;
+    std::string detail;
+};
 
-ProjectLoadResult load_project(const std::filesystem::path& project_path) {
+using ProjectDocumentReader = std::function<ProjectDocumentSource(const std::filesystem::path&)>;
+
+ProjectLoadResult parse_project_documents(
+    std::string manifest_text,
+    std::string manifest_identity,
+    std::filesystem::path trusted_project_root,
+    const ProjectDocumentReader& read_relative_document) {
     ProjectLoadResult result;
-    std::error_code error;
-    auto manifest_path = project_path;
-    if (std::filesystem::is_directory(project_path, error)) manifest_path /= "noemancer.project.json";
-    const auto manifest_text = read_text(manifest_path);
-    if (!manifest_text) {
-        add_error(result, "project.manifest-not-found", manifest_path.generic_string(),
-            "Expected a readable noemancer.project.json manifest.");
-        return result;
-    }
 
-    const auto input = Json::parse(*manifest_text, nullptr, false);
+    const auto input = Json::parse(manifest_text, nullptr, false);
     if (input.is_discarded() || !input.is_object()) {
-        add_error(result, "project.invalid-json", manifest_path.generic_string(),
+        add_error(result, "project.invalid-json", std::move(manifest_identity),
             "Project manifest must be a JSON object.");
         return result;
     }
@@ -140,7 +144,7 @@ ProjectLoadResult load_project(const std::filesystem::path& project_path) {
         }
     }
     ProjectDocument project;
-    project.root = std::filesystem::absolute(manifest_path.parent_path(), error).lexically_normal();
+    project.root = std::move(trusted_project_root);
     if (!is_project_v1 && !is_project_v2) {
         add_error(result, "project.unsupported-schema", "/schema",
             "Expected noemancer.project/0.1 or noemancer.project/0.2.");
@@ -212,13 +216,14 @@ ProjectLoadResult load_project(const std::filesystem::path& project_path) {
             if(!safe_relative_path(hud_document)||hud_document.extension()!=".json")
                 add_error(result,"project.unsafe-path","/hudDocument","HUD document must be a relative JSON file inside the project root.");
             else {
-                const auto source=read_text(project.root/hud_document);
-                if(!source)add_error(result,"project.hud-document-not-found","/hudDocument","HUD document could not be read.");
+                const auto source=read_relative_document(hud_document);
+                if(!source.text)add_error(result,source.code.empty()?"project.hud-document-not-found":source.code,
+                    "/hudDocument",source.detail.empty()?"HUD document could not be read.":source.detail);
                 else {
-                    const auto validation=Json::parse(semantic_ui_validation_json(*source),nullptr,false);
+                    const auto validation=Json::parse(semantic_ui_validation_json(*source.text),nullptr,false);
                     if(!validation.is_object()||!validation.value("valid",false))
                         add_error(result,"project.invalid-hud-document","/hudDocument","HUD document must satisfy noemancer.ui-document/0.1.");
-                    else {project.hud_document=std::move(hud_document);project.hud_document_json=*source;}
+                    else {project.hud_document=std::move(hud_document);project.hud_document_json=*source.text;}
                 }
             }
         }
@@ -241,14 +246,13 @@ ProjectLoadResult load_project(const std::filesystem::path& project_path) {
     parse_input_actions(input,project,result);
     if (!result.errors.empty()) return result;
 
-    const auto scene_path = (project.root / project.startup_scene).lexically_normal();
-    const auto scene_text = read_text(scene_path);
-    if (!scene_text) {
-        add_error(result, "project.startup-scene-not-found", scene_path.generic_string(),
-            "The startup scene could not be read.");
+    const auto scene_source = read_relative_document(project.startup_scene);
+    if (!scene_source.text) {
+        add_error(result, scene_source.code.empty()?"project.startup-scene-not-found":scene_source.code,
+            scene_source.identity, scene_source.detail.empty()?"The startup scene could not be read.":scene_source.detail);
         return result;
     }
-    const auto parsed_scene = SceneDocumentCodec::parse_json(*scene_text, scene_path.generic_string());
+    const auto parsed_scene = SceneDocumentCodec::parse_json(*scene_source.text, scene_source.identity);
     if (!parsed_scene) {
         for (const auto& scene_error : parsed_scene.errors)
             add_error(result, "project.startup-scene-invalid." + scene_error.code, scene_error.path, scene_error.message);
@@ -257,6 +261,68 @@ ProjectLoadResult load_project(const std::filesystem::path& project_path) {
     result.project = std::move(project);
     result.startup_scene = *parsed_scene.document;
     return result;
+}
+
+std::string relative_uri(std::string_view manifest_uri, const std::filesystem::path& relative_path) {
+    const auto separator = manifest_uri.rfind('/');
+    if (separator == std::string_view::npos) return {};
+    return std::string(manifest_uri.substr(0U, separator + 1U)) + relative_path.generic_string();
+}
+
+} // namespace
+
+ProjectLoadResult load_project(const std::filesystem::path& project_path) {
+    ProjectLoadResult result;
+    std::error_code error;
+    auto manifest_path = project_path;
+    if (std::filesystem::is_directory(project_path, error)) manifest_path /= "noemancer.project.json";
+    const auto manifest_text = read_text(manifest_path);
+    if (!manifest_text) {
+        add_error(result, "project.manifest-not-found", manifest_path.generic_string(),
+            "Expected a readable noemancer.project.json manifest.");
+        return result;
+    }
+    const auto root = std::filesystem::absolute(manifest_path.parent_path(), error).lexically_normal();
+    return parse_project_documents(*manifest_text, manifest_path.generic_string(), root,
+        [root](const std::filesystem::path& relative) {
+            const auto path = (root / relative).lexically_normal();
+            return ProjectDocumentSource{read_text(path), path.generic_string(), {}, {}};
+        });
+}
+
+ProjectLoadResult load_project(
+    const VirtualFileSystem& vfs,
+    const std::string_view manifest_uri,
+    const std::filesystem::path& trusted_project_root,
+    const ProjectVfsLoadOptions options) {
+    ProjectLoadResult result;
+    if (trusted_project_root.empty()) {
+        add_error(result, "project.trusted-root-invalid", "/trustedProjectRoot",
+            "A trusted physical project root is required independently of the VFS URI.");
+        return result;
+    }
+    const auto manifest = read_vfs_document(vfs, VfsDocumentReadRequest{
+        .uri = std::string(manifest_uri), .kind = VfsDocumentKind::json,
+        .byte_budget = options.manifest_byte_budget});
+    if (!manifest.success) {
+        add_error(result, manifest.code, std::string(manifest_uri), manifest.detail);
+        return result;
+    }
+    std::error_code error;
+    const auto root = std::filesystem::absolute(trusted_project_root, error).lexically_normal();
+    const auto manifest_identity = std::string(manifest_uri);
+    return parse_project_documents(manifest.canonical_json, manifest_identity, root,
+        [&vfs, manifest_identity, options](const std::filesystem::path& relative) {
+            const auto uri = relative_uri(manifest_identity, relative);
+            if (uri.empty()) return ProjectDocumentSource{{}, {}, "vfs.uri-invalid",
+                "The project manifest URI has no virtual parent path."};
+            const auto document = read_vfs_document(vfs, VfsDocumentReadRequest{
+                .uri = uri, .kind = VfsDocumentKind::json,
+                .byte_budget = options.referenced_document_byte_budget});
+            if (!document.success) return ProjectDocumentSource{
+                {}, uri, document.code, document.detail};
+            return ProjectDocumentSource{document.canonical_json, uri, {}, {}};
+        });
 }
 
 std::string project_load_errors_json(const ProjectLoadResult& result) {

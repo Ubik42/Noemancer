@@ -3,6 +3,7 @@
 #include "engine/scene_document.hpp"
 #include "engine/gameplay_runtime.hpp"
 #include "engine/hybrid_pixel_profile.hpp"
+#include "engine/virtual_file_system.hpp"
 
 #include <filesystem>
 #include <optional>
@@ -47,7 +48,21 @@ struct ProjectLoadResult final {
     }
 };
 
+struct ProjectVfsLoadOptions final {
+    std::size_t manifest_byte_budget{1024U * 1024U};
+    std::size_t referenced_document_byte_budget{4U * 1024U * 1024U};
+};
+
 [[nodiscard]] ProjectLoadResult load_project(const std::filesystem::path& project_path);
+// Loads the manifest and its Scene/HUD documents exclusively through VFS.
+// trusted_project_root is an independently established authority used only
+// for ProjectDocument relative-path semantics and later authoring; it is never
+// derived from, or used to resolve, the virtual URI.
+[[nodiscard]] ProjectLoadResult load_project(
+    const VirtualFileSystem& vfs,
+    std::string_view manifest_uri,
+    const std::filesystem::path& trusted_project_root,
+    ProjectVfsLoadOptions options = {});
 [[nodiscard]] std::string project_load_errors_json(const ProjectLoadResult& result);
 
 } // namespace noemancer
