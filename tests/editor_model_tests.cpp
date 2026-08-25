@@ -687,8 +687,11 @@ int main() {
     if(!ordinary_world.load_scene(noemancer::make_bootstrap_scene_document()).success)return 34;
     noemancer::EditorModel ordinary_model(ordinary_world,ordinary_assets);
     const auto ordinary_authoring=ordinary_model.selected_tilemap_authoring_json();
+    const auto ordinary_animation_authoring=ordinary_model.selected_animation_graph_authoring_json();
     const auto ordinary_snapshot=ordinary_model.semantic_snapshot_json();
     if(ordinary_authoring.find(R"("valid":false)")==std::string::npos||
+       ordinary_authoring.find("editor.tilemap-not-selected")==std::string::npos||
+       ordinary_animation_authoring.find("editor.animation-graph-not-selected")==std::string::npos||
        ordinary_snapshot.find("tilemapAuthoring")==std::string::npos) {
         std::cerr<<"Ordinary assets were not safely represented as non-tilemap authoring selections\n";return 34;
     }

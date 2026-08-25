@@ -209,6 +209,25 @@ bool write_performance_evidence(const std::filesystem::path& path,
             {"commandRecord", distribution(input.sampled_command_record_milliseconds)},
             {"renderExtract", distribution(input.sampled_render_extract_milliseconds)},
             {"sceneRenderRecord", distribution(input.sampled_scene_render_record_milliseconds)},
+            {"editorCommandRecordSegments", {
+                {"thumbnailSync", distribution(input.sampled_thumbnail_sync_milliseconds)},
+                {"imguiBuild", distribution(input.sampled_imgui_build_milliseconds)},
+                {"retainedGame", distribution(input.sampled_retained_game_record_milliseconds)},
+                {"retainedInspector", distribution(input.sampled_retained_inspector_record_milliseconds)},
+                {"retainedOutliner", distribution(input.sampled_retained_outliner_record_milliseconds)},
+                {"retainedAssetBrowser", distribution(input.sampled_retained_asset_browser_record_milliseconds)},
+                {"imguiGpu", distribution(input.sampled_imgui_gpu_record_milliseconds)},
+                {"imguiPanels", {
+                    {"refresh", distribution(input.sampled_editor_ui_panel_milliseconds[0])},
+                    {"chrome", distribution(input.sampled_editor_ui_panel_milliseconds[1])},
+                    {"scene", distribution(input.sampled_editor_ui_panel_milliseconds[2])},
+                    {"animation", distribution(input.sampled_editor_ui_panel_milliseconds[3])},
+                    {"outliner", distribution(input.sampled_editor_ui_panel_milliseconds[4])},
+                    {"inspector", distribution(input.sampled_editor_ui_panel_milliseconds[5])},
+                    {"assets", distribution(input.sampled_editor_ui_panel_milliseconds[6])},
+                    {"console", distribution(input.sampled_editor_ui_panel_milliseconds[7])},
+                    {"agentContext", distribution(input.sampled_editor_ui_panel_milliseconds[8])}}},
+                {"meaning", "Main-thread wall time inside named editor command-recording regions; values may include backend resource waits and are not GPU execution time."}}},
             {"activeFrameEstimate", [&] {
                 std::vector<double> values;values.reserve(input.sampled_frame_milliseconds.size());
                 for(std::size_t index=0;index<input.sampled_frame_milliseconds.size();++index)

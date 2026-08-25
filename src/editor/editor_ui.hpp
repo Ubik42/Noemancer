@@ -147,10 +147,17 @@ struct EditorUiContextApplyReceipt final {
     std::uint64_t revision_after{};
 };
 
+struct EditorUiFrameTimings final {
+    // Stable order consumed by performance evidence: refresh, chrome, scene,
+    // animation, outliner, inspector, assets, console, agent context.
+    std::array<double,9> milliseconds{};
+};
+
 class EditorUi final {
 public:
     EditorUi(World& world, AssetRegistry& assets);
     void render();
+    [[nodiscard]] const EditorUiFrameTimings& frame_timings() const noexcept { return frame_timings_; }
     void refresh_world_model();
     void set_engine_status(std::string status_json);
     void set_render_surface(std::uintptr_t texture_id, std::uint32_t width, std::uint32_t height);
@@ -281,6 +288,7 @@ private:
     [[nodiscard]] const char* localized(const char* english,const char* simplified_chinese) const noexcept;
 
     EditorModel model_;
+    EditorUiFrameTimings frame_timings_{};
     StartupHubModel startup_hub_;
     bool startup_hub_open_{true};
     std::string startup_hub_persistence_json_{"null"};

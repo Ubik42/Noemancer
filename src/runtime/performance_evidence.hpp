@@ -77,6 +77,14 @@ struct PerformanceEvidenceInput final {
     std::span<const double> sampled_command_record_milliseconds;
     std::span<const double> sampled_render_extract_milliseconds;
     std::span<const double> sampled_scene_render_record_milliseconds;
+    std::span<const double> sampled_thumbnail_sync_milliseconds;
+    std::span<const double> sampled_imgui_build_milliseconds;
+    std::span<const double> sampled_retained_game_record_milliseconds;
+    std::span<const double> sampled_retained_inspector_record_milliseconds;
+    std::span<const double> sampled_retained_outliner_record_milliseconds;
+    std::span<const double> sampled_retained_asset_browser_record_milliseconds;
+    std::span<const double> sampled_imgui_gpu_record_milliseconds;
+    std::array<std::span<const double>,9> sampled_editor_ui_panel_milliseconds;
     std::string renderer_status_json;
 };
 

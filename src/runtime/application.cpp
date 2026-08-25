@@ -2094,6 +2094,14 @@ int Application::run_interactive() {
     std::vector<double> performance_command_record_milliseconds;
     std::vector<double> performance_render_extract_milliseconds;
     std::vector<double> performance_scene_render_record_milliseconds;
+    std::vector<double> performance_thumbnail_sync_milliseconds;
+    std::vector<double> performance_imgui_build_milliseconds;
+    std::vector<double> performance_retained_game_record_milliseconds;
+    std::vector<double> performance_retained_inspector_record_milliseconds;
+    std::vector<double> performance_retained_outliner_record_milliseconds;
+    std::vector<double> performance_retained_asset_browser_record_milliseconds;
+    std::vector<double> performance_imgui_gpu_record_milliseconds;
+    std::array<std::vector<double>,9> performance_editor_ui_panel_milliseconds;
     if(performance_run) {
         performance_frame_milliseconds.reserve(options_.performance_sample_frames);
         performance_swapchain_wait_milliseconds.reserve(options_.performance_sample_frames);
@@ -2104,6 +2112,15 @@ int Application::run_interactive() {
         performance_command_record_milliseconds.reserve(options_.performance_sample_frames);
         performance_render_extract_milliseconds.reserve(options_.performance_sample_frames);
         performance_scene_render_record_milliseconds.reserve(options_.performance_sample_frames);
+        performance_thumbnail_sync_milliseconds.reserve(options_.performance_sample_frames);
+        performance_imgui_build_milliseconds.reserve(options_.performance_sample_frames);
+        performance_retained_game_record_milliseconds.reserve(options_.performance_sample_frames);
+        performance_retained_inspector_record_milliseconds.reserve(options_.performance_sample_frames);
+        performance_retained_outliner_record_milliseconds.reserve(options_.performance_sample_frames);
+        performance_retained_asset_browser_record_milliseconds.reserve(options_.performance_sample_frames);
+        performance_imgui_gpu_record_milliseconds.reserve(options_.performance_sample_frames);
+        for(auto& samples:performance_editor_ui_panel_milliseconds)
+            samples.reserve(options_.performance_sample_frames);
     }
     auto previous_frame_time = std::chrono::steady_clock::now();
     const auto has_gpu_probe = performance_run||!options_.capture_frame_path.empty()||!options_.capture_editor_frame_path.empty()||
@@ -2133,6 +2150,13 @@ int Application::run_interactive() {
         double performance_command_record{};
         double performance_render_extract{};
         double performance_scene_render_record{};
+        double performance_thumbnail_sync{};
+        double performance_imgui_build{};
+        double performance_retained_game_record{};
+        double performance_retained_inspector_record{};
+        double performance_retained_outliner_record{};
+        double performance_retained_asset_browser_record{};
+        double performance_imgui_gpu_record{};
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL3_ProcessEvent(&event);
@@ -2621,6 +2645,7 @@ int Application::run_interactive() {
         if(!ensure_editor_capture_texture()) {
             logger_.error("editor.capture_texture",SDL_GetError());scene_renderer->rollback_texture_streaming_frame();SDL_CancelGPUCommandBuffer(command_buffer);break;
         }
+        const auto thumbnail_sync_start=std::chrono::steady_clock::now();
         std::vector<AssetThumbnailGpuCache::Request> thumbnail_requests;
         if(!runtime_surface_mode)for(const auto& artifact:editor_ui_.asset_thumbnail_artifacts())
             if(const auto path=resolve_thumbnail_artifact(asset_registry_,artifact.uri))
@@ -2634,6 +2659,9 @@ int Application::run_interactive() {
             if(sync.uploaded_count>0U)logger_.info("editor.thumbnail_gpu",thumbnail_gpu_cache.status_json());
             if(!sync.success&&sync.failed_count>0U)logger_.error("editor.thumbnail_gpu",thumbnail_gpu_cache.status_json());
         }
+        performance_thumbnail_sync=std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-thumbnail_sync_start).count();
+        const auto imgui_build_start=std::chrono::steady_clock::now();
         ImGui_ImplSDLGPU3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
@@ -2693,6 +2721,8 @@ int Application::run_interactive() {
         if (retained_pointer_captured) scene_pick_request.reset();
         if (options_.probe_pixel && frame + 1 == requested_frames) scene_pick_request = options_.probe_pixel;
         ImGui::Render();
+        performance_imgui_build=std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-imgui_build_start).count();
 
         ImDrawData* draw_data = ImGui::GetDrawData();
         SDL_GPUTexture* swapchain_texture = nullptr;
@@ -2756,6 +2786,7 @@ int Application::run_interactive() {
                 std::chrono::steady_clock::now()-scene_render_record_start).count();
             if(!scene_renderer->last_error().empty())
                 logger_.error("render.scene_record",scene_renderer->last_error());
+            const auto retained_game_record_start=std::chrono::steady_clock::now();
             if(!retained_ui_gpu.upload(command_buffer,retained_ui.render_packet())) {
                 logger_.error("ui.retained_upload",retained_ui_gpu.last_error());
                 if(SDL_SubmitGPUCommandBuffer(command_buffer)) {
@@ -2768,7 +2799,10 @@ int Application::run_interactive() {
                 running=false;break;
             }
             retained_ui_gpu.render(command_buffer,scene_renderer->color_texture(),scene_renderer->width(),scene_renderer->height());
+            performance_retained_game_record=std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-retained_game_record_start).count();
             if(!runtime_surface_mode&&retained_inspector_texture) {
+                const auto retained_surface_start=std::chrono::steady_clock::now();
                 if(!retained_inspector_gpu.upload(command_buffer,retained_ui.surface_render_packet("editor.inspector"))) {
                     logger_.error("ui.inspector_upload",retained_inspector_gpu.last_error());
                     if(SDL_SubmitGPUCommandBuffer(command_buffer)) {
@@ -2782,8 +2816,11 @@ int Application::run_interactive() {
                 }
                 retained_inspector_gpu.render(command_buffer,retained_inspector_texture,
                     retained_inspector_width,retained_inspector_height,true);
+                performance_retained_inspector_record=std::chrono::duration<double,std::milli>(
+                    std::chrono::steady_clock::now()-retained_surface_start).count();
             }
             if(!runtime_surface_mode&&retained_outliner_texture) {
+                const auto retained_surface_start=std::chrono::steady_clock::now();
                 if(!retained_outliner_gpu.upload(command_buffer,retained_ui.surface_render_packet("editor.outliner"))) {
                     logger_.error("ui.outliner_upload",retained_outliner_gpu.last_error());
                     if(SDL_SubmitGPUCommandBuffer(command_buffer)) {
@@ -2797,8 +2834,11 @@ int Application::run_interactive() {
                 }
                 retained_outliner_gpu.render(command_buffer,retained_outliner_texture,
                     retained_outliner_width,retained_outliner_height,true);
+                performance_retained_outliner_record=std::chrono::duration<double,std::milli>(
+                    std::chrono::steady_clock::now()-retained_surface_start).count();
             }
             if(!runtime_surface_mode&&retained_asset_browser_texture) {
+                const auto retained_surface_start=std::chrono::steady_clock::now();
                 if(!retained_asset_browser_gpu.upload(command_buffer,
                     retained_ui.surface_render_packet("editor.asset-browser"))) {
                     logger_.error("ui.asset_browser_upload",retained_asset_browser_gpu.last_error());
@@ -2813,6 +2853,8 @@ int Application::run_interactive() {
                 }
                 retained_asset_browser_gpu.render(command_buffer,retained_asset_browser_texture,
                     retained_asset_browser_width,retained_asset_browser_height,true);
+                performance_retained_asset_browser_record=std::chrono::duration<double,std::milli>(
+                    std::chrono::steady_clock::now()-retained_surface_start).count();
             }
             if (frame == 0) {
                 logger_.info("ui.retained_gpu",retained_ui_gpu.status_json());
@@ -2837,6 +2879,7 @@ int Application::run_interactive() {
             }
         }
         if (drawable_ui) {
+            const auto imgui_gpu_record_start=std::chrono::steady_clock::now();
             ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer);
             SDL_GPUColorTargetInfo color_target{};
             color_target.texture = capture_editor_this_frame?editor_capture_texture:swapchain_texture;
@@ -2854,6 +2897,8 @@ int Application::run_interactive() {
                 editor_capture_width,editor_capture_height,editor_capture_format,
                 std::string_view(SDL_GetGPUDeviceDriver(device))=="direct3d12"))
                 logger_.error("editor.capture_enqueue",scene_renderer->last_error());
+            performance_imgui_gpu_record=std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-imgui_gpu_record_start).count();
         }
         const auto submit_wait_start=std::chrono::steady_clock::now();
         performance_command_record=std::chrono::duration<double,std::milli>(
@@ -2912,6 +2957,16 @@ int Application::run_interactive() {
             performance_command_record_milliseconds.push_back(performance_command_record);
             performance_render_extract_milliseconds.push_back(performance_render_extract);
             performance_scene_render_record_milliseconds.push_back(performance_scene_render_record);
+            performance_thumbnail_sync_milliseconds.push_back(performance_thumbnail_sync);
+            performance_imgui_build_milliseconds.push_back(performance_imgui_build);
+            performance_retained_game_record_milliseconds.push_back(performance_retained_game_record);
+            performance_retained_inspector_record_milliseconds.push_back(performance_retained_inspector_record);
+            performance_retained_outliner_record_milliseconds.push_back(performance_retained_outliner_record);
+            performance_retained_asset_browser_record_milliseconds.push_back(performance_retained_asset_browser_record);
+            performance_imgui_gpu_record_milliseconds.push_back(performance_imgui_gpu_record);
+            const auto& panel_timings=editor_ui_.frame_timings().milliseconds;
+            for(std::size_t index=0;index<panel_timings.size();++index)
+                performance_editor_ui_panel_milliseconds[index].push_back(panel_timings[index]);
         }
         ++frame;
         startup_telemetry_->mark_frame(static_cast<std::uint64_t>(frame));
@@ -2947,6 +3002,19 @@ int Application::run_interactive() {
             .sampled_command_record_milliseconds=performance_command_record_milliseconds,
             .sampled_render_extract_milliseconds=performance_render_extract_milliseconds,
             .sampled_scene_render_record_milliseconds=performance_scene_render_record_milliseconds,
+            .sampled_thumbnail_sync_milliseconds=performance_thumbnail_sync_milliseconds,
+            .sampled_imgui_build_milliseconds=performance_imgui_build_milliseconds,
+            .sampled_retained_game_record_milliseconds=performance_retained_game_record_milliseconds,
+            .sampled_retained_inspector_record_milliseconds=performance_retained_inspector_record_milliseconds,
+            .sampled_retained_outliner_record_milliseconds=performance_retained_outliner_record_milliseconds,
+            .sampled_retained_asset_browser_record_milliseconds=performance_retained_asset_browser_record_milliseconds,
+            .sampled_imgui_gpu_record_milliseconds=performance_imgui_gpu_record_milliseconds,
+            .sampled_editor_ui_panel_milliseconds={
+                performance_editor_ui_panel_milliseconds[0],performance_editor_ui_panel_milliseconds[1],
+                performance_editor_ui_panel_milliseconds[2],performance_editor_ui_panel_milliseconds[3],
+                performance_editor_ui_panel_milliseconds[4],performance_editor_ui_panel_milliseconds[5],
+                performance_editor_ui_panel_milliseconds[6],performance_editor_ui_panel_milliseconds[7],
+                performance_editor_ui_panel_milliseconds[8]},
             .renderer_status_json=scene_renderer->status_json()};
         if(write_performance_evidence(options_.performance_evidence_path,evidence,evidence_error))
             logger_.info("performance.evidence",options_.performance_evidence_path);

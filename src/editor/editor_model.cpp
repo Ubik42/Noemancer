@@ -507,6 +507,8 @@ std::string EditorModel::selected_animation_graph_authoring_json() const {
             {"redoCommand","asset.source.redo"},{"maximumOperations",animation_graph_patch_max_operations}}}};
     const auto* asset=selected_asset();
     if(asset==nullptr)return result.dump();
+    if(asset->kind!="AnimationGraph"&&!asset->source.ends_with(".animation-graph.json"))
+        return result.dump();
     const auto inspection=Json::parse(asset_registry_.inspect_json(asset->id),nullptr,false);
     const auto metadata=inspection.is_object()?inspection.value("importedMetadata",Json(nullptr)):Json(nullptr);
     if(!inspection.is_object()||!inspection.value("valid",false)||!metadata.is_object()||
@@ -576,6 +578,8 @@ std::string EditorModel::selected_tilemap_authoring_json() const {
             {"paletteCommand","asset.tile-palette.autotile"},{"autotileNeighborBits",{{"north",1},{"east",2},{"south",4},{"west",8}}},
             {"undoCommand","asset.source.undo"},{"redoCommand","asset.source.redo"}}}};
     if(asset==nullptr)return result.dump();
+    if(asset->kind!="Tilemap"&&!asset->source.ends_with(".tilemap.json"))
+        return result.dump();
     const auto inspection=Json::parse(asset_registry_.inspect_json(asset->id),nullptr,false);
     const auto imported_metadata=inspection.is_object()
         ? inspection.value("importedMetadata",Json(nullptr))

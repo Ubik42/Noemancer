@@ -485,6 +485,14 @@ std::string EditorUi::invoke_retained_authoring_action(
 }
 
 void EditorUi::render() {
+    frame_timings_={};
+    const auto measure=[&](const std::size_t slot,auto&& operation) {
+        const auto start=std::chrono::steady_clock::now();
+        operation();
+        frame_timings_.milliseconds[slot]=std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-start).count();
+    };
+    const auto refresh_start=std::chrono::steady_clock::now();
     poll_script_compile_job();
     ImGuizmo::BeginFrame();
     const auto now=std::chrono::steady_clock::now();
@@ -510,19 +518,21 @@ void EditorUi::render() {
     if (!layout_initialized_) {
         apply_editor_style();
     }
+    frame_timings_.milliseconds[0]=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-refresh_start).count();
     if(startup_hub_open_) {
-        draw_startup_hub();
+        measure(1,[&]{draw_startup_hub();});
         synchronize_editor_context_revision();
         return;
     }
-    draw_root_dockspace();
-    draw_scene_view();
-    draw_animation_graph();
-    draw_world_outliner();
-    draw_inspector();
-    draw_asset_browser();
-    draw_console();
-    draw_agent_context();
+    measure(1,[&]{draw_root_dockspace();});
+    measure(2,[&]{draw_scene_view();});
+    measure(3,[&]{draw_animation_graph();});
+    measure(4,[&]{draw_world_outliner();});
+    measure(5,[&]{draw_inspector();});
+    measure(6,[&]{draw_asset_browser();});
+    measure(7,[&]{draw_console();});
+    measure(8,[&]{draw_agent_context();});
     if(project_settings_open_&&project_input_panel_)project_input_panel_->render();
     if(project_settings_open_&&hybrid_pixel_profile_panel_)hybrid_pixel_profile_panel_->render();
     if(project_settings_open_&&project_ui_panel_)project_ui_panel_->render();

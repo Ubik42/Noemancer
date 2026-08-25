@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-25",
   "status": "active-development",
-  "currentSlice": "performance.editor-retained-ui-command-recording",
-  "currentStep": "profile-and-eliminate-source-editor-retained-ui-recording-regression",
+  "currentSlice": "performance.gpu-pass-timestamp-foundation",
+  "currentStep": "map-native-d3d12-vulkan-timestamp-capabilities-and-adapter-boundary",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "performance.editor-retained-ui-command-recording",
     "performance.gpu-pass-timestamp-foundation",
     "render.dynamic-sky-atmosphere",
     "render.screen-space-hiz-history-and-temporal-denoising",
@@ -56,7 +55,8 @@
     "editor.project-hub-recent-workspaces",
     "editor.dpi-localization-visual-matrix",
     "commercial-raster.render-lab-classic-scene-contract",
-    "asset.gltf-external-resource-jpeg-and-large-scene-readiness"
+    "asset.gltf-external-resource-jpeg-and-large-scene-readiness",
+    "performance.editor-retained-ui-command-recording"
   ],
   "closedExperiments": [
     {

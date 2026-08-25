@@ -31,14 +31,14 @@ Noemancer 的差异化集中在：
 
 1. `commercial-raster.render-lab-classic-scene-contract` 已退出：`generated/acceptance/render-lab-classic-scene-20260825-final/` 固定 1440×900 机位、三项 Khronos CC0 GLB、项目/场景/Registry/素材 SHA-256、质量 sidecar、Render Graph/Shader 指纹与 D3D12/Vulkan 双后端；Release Package Player 两后端 CPU Frame p95 为 1.56/1.41 ms，均为 3 Cooked Load、0 Source Decode、0 Offline Compile，包内源模型为 0。SDL_GPU 无 timestamp API，四路 GPU 数据均明确 unavailable。源码 Editor 路径同时暴露出 D3D12/Vulkan 834/1015 ms p95 的严重 UI 命令录制异常，不能拿 Player 结果掩盖。
 2. `asset.gltf-external-resource-jpeg-and-large-scene-readiness` 已退出：Adopt 官方 libjpeg-turbo 3.2.0；统一 PNG/JPEG RGBA8 Adapter、缩略图与 KTX2 Texture Cook；JSON `.gltf` 的文档、外部 buffer/PNG/JPEG 形成有界不可变依赖闭包、稳定 SHA-256 closure/recipe/cache identity、隔离 staging 和变更失效。真实三角形 JPEG Cook→`.meshbin`→cache-hit、128 外部依赖压力、旧计划拒绝、Release Package 复合许可证原文均通过。当前主机缺 NASM，JPEG 功能成立但 SIMD 明确未启用，不据此声称最佳解码性能。
-3. `performance.editor-retained-ui-command-recording`：用持久性能分段精确拆出 ImGui、Retained 主表面、Inspector/Outliner/Asset Browser upload/render 与资源 cycling，消除 RenderLab 源项目 1 FPS 级退化；不得通过隐藏面板或降低场景负载规避。
+3. `performance.editor-retained-ui-command-recording` 已退出：`noemancer.performance-evidence/0.1` 现在持久拆分 Thumbnail Sync、ImGui Build、四个 Retained Surface、ImGui GPU Record，以及 Refresh/Chrome/Scene/Animation/Outliner/Inspector/Assets/Console/Agent Context。分段证明 1 FPS 退化并非 RmlUi 或 Render Graph，而是大型 glTF 被三个不匹配的专用资产面板各自完整 Inspect/Decode；类型门禁移到昂贵检查之前后，同一 RenderLab、同一 1600×900 Release D3D12、未降低场景/画质/面板的 Frame p95 从 943.35 ms 降为 7.18 ms，Command Record p95 从 937.28 ms 降为 3.57 ms。修复后证据位于 `generated/acceptance/retained-ui-after-type-gate-final-20260825/`。
 4. `performance.gpu-pass-timestamp-foundation`：先在 SDL_GPU 路径真实输出 unsupported/capability，再以最小 Native D3D12/Vulkan 诊断 Adapter 建立图内 marker、frame-ring、延迟读回、availability 与 overflow；没有有效值时禁止输出 `0` 冒充 GPU 时间。
-4. `render.dynamic-sky-atmosphere`：Wicked 多 LUT/raymarch 作为高质量参考，Godot Preetham 作为低成本档；真实 Render Graph 具备 transmittance/multi-scatter/sky-view、时间/天气、跨后端降级和 RenderLab 对照。
-5. `render.screen-space-hiz-history-and-temporal-denoising`：先统一深度金字塔、motion/depth/normal history、disocclusion、clamp 与 reset 语义，再供 SSR/SSGI 复用，避免每个效果各造一套 history。
-6. `render.ssr-production-path` 与 `render.ssgi-production-path`：分别具备可见开关、质量档、时域稳定性、洞/漏光诊断、GPU 成本与无历史降级；存在代码但未接默认 Render Graph 不算完成。
-7. `render.bindless-gpu-scene-and-occlusion-decision`：用 descriptor churn、CPU submission、visible ratio 与 GPU 时间复审 bindless、GPU Scene 和 HiZ occlusion；不为了热门名称提前引入半套新 Renderer。
-8. `render.shadow-scalability-vsm-decision`：以当前 CSM/local shadow 的真实场景数据决定 VSM/virtualized shadow map 路线；先写 ADR 和预算，不因名称流行就复制 UE 实现。
-9. `render.native-rhi-raytracing-foundation` → `render.rtgi-production-path`：先证明真实 D3D12 DXR/Vulkan RT 资源、BLAS/TLAS、同步、Shader 和设备能力矩阵，再接 RTGI、Denoiser 与 Raster fallback；SDL_GPU 后端不能伪报硬件光追已成立。
+5. `render.dynamic-sky-atmosphere`：Wicked 多 LUT/raymarch 作为高质量参考，Godot Preetham 作为低成本档；真实 Render Graph 具备 transmittance/multi-scatter/sky-view、时间/天气、跨后端降级和 RenderLab 对照。
+6. `render.screen-space-hiz-history-and-temporal-denoising`：先统一深度金字塔、motion/depth/normal history、disocclusion、clamp 与 reset 语义，再供 SSR/SSGI 复用，避免每个效果各造一套 history。
+7. `render.ssr-production-path` 与 `render.ssgi-production-path`：分别具备可见开关、质量档、时域稳定性、洞/漏光诊断、GPU 成本与无历史降级；存在代码但未接默认 Render Graph 不算完成。
+8. `render.bindless-gpu-scene-and-occlusion-decision`：用 descriptor churn、CPU submission、visible ratio 与 GPU 时间复审 bindless、GPU Scene 和 HiZ occlusion；不为了热门名称提前引入半套新 Renderer。
+9. `render.shadow-scalability-vsm-decision`：以当前 CSM/local shadow 的真实场景数据决定 VSM/virtualized shadow map 路线；先写 ADR 和预算，不因名称流行就复制 UE 实现。
+10. `render.native-rhi-raytracing-foundation` → `render.rtgi-production-path`：先证明真实 D3D12 DXR/Vulkan RT 资源、BLAS/TLAS、同步、Shader 和设备能力矩阵，再接 RTGI、Denoiser 与 Raster fallback；SDL_GPU 后端不能伪报硬件光追已成立。
 
 每项高级效果必须同时给出：启用的 Render Graph 节点、可观察参数、固定场景 A/B、GPU/显存预算、历史重置规则、跨后端结果和不支持平台的明确降级。只写 Shader、结构体或测试桩不计完成。
 
