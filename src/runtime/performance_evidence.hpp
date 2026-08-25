@@ -85,6 +85,7 @@ struct PerformanceEvidenceInput final {
     std::span<const double> sampled_retained_asset_browser_record_milliseconds;
     std::span<const double> sampled_imgui_gpu_record_milliseconds;
     std::array<std::span<const double>,9> sampled_editor_ui_panel_milliseconds;
+    std::string gpu_pass_timestamps_json;
     std::string renderer_status_json;
 };
 

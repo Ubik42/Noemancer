@@ -69,9 +69,9 @@ Observe -> Plan(base revision) -> Apply -> Receipt -> Undo/Redo
 
 | 工程 | 验证内容 |
 | --- | --- |
-| `D:\3D\NoemancerPlatformer` | Project UI/Input、C# 脚本、Sprite/Tilemap、Cook、Package 与独立 Player |
-| `D:\3D\StarfallGauntlet` | 不含项目 Native C++ 的 clean-room 2D 游戏行为纵切 |
-| `D:\3D\NoemancerRenderLab` | 使用公开 Project/Scene/Registry 路径验证真实 GLB、双后端画面、质量与性能合同；当前仍在推进 |
+| `D:\3D\NoemancerProjects\NoemancerPlatformer` | Project UI/Input、C# 脚本、Sprite/Tilemap、Cook、Package 与独立 Player |
+| `D:\3D\_tools\StarfallGauntlet` | 不含项目 Native C++ 的 clean-room 2D 游戏行为纵切 |
+| `D:\3D\NoemancerProjects\NoemancerRenderLab` | 使用公开 Project/Scene/Registry 路径验证真实 GLB、双后端画面、质量与性能合同；当前仍在推进 |
 
 测试、画面与机器可读收据的准确边界记录在[当前能力与验收边界](docs/first-acceptance-status.zh-CN.md)。README 只列当前已成立的产品能力，不替代证据索引。
 

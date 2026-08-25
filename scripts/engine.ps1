@@ -26,7 +26,8 @@ if (-not (Test-Path -LiteralPath $cmake)) {
     if ($null -ne $systemCmake) { $cmake = $systemCmake.Source }
 }
 $preset = 'windows-msvc-debug'
-$runtime = Join-Path $projectRoot "build\windows-msvc-debug\src\runtime\$Config\noemancer.exe"
+$buildDirectory = Join-Path $projectRoot 'build\windows-msvc-debug'
+$runtime = Join-Path $buildDirectory "src\runtime\$Config\noemancer.exe"
 $mcpDirectory = Join-Path $projectRoot 'tools\mcp'
 $ctest = Join-Path (Split-Path -Parent $cmake) 'ctest.exe'
 $operationMutex = $null
@@ -35,6 +36,41 @@ $previousMsBuildDisableNodeReuse = $env:MSBUILDDISABLENODEREUSE
 
 if (-not (Test-Path -LiteralPath $cmake)) {
     throw 'CMake 3.28 or newer is required. Install CMake or place the pinned distribution under _tools.'
+}
+
+function Invoke-NoemancerConfigure {
+    $configureArguments = @('--preset', $preset)
+    $cachePath = Join-Path $buildDirectory 'CMakeCache.txt'
+    if (Test-Path -LiteralPath $cachePath) {
+        $cachedSourceLine = Select-String -LiteralPath $cachePath `
+            -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=' | Select-Object -First 1
+        if ($null -ne $cachedSourceLine) {
+            $cachedSource = $cachedSourceLine.Line.Substring(
+                'CMAKE_HOME_DIRECTORY:INTERNAL='.Length)
+            $cachedSourceFull = [IO.Path]::GetFullPath($cachedSource).TrimEnd('\', '/')
+            $projectRootFull = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\', '/')
+            if (-not $cachedSourceFull.Equals(
+                $projectRootFull, [StringComparison]::OrdinalIgnoreCase)) {
+                Write-Host "Build cache moved from '$cachedSourceFull'; configuring fresh at '$projectRootFull'."
+                $configureArguments = @('--fresh') + $configureArguments
+            }
+        }
+    }
+    & $cmake @configureArguments
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $marker = Join-Path $buildDirectory '.noemancer-configured-source'
+    [IO.File]::WriteAllText($marker, [IO.Path]::GetFullPath($projectRoot), [Text.UTF8Encoding]::new($false))
+}
+
+function Confirm-NoemancerConfigured {
+    $marker = Join-Path $buildDirectory '.noemancer-configured-source'
+    $expected = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\', '/')
+    $configured = if (Test-Path -LiteralPath $marker -PathType Leaf) {
+        [IO.File]::ReadAllText($marker).Trim().TrimEnd('\', '/')
+    } else { '' }
+    if (-not $configured.Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
+        Invoke-NoemancerConfigure
+    }
 }
 
 if ($Command -in @('configure', 'build', 'check', 'test')) {
@@ -64,14 +100,16 @@ if ($Command -in @('configure', 'build', 'check', 'test')) {
 try {
 switch ($Command) {
     'configure' {
-        & $cmake --preset $preset
+        Invoke-NoemancerConfigure
     }
     'build' {
+        Confirm-NoemancerConfigured
         $buildArguments = @('--build', '--preset', $preset, '--config', $Config)
         if ($Target) { $buildArguments += @('--target', $Target) }
         & $cmake @buildArguments
     }
     'check' {
+        Confirm-NoemancerConfigured
         if (-not $Target -and -not $TestRegex) {
             throw 'check requires -Target, -TestRegex, or both; use test for the full milestone gate.'
         }
@@ -80,15 +118,16 @@ switch ($Command) {
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         }
         if ($TestRegex) {
-            & $ctest --test-dir (Join-Path $projectRoot 'build\windows-msvc-debug') -C $Config `
+            & $ctest --test-dir $buildDirectory -C $Config `
                 -R $TestRegex --output-on-failure --interactive-debug-mode 0
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         }
     }
     'test' {
+        Confirm-NoemancerConfigured
         & $cmake --build --preset $preset --config $Config
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        & $ctest --test-dir (Join-Path $projectRoot 'build\windows-msvc-debug') -C $Config `
+        & $ctest --test-dir $buildDirectory -C $Config `
             --output-on-failure --interactive-debug-mode 0
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         if ($WithMcp) {

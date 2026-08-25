@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Project = 'D:\3D\NoemancerPlatformer',
+    [string]$Project = 'D:\3D\NoemancerProjects\NoemancerPlatformer',
     [string]$RuntimePath = (Join-Path $PSScriptRoot '..\build\windows-msvc-debug\src\runtime\Debug\noemancer.exe'),
     [string]$OutputPath = (Join-Path $PSScriptRoot '..\generated\acceptance\sprite-atlas-page-cache-evidence.json'),
     [ValidateRange(30, 900)]

@@ -44,9 +44,9 @@ A running Editor publishes a local same-user session. MCP can attach to the Worl
 
 | Project | Coverage |
 | --- | --- |
-| `D:\3D\NoemancerPlatformer` | Project UI/Input, C# scripting, Sprite/Tilemap, Cook, Package and standalone Player |
-| `D:\3D\StarfallGauntlet` | Clean-room 2D gameplay slice with no project-native C++ |
-| `D:\3D\NoemancerRenderLab` | Public Project/Scene/Registry validation for real GLB content, dual-backend images, quality and performance; work in progress |
+| `D:\3D\NoemancerProjects\NoemancerPlatformer` | Project UI/Input, C# scripting, Sprite/Tilemap, Cook, Package and standalone Player |
+| `D:\3D\_tools\StarfallGauntlet` | Clean-room 2D gameplay slice with no project-native C++ |
+| `D:\3D\NoemancerProjects\NoemancerRenderLab` | Public Project/Scene/Registry validation for real GLB content, dual-backend images, quality and performance; work in progress |
 
 Exact evidence and limitations are maintained in [Current capabilities and acceptance boundaries](docs/first-acceptance-status.zh-CN.md).
 

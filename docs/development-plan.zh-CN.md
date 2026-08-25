@@ -6,7 +6,7 @@
 > 历史进展不保存在本页；旧版长日志可从 Git revision `3e15f66^` 查阅。
 ## 产品目标
 
-先把 Noemancer 做成一个自洽、可独立创建和编辑项目的通用引擎，再用 `D:\3D\NoemancerPlatformer` 平台跳跃工程验证 2D 游戏生产闭环，最后扩展 Hybrid Pixel / HD2D Profile。游戏规则应位于项目 C#，不能为了快速演示固化进引擎 C++。`game.lumen-run` 与 `lumen.*` 稳定 ID 暂作兼容身份；旧证据中的 “Lumen Run” 均指同一工程，不再作为产品或目录名称。
+先把 Noemancer 做成一个自洽、可独立创建和编辑项目的通用引擎，再用 `D:\3D\NoemancerProjects\NoemancerPlatformer` 平台跳跃工程验证 2D 游戏生产闭环，最后扩展 Hybrid Pixel / HD2D Profile。游戏规则应位于项目 C#，不能为了快速演示固化进引擎 C++。`game.lumen-run` 与 `lumen.*` 稳定 ID 暂作兼容身份；旧证据中的 “Lumen Run” 均指同一工程，不再作为产品或目录名称。
 
 Noemancer 的差异化集中在：
 
@@ -21,7 +21,7 @@ Noemancer 的差异化集中在：
 
 第一阶段通用生产闭环、编辑器基础、Cook/Package/Player、Agent Authority 和 Hybrid Pixel 纵切已经成立，但这不等于引擎只剩边角料。渲染仍有商业化能力缺口，因此产品优先级从 UI 收尾切回 Rendering；高 DPI、可再分发多语字体和 cluster-aware 编辑保留在队列中，不删除也不与渲染批次混写。
 
-独立验收工程 `D:\3D\NoemancerRenderLab` 是渲染真实性客户，不属于引擎源码，也不建立第二套 Scene/Asset Schema。它由正式 Project Workspace Authority 创建，当前包含：
+独立验收工程 `D:\3D\NoemancerProjects\NoemancerRenderLab` 是渲染真实性客户，不属于引擎源码，也不建立第二套 Scene/Asset Schema。它由正式 Project Workspace Authority 创建，当前包含：
 
 - 内置几何体 Raster 基线：PBR 金属度/粗糙度矩阵、方向/点/聚光、方向与局部阴影、HDR 自发光、Tone Mapping、深度与纹理采样；
 - Khronos CC0 经典资产 Gallery：MetalRoughSpheresNoTextures、BoomBox、Lantern，模型、上游 Metadata、License 和 SHA-256 一并固定；
@@ -29,10 +29,10 @@ Noemancer 的差异化集中在：
 
 渲染批次的顺序与退出条件：
 
-1. `commercial-raster.render-lab-classic-scene-contract` 已退出：`generated/acceptance/render-lab-classic-scene-20260825-final/` 固定 1440×900 机位、三项 Khronos CC0 GLB、项目/场景/Registry/素材 SHA-256、质量 sidecar、Render Graph/Shader 指纹与 D3D12/Vulkan 双后端；Release Package Player 两后端 CPU Frame p95 为 1.56/1.41 ms，均为 3 Cooked Load、0 Source Decode、0 Offline Compile，包内源模型为 0。SDL_GPU 无 timestamp API，四路 GPU 数据均明确 unavailable。源码 Editor 路径同时暴露出 D3D12/Vulkan 834/1015 ms p95 的严重 UI 命令录制异常，不能拿 Player 结果掩盖。
+1. `commercial-raster.render-lab-classic-scene-contract` 已退出：`generated/acceptance/render-lab-classic-scene-20260825-final/` 固定 1440×900 机位、三项 Khronos CC0 GLB、项目/场景/Registry/素材 SHA-256、质量 sidecar、Render Graph/Shader 指纹与 D3D12/Vulkan 双后端；Release Package Player 两后端 CPU Frame p95 为 1.56/1.41 ms，均为 3 Cooked Load、0 Source Decode、0 Offline Compile，包内源模型为 0。该历史证据生成时 SDL_GPU 尚无 timestamp API；后续 `performance.gpu-pass-timestamp-foundation` 已用固定补丁补齐真实 GPU Pass 计时，不能回写或伪装历史数据。
 2. `asset.gltf-external-resource-jpeg-and-large-scene-readiness` 已退出：Adopt 官方 libjpeg-turbo 3.2.0；统一 PNG/JPEG RGBA8 Adapter、缩略图与 KTX2 Texture Cook；JSON `.gltf` 的文档、外部 buffer/PNG/JPEG 形成有界不可变依赖闭包、稳定 SHA-256 closure/recipe/cache identity、隔离 staging 和变更失效。真实三角形 JPEG Cook→`.meshbin`→cache-hit、128 外部依赖压力、旧计划拒绝、Release Package 复合许可证原文均通过。当前主机缺 NASM，JPEG 功能成立但 SIMD 明确未启用，不据此声称最佳解码性能。
 3. `performance.editor-retained-ui-command-recording` 已退出：`noemancer.performance-evidence/0.1` 现在持久拆分 Thumbnail Sync、ImGui Build、四个 Retained Surface、ImGui GPU Record，以及 Refresh/Chrome/Scene/Animation/Outliner/Inspector/Assets/Console/Agent Context。分段证明 1 FPS 退化并非 RmlUi 或 Render Graph，而是大型 glTF 被三个不匹配的专用资产面板各自完整 Inspect/Decode；类型门禁移到昂贵检查之前后，同一 RenderLab、同一 1600×900 Release D3D12、未降低场景/画质/面板的 Frame p95 从 943.35 ms 降为 7.18 ms，Command Record p95 从 937.28 ms 降为 3.57 ms。修复后证据位于 `generated/acceptance/retained-ui-after-type-gate-final-20260825/`。
-4. `performance.gpu-pass-timestamp-foundation`：先在 SDL_GPU 路径真实输出 unsupported/capability，再以最小 Native D3D12/Vulkan 诊断 Adapter 建立图内 marker、frame-ring、延迟读回、availability 与 overflow；没有有效值时禁止输出 `0` 冒充 GPU 时间。
+4. `performance.gpu-pass-timestamp-foundation` 已退出：固定 SDL 3.4.14 小补丁在后端内部拥有 D3D12/Vulkan query pool，runtime-private Adapter 提供稳定 Pass ID、三帧环、批量 resolve、fence 延迟读回、availability/overflow/null 合同；D3D12 与 Vulkan 各 60/60 采样帧均取得数值结果且零 skipped slot。普通帧不获取证据 fence，PresentMon 仍是独立的呈现遥测。
 5. `render.dynamic-sky-atmosphere`：Wicked 多 LUT/raymarch 作为高质量参考，Godot Preetham 作为低成本档；真实 Render Graph 具备 transmittance/multi-scatter/sky-view、时间/天气、跨后端降级和 RenderLab 对照。
 6. `render.screen-space-hiz-history-and-temporal-denoising`：先统一深度金字塔、motion/depth/normal history、disocclusion、clamp 与 reset 语义，再供 SSR/SSGI 复用，避免每个效果各造一套 history。
 7. `render.ssr-production-path` 与 `render.ssgi-production-path`：分别具备可见开关、质量档、时域稳定性、洞/漏光诊断、GPU 成本与无历史降级；存在代码但未接默认 Render Graph 不算完成。
@@ -56,7 +56,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、libjpe
 
 当前 `/goal` 使用稳定目标，不在 Prompt 内复制会迅速过期的切片名或性能数字；瞬时队列只由 `docs/current-state.json.currentFrontier` 表达。可直接使用的目标文本如下：
 
-> 持续把 `D:\cs\Noemancer` 推进为可由人类与 AI Agent 共同创建、编辑、调试、运行、打包和发布真实游戏的高性能通用引擎，并以 `D:\3D` 下的独立项目，尤其 `D:\3D\NoemancerRenderLab`，作为公开产品路径的真实性客户。每次恢复必须先完整读取仓库 `AGENTS.md`、`docs/current-state.json`、`docs/architecture.md`、`docs/development-plan.zh-CN.md` 与 `docs/first-acceptance-status.zh-CN.md`；瞬时队列只认 `currentFrontier`，旧对话、历史研究、已完成切片和旧暂停文字都不是当前指令。
+> 持续把 `D:\3D\_tools\Noemancer` 推进为可由人类与 AI Agent 共同创建、编辑、调试、运行、打包和发布真实游戏的高性能通用引擎，并以 `D:\3D` 下的独立项目，尤其 `D:\3D\NoemancerProjects\NoemancerRenderLab`，作为公开产品路径的真实性客户。每次恢复必须先完整读取仓库 `AGENTS.md`、`docs/current-state.json`、`docs/architecture.md`、`docs/development-plan.zh-CN.md` 与 `docs/first-acceptance-status.zh-CN.md`；瞬时队列只认 `currentFrontier`，旧对话、历史研究、已完成切片和旧暂停文字都不是当前指令。
 >
 > 从 `currentFrontier` 首个未阻塞项选择最大连贯、可审查的通用引擎批次。各领域默认先做 build-vs-buy 与参考实现检索：优先 Adopt 成熟中间件；Port 许可兼容且可隔离的算法、Shader 和数据布局；Adapt 深度耦合实现的 pass 分解、资源策略、质量档和 failure mode；不能满足许可证、维护或目标 workload 时 Reject。每次高级渲染实现前记录精确上游提交/文件、许可证、修改和验证。Wicked/Godot 可合规移植并进入许可证台账；Unreal Engine 只研究生产约束，禁止复制其受 EULA 管辖的实现。第三方类型封闭在 plain-data Adapter 后，不得进入 Scene、Prefab、项目 C#、Semantic State Plane 或公共 RPC。
 >
@@ -176,7 +176,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、libjpe
 
 ### P8：游戏迁移与制作验证（通用引擎完成后的下游验收）
 
-游戏复刻、兼容引擎和开源游戏迁移是引擎的验收客户，不替代通用引擎主线。`game-migration.hybrid-pixel-hd2d-small-slice` 已退出：外部 `D:\3D\NoemancerHd2dSlice` 只含项目 C#、Scene/Prefab、程序生成灰盒 Sprite/Tilemap、混合 2D/3D 光照、像素 VFX、项目 UI 和 Input，没有 Native C++ 或引擎分叉。`generated/acceptance/hd2d-small-slice-current-v3/evidence.json` 证明源码与原子 Release Package Player 的 Hybrid Profile、Input、UI 与脚本状态相等；两路隐藏 D3D12 均提交 50 个 lit Sprite/Tile cell、5 个 3D opaque instance 和真实 GPU VFX，960×540 画面可读，包内 60 帧 CPU p95 为 3.62 ms，源项目树未改变。Noemancer Platformer 继续作为基础回归客户；首个 Clean-room 纵切 `D:\3D\StarfallGauntlet` 已按 OpenTyrian 级纵向射击行为范围完成。
+游戏复刻、兼容引擎和开源游戏迁移是引擎的验收客户，不替代通用引擎主线。`game-migration.hybrid-pixel-hd2d-small-slice` 已退出：外部 `D:\3D\NoemancerProjects\NoemancerHd2dSlice` 只含项目 C#、Scene/Prefab、程序生成灰盒 Sprite/Tilemap、混合 2D/3D 光照、像素 VFX、项目 UI 和 Input，没有 Native C++ 或引擎分叉。`generated/acceptance/hd2d-small-slice-current-v3/evidence.json` 证明源码与原子 Release Package Player 的 Hybrid Profile、Input、UI 与脚本状态相等；两路隐藏 D3D12 均提交 50 个 lit Sprite/Tile cell、5 个 3D opaque instance 和真实 GPU VFX，960×540 画面可读，包内 60 帧 CPU p95 为 3.62 ms，源项目树未改变。Noemancer Platformer 继续作为基础回归客户；首个 Clean-room 纵切 `D:\3D\_tools\StarfallGauntlet` 已按 OpenTyrian 级纵向射击行为范围完成。
 
 `development-loop.source-project-first-visual-latency` 已退出。旧 54.63 秒数字是 Debug 64 帧验收总时长，不是首帧；`noemancer.runtime-startup-telemetry/0.1` 现从进程入口有界记录真实 phase 与第 1/3/64 帧。固定 HD2D 1 帧隐藏 D3D12 对照为 Debug `firstFrameMs=16453.51`、Release `1690.07`；Debug 主要耗在 Retained UI 初始化 7796.92 ms 与首帧 loop 7116.90 ms，项目 C# 仅 12.65 ms、Asset Cook 0.01 ms。官方 `Noemancer Editor.cmd` 因此默认 Release，显式 `-Config Debug` 仍用于原生调试。项目 C# 的跨进程内容寻址缓存把真实冷编译约 1489 ms 降到磁盘命中约 12 ms，修改源码后约 1567 ms 正确失效；缓存原子写入、逐文件复验并受 32 条/256 MiB 全局预算约束。证据位于 `generated/acceptance/startup-telemetry-20260824-170450/` 与 `generated/acceptance/managed-compile-cache-evidence.json`。
 
@@ -198,7 +198,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、libjpe
 
 迁移按梯度推进：引擎自有确定性 Fixture → Lumen Run 项目 C# 闭环 → OpenTyrian/OpenJazz 级小型 2D → OpenRA、Unciv、OpenTTD + 开放内容包级数据驱动项目 → OpenLara/Warzone 2100 级 3D 综合压力 → Hybrid Pixel/HD2D 项目。OpenMW、OpenRCT2、ScummVM、OpenGOAL 与静态重编译项目主要用于规模、兼容层和工具链研究，不作为近期默认移植目标。
 
-`D:\cs\_reference\github\_game-remakes\README.md` 是研究与候选索引，不是构建依赖。默认采用“架构借鉴 + Clean-room 项目 C# 实现”；只有逐仓库、逐组件核验许可证并确认与 Noemancer 的发行方式兼容后，才允许复用代码。原版 ROM/MPQ/PAK、关卡、音乐、商标素材不得进入引擎仓库或默认分发包；优先使用明确开放的 OpenGFX/OpenSFX/OpenMSX 等内容，但仍需保留来源、许可证和 NOTICE。
+`D:\3D\_tools\_reference\_game-remakes\README.md` 是研究与候选索引，不是构建依赖。默认采用“架构借鉴 + Clean-room 项目 C# 实现”；只有逐仓库、逐组件核验许可证并确认与 Noemancer 的发行方式兼容后，才允许复用代码。原版 ROM/MPQ/PAK、关卡、音乐、商标素材不得进入引擎仓库或默认分发包；优先使用明确开放的 OpenGFX/OpenSFX/OpenMSX 等内容，但仍需保留来源、许可证和 NOTICE。
 
 Noemancer 根许可证与 Package 第三方许可证/NOTICE 台账现已成立。直接迁移仍须逐仓库、逐文件确认兼容性、保留作者与许可证，并优先采用“协议/行为研究 + 项目 C# clean-room 实现”；根许可证成立不等于自动允许复制任意候选源码或素材。
 

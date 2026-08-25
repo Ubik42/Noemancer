@@ -110,9 +110,14 @@ foreach ($column in @('FrameTime','CPUBusy','CPUWait','GPUTime','GPUBusy','GPUWa
 $evidence = Get-Content -LiteralPath $internalJson -Raw | ConvertFrom-Json -AsHashtable
 $evidence.schemaVersion = 'noemancer.performance-evidence/0.2'
 $gpuAvailable=$metrics.Contains('GPUTime') -or $metrics.Contains('GPUBusy')
-$evidence.gpu = [ordered]@{ available=$gpuAvailable; source='PresentMon/2.4.1'; capturedRows=$rows.Count;
-    measuredRows=$measuredRows.Count; metrics=$metrics; diagnostic=if($gpuAvailable){'ok'}else{
-        'PresentMon session completed but this host exposed no target Present rows; GPU milliseconds were not inferred or fabricated.'} }
+$internalGpu = $evidence.gpu
+$passTimestampAvailable = $null -ne $internalGpu -and [bool]$internalGpu.available
+$evidence.gpu = [ordered]@{ available=($gpuAvailable -or $passTimestampAvailable);
+    sources=@('Noemancer SDL_GPU native timestamp adapter','PresentMon/2.4.1');
+    passTimestamps=if($null -ne $internalGpu){$internalGpu.passTimestamps}else{$null};
+    presentationTelemetry=[ordered]@{ available=$gpuAvailable; source='PresentMon/2.4.1'; capturedRows=$rows.Count;
+        measuredRows=$measuredRows.Count; metrics=$metrics; diagnostic=if($gpuAvailable){'ok'}else{
+            'PresentMon session completed but this host exposed no target Present rows; presentation GPU milliseconds were not inferred or fabricated.'} } }
 $video = @(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,AdapterRAM)
 $processor = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors
 $evidence.machine = [ordered]@{ operatingSystem=[Environment]::OSVersion.VersionString; processor=$processor; videoControllers=$video }

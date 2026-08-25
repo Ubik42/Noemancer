@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Project = 'D:\3D\NoemancerHd2dSlice',
+    [string]$Project = 'D:\3D\NoemancerProjects\NoemancerHd2dSlice',
     [string]$RuntimePath = (Join-Path $PSScriptRoot '..\build\windows-msvc-debug\src\runtime\Debug\noemancer.exe'),
     [string]$OutputPath = (Join-Path $PSScriptRoot '..\generated\acceptance\hd2d-small-slice-evidence.json'),
     [ValidateSet('windows-x64-release', 'windows-x64-debug')]

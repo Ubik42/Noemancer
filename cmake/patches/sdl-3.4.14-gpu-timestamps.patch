@@ -1,0 +1,1389 @@
+diff --git a/include/SDL3/SDL_gpu.h b/include/SDL3/SDL_gpu.h
+index 603ca92a..2cba150e 100644
+--- a/include/SDL3/SDL_gpu.h
++++ b/include/SDL3/SDL_gpu.h
+@@ -597,6 +597,19 @@ typedef struct SDL_GPUCopyPass SDL_GPUCopyPass;
+  */
+ typedef struct SDL_GPUFence SDL_GPUFence;
+ 
++/**
++ * An opaque pool of GPU timestamp queries.
++ *
++ * A timestamp query pool is owned by its SDL_GPUDevice. Query commands are
++ * recorded into command buffers and become reusable only after the submission
++ * containing them has completed. The caller must keep the pool alive until
++ * the corresponding fence is signaled and must not reset or reuse a range
++ * while that submission is pending.
++ *
++ * \since This struct is available since SDL 3.4.14.
++ */
++typedef struct SDL_GPUTimestampQueryPool SDL_GPUTimestampQueryPool;
++
+ /**
+  * Specifies the primitive topology of a graphics pipeline.
+  *
+@@ -4478,6 +4491,141 @@ extern SDL_DECLSPEC void SDLCALL SDL_ReleaseGPUFence(
+     SDL_GPUDevice *device,
+     SDL_GPUFence *fence);
+ 
++/**
++ * Returns whether the selected GPU backend exposes timestamp query support.
++ *
++ * This is an explicit capability query. A false result means timestamp
++ * commands must not be recorded; SDL never reports a fabricated zero value.
++ *
++ * \param device a GPU context.
++ * \returns true when timestamp query pools and commands are supported.
++ * \since This function is available since SDL 3.4.14.
++ */
++extern SDL_DECLSPEC bool SDLCALL SDL_GPUDeviceSupportsTimestampQueries(
++    SDL_GPUDevice *device);
++
++/**
++ * Gets the timestamp period in nanoseconds per GPU timestamp tick.
++ *
++ * The period preserves the fractional precision exposed by Vulkan's
++ * timestampPeriod. It returns 0.0 when timestamp queries are unsupported or
++ * the backend cannot report a valid period; call
++ * SDL_GPUDeviceSupportsTimestampQueries() before using it.
++ *
++ * \param device a GPU context.
++ * \returns nanoseconds per timestamp tick, or 0.0 on unsupported/error.
++ * \since This function is available since SDL 3.4.14.
++ */
++extern SDL_DECLSPEC double SDLCALL SDL_GetGPUTimestampPeriodNanoseconds(
++    SDL_GPUDevice *device);
++
++/**
++ * Creates a pool containing \p query_count timestamp slots.
++ *
++ * The pool and every command buffer that references it must belong to the
++ * same device. Creation is thread-safe with respect to other device calls,
++ * but command recording remains owned by the thread that acquired the
++ * command buffer.
++ *
++ * \param device a GPU context.
++ * \param query_count the number of timestamp slots; must be non-zero.
++ * \returns a timestamp query pool, or NULL on failure.
++ * \since This function is available since SDL 3.4.14.
++ */
++extern SDL_DECLSPEC SDL_GPUTimestampQueryPool * SDLCALL SDL_CreateGPUTimestampQueryPool(
++    SDL_GPUDevice *device,
++    Uint32 query_count);
++
++/**
++ * Releases a timestamp query pool.
++ *
++ * The caller must wait for every submission referencing the pool before
++ * releasing it.
++ *
++ * \param device the pool's owning GPU context.
++ * \param pool a timestamp query pool.
++ * \since This function is available since SDL 3.4.14.
++ */
++extern SDL_DECLSPEC void SDLCALL SDL_ReleaseGPUTimestampQueryPool(
++    SDL_GPUDevice *device,
++    SDL_GPUTimestampQueryPool *pool);
++
++/**
++ * Resets a range of timestamp query slots in a command buffer.
++ *
++ * \param command_buffer a command buffer acquired from the pool's device.
++ * \param pool a timestamp query pool owned by the command buffer's device.
++ * \param first_query the first slot to reset.
++ * \param query_count the number of slots to reset.
++ * \returns true on success, false on failure.
++ * \since This function is available since SDL 3.4.14.
++ */
++extern SDL_DECLSPEC bool SDLCALL SDL_ResetGPUTimestampQueries(
++    SDL_GPUCommandBuffer *command_buffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count);
++
++/**
++ * Writes a GPU timestamp into one query slot.
++ *
++ * \param command_buffer a command buffer acquired from the pool's device.
++ * \param pool a timestamp query pool owned by the command buffer's device.
++ * \param query the slot to write.
++ * \returns true on success, false on failure.
++ * \since This function is available since SDL 3.4.14.
++ */
++extern SDL_DECLSPEC bool SDLCALL SDL_WriteGPUTimestamp(
++    SDL_GPUCommandBuffer *command_buffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 query);
++
++/**
++ * Resolves a range of timestamp queries for nonblocking CPU reads.
++ *
++ * D3D12 records a ResolveQueryData operation. Vulkan query pools are directly
++ * readable, so the operation validates and publishes the range without
++ * fabricating a copy. Results are only available after the submission fence
++ * is signaled.
++ *
++ * \param command_buffer a command buffer acquired from the pool's device.
++ * \param pool a timestamp query pool owned by the command buffer's device.
++ * \param first_query the first slot to resolve.
++ * \param query_count the number of slots to resolve.
++ * \returns true on success, false on failure.
++ * \since This function is available since SDL 3.4.14.
++ */
++extern SDL_DECLSPEC bool SDLCALL SDL_ResolveGPUTimestampQueries(
++    SDL_GPUCommandBuffer *command_buffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count);
++
++/**
++ * Reads timestamp values without blocking for GPU completion.
++ *
++ * \p available is set to true only when every value in the requested range
++ * is complete. If any value is still pending, \p available is false and the
++ * values array is left untouched; SDL never replaces pending values with a
++ * synthetic zero.
++ *
++ * \param device the pool's owning GPU context.
++ * \param pool a timestamp query pool.
++ * \param first_query the first slot to read.
++ * \param query_count the number of slots to read.
++ * \param values output timestamp values.
++ * \param available output completion flag for the complete range.
++ * \returns true when the read operation itself succeeded, false on error.
++ * \since This function is available since SDL 3.4.14.
++ */
++extern SDL_DECLSPEC bool SDLCALL SDL_GetGPUTimestampQueryResults(
++    SDL_GPUDevice *device,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count,
++    Uint64 *values,
++    bool *available);
++
+ /* Format Info */
+ 
+ /**
+diff --git a/src/dynapi/SDL_dynapi.sym b/src/dynapi/SDL_dynapi.sym
+index ec2e97be..7ead23b5 100644
+--- a/src/dynapi/SDL_dynapi.sym
++++ b/src/dynapi/SDL_dynapi.sym
+@@ -90,6 +90,7 @@ SDL3_0.0.0 {
+     SDL_CreateGPUSampler;
+     SDL_CreateGPUShader;
+     SDL_CreateGPUTexture;
++    SDL_CreateGPUTimestampQueryPool;
+     SDL_CreateGPUTransferBuffer;
+     SDL_CreateHapticEffect;
+     SDL_CreateMutex;
+@@ -291,6 +292,7 @@ SDL3_0.0.0 {
+     SDL_GetGPUDriver;
+     SDL_GetGPUShaderFormats;
+     SDL_GetGPUSwapchainTextureFormat;
++    SDL_GetGPUTimestampPeriodNanoseconds;
+     SDL_GetGamepadAppleSFSymbolsNameForAxis;
+     SDL_GetGamepadAppleSFSymbolsNameForButton;
+     SDL_GetGamepadAxis;
+@@ -719,6 +721,12 @@ SDL3_0.0.0 {
+     SDL_ReleaseGPUShader;
+     SDL_ReleaseGPUTexture;
+     SDL_ReleaseGPUTransferBuffer;
++    SDL_ReleaseGPUTimestampQueryPool;
++    SDL_GPUDeviceSupportsTimestampQueries;
++    SDL_ResetGPUTimestampQueries;
++    SDL_ResolveGPUTimestampQueries;
++    SDL_WriteGPUTimestamp;
++    SDL_GetGPUTimestampQueryResults;
+     SDL_ReleaseWindowFromGPUDevice;
+     SDL_ReloadGamepadMappings;
+     SDL_RemoveEventWatch;
+diff --git a/src/dynapi/SDL_dynapi_overrides.h b/src/dynapi/SDL_dynapi_overrides.h
+index bf8d6427..99dedc39 100644
+--- a/src/dynapi/SDL_dynapi_overrides.h
++++ b/src/dynapi/SDL_dynapi_overrides.h
+@@ -115,6 +115,7 @@
+ #define SDL_CreateGPUSampler SDL_CreateGPUSampler_REAL
+ #define SDL_CreateGPUShader SDL_CreateGPUShader_REAL
+ #define SDL_CreateGPUTexture SDL_CreateGPUTexture_REAL
++#define SDL_CreateGPUTimestampQueryPool SDL_CreateGPUTimestampQueryPool_REAL
+ #define SDL_CreateGPUTransferBuffer SDL_CreateGPUTransferBuffer_REAL
+ #define SDL_CreateHapticEffect SDL_CreateHapticEffect_REAL
+ #define SDL_CreateMutex SDL_CreateMutex_REAL
+@@ -316,6 +317,7 @@
+ #define SDL_GetGPUDriver SDL_GetGPUDriver_REAL
+ #define SDL_GetGPUShaderFormats SDL_GetGPUShaderFormats_REAL
+ #define SDL_GetGPUSwapchainTextureFormat SDL_GetGPUSwapchainTextureFormat_REAL
++#define SDL_GetGPUTimestampPeriodNanoseconds SDL_GetGPUTimestampPeriodNanoseconds_REAL
+ #define SDL_GetGamepadAppleSFSymbolsNameForAxis SDL_GetGamepadAppleSFSymbolsNameForAxis_REAL
+ #define SDL_GetGamepadAppleSFSymbolsNameForButton SDL_GetGamepadAppleSFSymbolsNameForButton_REAL
+ #define SDL_GetGamepadAxis SDL_GetGamepadAxis_REAL
+@@ -744,6 +746,12 @@
+ #define SDL_ReleaseGPUShader SDL_ReleaseGPUShader_REAL
+ #define SDL_ReleaseGPUTexture SDL_ReleaseGPUTexture_REAL
+ #define SDL_ReleaseGPUTransferBuffer SDL_ReleaseGPUTransferBuffer_REAL
++#define SDL_ReleaseGPUTimestampQueryPool SDL_ReleaseGPUTimestampQueryPool_REAL
++#define SDL_GPUDeviceSupportsTimestampQueries SDL_GPUDeviceSupportsTimestampQueries_REAL
++#define SDL_ResetGPUTimestampQueries SDL_ResetGPUTimestampQueries_REAL
++#define SDL_ResolveGPUTimestampQueries SDL_ResolveGPUTimestampQueries_REAL
++#define SDL_WriteGPUTimestamp SDL_WriteGPUTimestamp_REAL
++#define SDL_GetGPUTimestampQueryResults SDL_GetGPUTimestampQueryResults_REAL
+ #define SDL_ReleaseWindowFromGPUDevice SDL_ReleaseWindowFromGPUDevice_REAL
+ #define SDL_ReloadGamepadMappings SDL_ReloadGamepadMappings_REAL
+ #define SDL_RemoveEventWatch SDL_RemoveEventWatch_REAL
+diff --git a/src/dynapi/SDL_dynapi_procs.h b/src/dynapi/SDL_dynapi_procs.h
+index 78a896a5..cf775b1c 100644
+--- a/src/dynapi/SDL_dynapi_procs.h
++++ b/src/dynapi/SDL_dynapi_procs.h
+@@ -136,6 +136,7 @@ SDL_DYNAPI_PROC(SDL_GPUGraphicsPipeline*,SDL_CreateGPUGraphicsPipeline,(SDL_GPUD
+ SDL_DYNAPI_PROC(SDL_GPUSampler*,SDL_CreateGPUSampler,(SDL_GPUDevice *a, const SDL_GPUSamplerCreateInfo *b),(a,b),return)
+ SDL_DYNAPI_PROC(SDL_GPUShader*,SDL_CreateGPUShader,(SDL_GPUDevice *a, const SDL_GPUShaderCreateInfo *b),(a,b),return)
+ SDL_DYNAPI_PROC(SDL_GPUTexture*,SDL_CreateGPUTexture,(SDL_GPUDevice *a, const SDL_GPUTextureCreateInfo *b),(a,b),return)
++SDL_DYNAPI_PROC(SDL_GPUTimestampQueryPool*,SDL_CreateGPUTimestampQueryPool,(SDL_GPUDevice *a, Uint32 b),(a,b),return)
+ SDL_DYNAPI_PROC(SDL_GPUTransferBuffer*,SDL_CreateGPUTransferBuffer,(SDL_GPUDevice *a, const SDL_GPUTransferBufferCreateInfo *b),(a,b),return)
+ SDL_DYNAPI_PROC(SDL_HapticEffectID,SDL_CreateHapticEffect,(SDL_Haptic *a, const SDL_HapticEffect *b),(a,b),return)
+ SDL_DYNAPI_PROC(SDL_Mutex*,SDL_CreateMutex,(void),(),return)
+@@ -337,6 +338,7 @@ SDL_DYNAPI_PROC(const char*,SDL_GetGPUDeviceDriver,(SDL_GPUDevice *a),(a),return
+ SDL_DYNAPI_PROC(const char*,SDL_GetGPUDriver,(int a),(a),return)
+ SDL_DYNAPI_PROC(SDL_GPUShaderFormat,SDL_GetGPUShaderFormats,(SDL_GPUDevice *a),(a),return)
+ SDL_DYNAPI_PROC(SDL_GPUTextureFormat,SDL_GetGPUSwapchainTextureFormat,(SDL_GPUDevice *a, SDL_Window *b),(a,b),return)
++SDL_DYNAPI_PROC(double,SDL_GetGPUTimestampPeriodNanoseconds,(SDL_GPUDevice *a),(a),return)
+ SDL_DYNAPI_PROC(const char*,SDL_GetGamepadAppleSFSymbolsNameForAxis,(SDL_Gamepad *a, SDL_GamepadAxis b),(a,b),return)
+ SDL_DYNAPI_PROC(const char*,SDL_GetGamepadAppleSFSymbolsNameForButton,(SDL_Gamepad *a, SDL_GamepadButton b),(a,b),return)
+ SDL_DYNAPI_PROC(Sint16,SDL_GetGamepadAxis,(SDL_Gamepad *a, SDL_GamepadAxis b),(a,b),return)
+@@ -755,6 +757,12 @@ SDL_DYNAPI_PROC(void,SDL_ReleaseGPUSampler,(SDL_GPUDevice *a, SDL_GPUSampler *b)
+ SDL_DYNAPI_PROC(void,SDL_ReleaseGPUShader,(SDL_GPUDevice *a, SDL_GPUShader *b),(a,b),)
+ SDL_DYNAPI_PROC(void,SDL_ReleaseGPUTexture,(SDL_GPUDevice *a, SDL_GPUTexture *b),(a,b),)
+ SDL_DYNAPI_PROC(void,SDL_ReleaseGPUTransferBuffer,(SDL_GPUDevice *a, SDL_GPUTransferBuffer *b),(a,b),)
++SDL_DYNAPI_PROC(void,SDL_ReleaseGPUTimestampQueryPool,(SDL_GPUDevice *a, SDL_GPUTimestampQueryPool *b),(a,b),)
++SDL_DYNAPI_PROC(bool,SDL_GPUDeviceSupportsTimestampQueries,(SDL_GPUDevice *a),(a),return)
++SDL_DYNAPI_PROC(bool,SDL_ResetGPUTimestampQueries,(SDL_GPUCommandBuffer *a, SDL_GPUTimestampQueryPool *b, Uint32 c, Uint32 d),(a,b,c,d),return)
++SDL_DYNAPI_PROC(bool,SDL_ResolveGPUTimestampQueries,(SDL_GPUCommandBuffer *a, SDL_GPUTimestampQueryPool *b, Uint32 c, Uint32 d),(a,b,c,d),return)
++SDL_DYNAPI_PROC(bool,SDL_WriteGPUTimestamp,(SDL_GPUCommandBuffer *a, SDL_GPUTimestampQueryPool *b, Uint32 c),(a,b,c),return)
++SDL_DYNAPI_PROC(bool,SDL_GetGPUTimestampQueryResults,(SDL_GPUDevice *a, SDL_GPUTimestampQueryPool *b, Uint32 c, Uint32 d, Uint64 *e, bool *f),(a,b,c,d,e,f),return)
+ SDL_DYNAPI_PROC(void,SDL_ReleaseWindowFromGPUDevice,(SDL_GPUDevice *a, SDL_Window *b),(a,b),)
+ SDL_DYNAPI_PROC(bool,SDL_ReloadGamepadMappings,(void),(),return)
+ SDL_DYNAPI_PROC(void,SDL_RemoveEventWatch,(SDL_EventFilter a, void *b),(a,b),)
+diff --git a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
+index 57e0c97d..5352a569 100644
+--- a/src/gpu/SDL_gpu.c
++++ b/src/gpu/SDL_gpu.c
+@@ -55,6 +55,166 @@
+         return retval;                                                          \
+     }
+ 
++static SDL_GPUTimestampQueryPool *SDL_GPU_UnsupportedCreateTimestampQueryPool(
++    SDL_GPURenderer *driverData,
++    Uint32 query_count)
++{
++    (void)driverData;
++    (void)query_count;
++    SDL_SetError("GPU timestamp queries are not supported by this backend");
++    return NULL;
++}
++
++static void SDL_GPU_UnsupportedReleaseTimestampQueryPool(
++    SDL_GPURenderer *driverData,
++    SDL_GPUTimestampQueryPool *pool)
++{
++    (void)driverData;
++    if (pool != NULL) {
++        SDL_SetError("GPU timestamp queries are not supported by this backend");
++    }
++}
++
++static bool SDL_GPU_UnsupportedTimestampCommand(
++    SDL_GPUCommandBuffer *commandBuffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count)
++{
++    (void)commandBuffer;
++    (void)pool;
++    (void)first_query;
++    (void)query_count;
++    SDL_SetError("GPU timestamp queries are not supported by this backend");
++    return false;
++}
++
++static bool SDL_GPU_UnsupportedWriteTimestamp(
++    SDL_GPUCommandBuffer *commandBuffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 query)
++{
++    (void)commandBuffer;
++    (void)pool;
++    (void)query;
++    SDL_SetError("GPU timestamp queries are not supported by this backend");
++    return false;
++}
++
++static bool SDL_GPU_UnsupportedGetTimestampQueryResults(
++    SDL_GPURenderer *driverData,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count,
++    Uint64 *values,
++    bool *available)
++{
++    (void)driverData;
++    (void)pool;
++    (void)first_query;
++    (void)query_count;
++    (void)values;
++    if (available != NULL) {
++        *available = false;
++    }
++    SDL_SetError("GPU timestamp queries are not supported by this backend");
++    return false;
++}
++
++static bool SDL_GPU_UnsupportedSupportsTimestampQueries(
++    SDL_GPURenderer *driverData)
++{
++    (void)driverData;
++    return false;
++}
++
++static double SDL_GPU_UnsupportedTimestampPeriodNanoseconds(
++    SDL_GPURenderer *driverData)
++{
++    (void)driverData;
++    SDL_SetError("GPU timestamp queries are not supported by this backend");
++    return 0.0;
++}
++
++static bool SDL_GPU_ValidateTimestampCommand(
++    SDL_GPUCommandBuffer *command_buffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count)
++{
++    CommandBufferCommonHeader *header;
++
++    CHECK_PARAM(command_buffer == NULL) {
++        SDL_InvalidParamError("command_buffer");
++        return false;
++    }
++    CHECK_PARAM(pool == NULL) {
++        SDL_InvalidParamError("pool");
++        return false;
++    }
++    if (query_count == 0) {
++        SDL_InvalidParamError("query_count");
++        return false;
++    }
++
++    header = (CommandBufferCommonHeader *)command_buffer;
++    if (header->device == NULL) {
++        SDL_SetError("Invalid GPU command buffer");
++        return false;
++    }
++    if (pool->device != header->device) {
++        SDL_SetError("GPU timestamp query pool belongs to another device");
++        return false;
++    }
++    if (first_query > pool->query_count ||
++        query_count > pool->query_count - first_query) {
++        SDL_SetError("GPU timestamp query range is out of bounds");
++        return false;
++    }
++
++    if (header->device->debug_mode) {
++        CHECK_COMMAND_BUFFER_RETURN_FALSE
++        CHECK_ANY_PASS_IN_PROGRESS("Cannot record a timestamp query during a pass!", false)
++    }
++    return true;
++}
++
++static bool SDL_GPU_ValidateTimestampRead(
++    SDL_GPUDevice *device,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count,
++    Uint64 *values,
++    bool *available)
++{
++    CHECK_PARAM(pool == NULL) {
++        SDL_InvalidParamError("pool");
++        return false;
++    }
++    CHECK_PARAM(values == NULL) {
++        SDL_InvalidParamError("values");
++        return false;
++    }
++    CHECK_PARAM(available == NULL) {
++        SDL_InvalidParamError("available");
++        return false;
++    }
++    if (query_count == 0) {
++        SDL_InvalidParamError("query_count");
++        return false;
++    }
++    if (pool->device != device) {
++        SDL_SetError("GPU timestamp query pool belongs to another device");
++        return false;
++    }
++    if (first_query > pool->query_count ||
++        query_count > pool->query_count - first_query) {
++        SDL_SetError("GPU timestamp query range is out of bounds");
++        return false;
++    }
++    return true;
++}
++
+ #define CHECK_RENDERPASS                                     \
+     if (!((RenderPass *)render_pass)->in_progress) {                 \
+         SDL_assert_release(!"Render pass not in progress!"); \
+@@ -737,6 +897,30 @@ SDL_GPUDevice *SDL_CreateGPUDeviceWithProperties(SDL_PropertiesID props)
+             if (!SDL_GetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_ANISOTROPY_BOOLEAN, true)) {
+                 result->validate_feature_anisotropy_disabled = true;
+             }
++            if (result->CreateTimestampQueryPool == NULL) {
++                result->CreateTimestampQueryPool = SDL_GPU_UnsupportedCreateTimestampQueryPool;
++            }
++            if (result->ReleaseTimestampQueryPool == NULL) {
++                result->ReleaseTimestampQueryPool = SDL_GPU_UnsupportedReleaseTimestampQueryPool;
++            }
++            if (result->ResetTimestampQueries == NULL) {
++                result->ResetTimestampQueries = SDL_GPU_UnsupportedTimestampCommand;
++            }
++            if (result->WriteTimestamp == NULL) {
++                result->WriteTimestamp = SDL_GPU_UnsupportedWriteTimestamp;
++            }
++            if (result->ResolveTimestampQueries == NULL) {
++                result->ResolveTimestampQueries = SDL_GPU_UnsupportedTimestampCommand;
++            }
++            if (result->GetTimestampQueryResults == NULL) {
++                result->GetTimestampQueryResults = SDL_GPU_UnsupportedGetTimestampQueryResults;
++            }
++            if (result->SupportsTimestampQueries == NULL) {
++                result->SupportsTimestampQueries = SDL_GPU_UnsupportedSupportsTimestampQueries;
++            }
++            if (result->GetTimestampPeriodNanoseconds == NULL) {
++                result->GetTimestampPeriodNanoseconds = SDL_GPU_UnsupportedTimestampPeriodNanoseconds;
++            }
+         }
+     }
+     return result;
+@@ -3503,6 +3687,137 @@ void SDL_ReleaseGPUFence(
+         fence);
+ }
+ 
++bool SDL_GPUDeviceSupportsTimestampQueries(
++    SDL_GPUDevice *device)
++{
++    CHECK_DEVICE_MAGIC(device, false);
++    return device->SupportsTimestampQueries(device->driverData);
++}
++
++double SDL_GetGPUTimestampPeriodNanoseconds(
++    SDL_GPUDevice *device)
++{
++    CHECK_DEVICE_MAGIC(device, 0.0);
++    return device->GetTimestampPeriodNanoseconds(device->driverData);
++}
++
++SDL_GPUTimestampQueryPool *SDL_CreateGPUTimestampQueryPool(
++    SDL_GPUDevice *device,
++    Uint32 query_count)
++{
++    CHECK_DEVICE_MAGIC(device, NULL);
++    CHECK_PARAM(query_count == 0) {
++        SDL_InvalidParamError("query_count");
++        return NULL;
++    }
++    return device->CreateTimestampQueryPool(
++        device->driverData,
++        query_count);
++}
++
++void SDL_ReleaseGPUTimestampQueryPool(
++    SDL_GPUDevice *device,
++    SDL_GPUTimestampQueryPool *pool)
++{
++    CHECK_DEVICE_MAGIC(device, );
++    if (pool == NULL) {
++        return;
++    }
++    if (pool->device != device) {
++        SDL_SetError("GPU timestamp query pool belongs to another device");
++        return;
++    }
++    device->ReleaseTimestampQueryPool(
++        device->driverData,
++        pool);
++}
++
++bool SDL_ResetGPUTimestampQueries(
++    SDL_GPUCommandBuffer *command_buffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count)
++{
++    if (!SDL_GPU_ValidateTimestampCommand(
++            command_buffer,
++            pool,
++            first_query,
++            query_count)) {
++        return false;
++    }
++    return COMMAND_BUFFER_DEVICE->ResetTimestampQueries(
++        command_buffer,
++        pool,
++        first_query,
++        query_count);
++}
++
++bool SDL_WriteGPUTimestamp(
++    SDL_GPUCommandBuffer *command_buffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 query)
++{
++    if (!SDL_GPU_ValidateTimestampCommand(
++            command_buffer,
++            pool,
++            query,
++            1)) {
++        return false;
++    }
++    return COMMAND_BUFFER_DEVICE->WriteTimestamp(
++        command_buffer,
++        pool,
++        query);
++}
++
++bool SDL_ResolveGPUTimestampQueries(
++    SDL_GPUCommandBuffer *command_buffer,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count)
++{
++    if (!SDL_GPU_ValidateTimestampCommand(
++            command_buffer,
++            pool,
++            first_query,
++            query_count)) {
++        return false;
++    }
++    return COMMAND_BUFFER_DEVICE->ResolveTimestampQueries(
++        command_buffer,
++        pool,
++        first_query,
++        query_count);
++}
++
++bool SDL_GetGPUTimestampQueryResults(
++    SDL_GPUDevice *device,
++    SDL_GPUTimestampQueryPool *pool,
++    Uint32 first_query,
++    Uint32 query_count,
++    Uint64 *values,
++    bool *available)
++{
++    CHECK_DEVICE_MAGIC(device, false);
++    if (!SDL_GPU_ValidateTimestampRead(
++            device,
++            pool,
++            first_query,
++            query_count,
++            values,
++            available)) {
++        return false;
++    }
++    *available = false;
++    return device->GetTimestampQueryResults(
++        device->driverData,
++        pool,
++        first_query,
++        query_count,
++        values,
++        available);
++}
++
+ Uint32 SDL_CalculateGPUTextureFormatSize(
+     SDL_GPUTextureFormat format,
+     Uint32 width,
+diff --git a/src/gpu/SDL_sysgpu.h b/src/gpu/SDL_sysgpu.h
+index 8e0e3492..2fba3728 100644
+--- a/src/gpu/SDL_sysgpu.h
++++ b/src/gpu/SDL_sysgpu.h
+@@ -94,6 +94,17 @@ typedef struct CommandBufferCommonHeader
+     bool ignore_render_pass_texture_validation;
+ } CommandBufferCommonHeader;
+ 
++/*
++ * The first fields of every backend timestamp pool are shared with SDL's
++ * validation layer. Backend implementations may append native query handles
++ * after this header, but must not move or duplicate these fields.
++ */
++struct SDL_GPUTimestampQueryPool
++{
++    SDL_GPUDevice *device;
++    Uint32 query_count;
++};
++
+ typedef struct TextureCommonHeader
+ {
+     SDL_GPUTextureCreateInfo info;
+@@ -991,6 +1002,47 @@ struct SDL_GPUDevice
+         SDL_GPUCommandBuffer *commandBuffer,
+         const SDL_GPUBlitInfo *info);
+ 
++    // Timestamp queries
++
++    SDL_GPUTimestampQueryPool *(*CreateTimestampQueryPool)(
++        SDL_GPURenderer *driverData,
++        Uint32 query_count);
++
++    void (*ReleaseTimestampQueryPool)(
++        SDL_GPURenderer *driverData,
++        SDL_GPUTimestampQueryPool *pool);
++
++    bool (*ResetTimestampQueries)(
++        SDL_GPUCommandBuffer *commandBuffer,
++        SDL_GPUTimestampQueryPool *pool,
++        Uint32 first_query,
++        Uint32 query_count);
++
++    bool (*WriteTimestamp)(
++        SDL_GPUCommandBuffer *commandBuffer,
++        SDL_GPUTimestampQueryPool *pool,
++        Uint32 query);
++
++    bool (*ResolveTimestampQueries)(
++        SDL_GPUCommandBuffer *commandBuffer,
++        SDL_GPUTimestampQueryPool *pool,
++        Uint32 first_query,
++        Uint32 query_count);
++
++    bool (*GetTimestampQueryResults)(
++        SDL_GPURenderer *driverData,
++        SDL_GPUTimestampQueryPool *pool,
++        Uint32 first_query,
++        Uint32 query_count,
++        Uint64 *values,
++        bool *available);
++
++    bool (*SupportsTimestampQueries)(
++        SDL_GPURenderer *driverData);
++
++    double (*GetTimestampPeriodNanoseconds)(
++        SDL_GPURenderer *driverData);
++
+     // Submission/Presentation
+ 
+     bool (*SupportsSwapchainComposition)(
+diff --git a/src/gpu/d3d12/SDL_gpu_d3d12.c b/src/gpu/d3d12/SDL_gpu_d3d12.c
+index 8984388c..e74f7274 100644
+--- a/src/gpu/d3d12/SDL_gpu_d3d12.c
++++ b/src/gpu/d3d12/SDL_gpu_d3d12.c
+@@ -170,6 +170,7 @@ static const IID D3D_IID_ID3D12CommandAllocator = { 0x6102dee4, 0xaf59, 0x4b09,
+ static const IID D3D_IID_ID3D12CommandList = { 0x7116d91c, 0xe7e4, 0x47ce, { 0xb8, 0xc6, 0xec, 0x81, 0x68, 0xf4, 0x37, 0xe5 } };
+ static const IID D3D_IID_ID3D12GraphicsCommandList = { 0x5b160d0f, 0xac1b, 0x4185, { 0x8b, 0xa8, 0xb3, 0xae, 0x42, 0xa5, 0xa4, 0x55 } };
+ static const IID D3D_IID_ID3D12Fence = { 0x0a753dcf, 0xc4d8, 0x4b91, { 0xad, 0xf6, 0xbe, 0x5a, 0x60, 0xd9, 0x5a, 0x76 } };
++static const IID D3D_IID_ID3D12QueryHeap = { 0x0d9658ae, 0xed45, 0x469e, { 0xa6, 0x1d, 0x97, 0x0e, 0xc5, 0x83, 0xca, 0xb4 } };
+ static const IID D3D_IID_ID3D12RootSignature = { 0xc54a6b66, 0x72df, 0x4ee8, { 0x8b, 0xe5, 0xa9, 0x46, 0xa1, 0x42, 0x92, 0x14 } };
+ static const IID D3D_IID_ID3D12CommandSignature = { 0xc36a797c, 0xec80, 0x4f0a, { 0x89, 0x85, 0xa7, 0xb2, 0x47, 0x50, 0x82, 0xd1 } };
+ static const IID D3D_IID_ID3D12PipelineState = { 0x765a30f3, 0xf624, 0x4c6f, { 0xa8, 0x28, 0xac, 0xe9, 0x48, 0x62, 0x24, 0x45 } };
+@@ -739,6 +740,15 @@ typedef struct D3D12Fence
+     SDL_AtomicInt referenceCount;
+ } D3D12Fence;
+ 
++typedef struct D3D12TimestampQueryPool
++{
++    SDL_GPUTimestampQueryPool common;
++    ID3D12QueryHeap *queryHeap;
++    ID3D12Resource *readbackBuffer;
++    D3D12Fence *lastFence;
++    Uint64 lastFenceValue;
++} D3D12TimestampQueryPool;
++
+ struct D3D12DescriptorHeap
+ {
+     ID3D12DescriptorHeap *handle;
+@@ -1000,6 +1010,10 @@ struct D3D12CommandBuffer
+     D3D12Fence *inFlightFence;
+     bool autoReleaseFence;
+ 
++    SDL_GPUTimestampQueryPool **timestampPools;
++    Uint32 timestampPoolCount;
++    Uint32 timestampPoolCapacity;
++
+     // Presentation data
+     D3D12PresentData *presentDatas;
+     Uint32 presentDataCount;
+@@ -1558,6 +1572,266 @@ static bool D3D12_QueryFence(
+     return ID3D12Fence_GetCompletedValue(d3d12Fence->handle) == D3D12_FENCE_SIGNAL_VALUE;
+ }
+ 
++static bool D3D12_INTERNAL_TrackTimestampPool(
++    D3D12CommandBuffer *commandBuffer,
++    D3D12TimestampQueryPool *pool)
++{
++    for (Uint32 i = 0; i < commandBuffer->timestampPoolCount; i += 1) {
++        if (commandBuffer->timestampPools[i] == (SDL_GPUTimestampQueryPool *)pool) {
++            return true;
++        }
++    }
++    if (commandBuffer->timestampPoolCount >= commandBuffer->timestampPoolCapacity) {
++        Uint32 newCapacity = commandBuffer->timestampPoolCapacity
++            ? commandBuffer->timestampPoolCapacity * 2
++            : 4;
++        SDL_GPUTimestampQueryPool **resized = (SDL_GPUTimestampQueryPool **)SDL_realloc(
++            commandBuffer->timestampPools,
++            newCapacity * sizeof(SDL_GPUTimestampQueryPool *));
++        if (!resized) {
++            SDL_SetError("Failed to track GPU timestamp query pool");
++            return false;
++        }
++        commandBuffer->timestampPools = resized;
++        commandBuffer->timestampPoolCapacity = newCapacity;
++    }
++    commandBuffer->timestampPools[commandBuffer->timestampPoolCount] =
++        (SDL_GPUTimestampQueryPool *)pool;
++    commandBuffer->timestampPoolCount += 1;
++    return true;
++}
++
++static SDL_GPUTimestampQueryPool *D3D12_CreateTimestampQueryPool(
++    SDL_GPURenderer *driverData,
++    Uint32 query_count)
++{
++    D3D12Renderer *renderer = (D3D12Renderer *)driverData;
++    D3D12TimestampQueryPool *pool;
++    D3D12_QUERY_HEAP_DESC queryHeapDesc;
++    D3D12_HEAP_PROPERTIES heapProperties;
++    D3D12_RESOURCE_DESC resourceDesc;
++    UINT64 timestampFrequency;
++    HRESULT res;
++
++    if (query_count == 0) {
++        SDL_InvalidParamError("query_count");
++        return NULL;
++    }
++
++    res = ID3D12CommandQueue_GetTimestampFrequency(
++        renderer->commandQueue,
++        &timestampFrequency);
++    if (FAILED(res) || timestampFrequency == 0) {
++        SDL_SetError("D3D12 timestamp queries are unavailable");
++        return NULL;
++    }
++
++    pool = (D3D12TimestampQueryPool *)SDL_calloc(1, sizeof(D3D12TimestampQueryPool));
++    if (!pool) {
++        return NULL;
++    }
++
++    queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
++    queryHeapDesc.Count = query_count;
++    queryHeapDesc.NodeMask = 0;
++    res = ID3D12Device_CreateQueryHeap(
++        renderer->device,
++        &queryHeapDesc,
++        D3D_GUID(D3D_IID_ID3D12QueryHeap),
++        (void **)&pool->queryHeap);
++    if (FAILED(res)) {
++        D3D12_INTERNAL_SetError(renderer, "Failed to create D3D12 timestamp query heap", res);
++        SDL_free(pool);
++        return NULL;
++    }
++
++    SDL_zero(heapProperties);
++    heapProperties.Type = D3D12_HEAP_TYPE_READBACK;
++    heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
++    heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
++    heapProperties.CreationNodeMask = 0;
++    heapProperties.VisibleNodeMask = 0;
++
++    SDL_zero(resourceDesc);
++    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++    resourceDesc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
++    resourceDesc.Width = (UINT64)query_count * sizeof(Uint64);
++    resourceDesc.Height = 1;
++    resourceDesc.DepthOrArraySize = 1;
++    resourceDesc.MipLevels = 1;
++    resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
++    resourceDesc.SampleDesc.Count = 1;
++    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
++
++    res = ID3D12Device_CreateCommittedResource(
++        renderer->device,
++        &heapProperties,
++        D3D12_HEAP_FLAG_NONE,
++        &resourceDesc,
++        D3D12_RESOURCE_STATE_COPY_DEST,
++        NULL,
++        D3D_GUID(D3D_IID_ID3D12Resource),
++        (void **)&pool->readbackBuffer);
++    if (FAILED(res)) {
++        D3D12_INTERNAL_SetError(renderer, "Failed to create D3D12 timestamp readback buffer", res);
++        ID3D12QueryHeap_Release(pool->queryHeap);
++        SDL_free(pool);
++        return NULL;
++    }
++
++    pool->common.device = renderer->sdlGPUDevice;
++    pool->common.query_count = query_count;
++    return (SDL_GPUTimestampQueryPool *)pool;
++}
++
++static void D3D12_ReleaseTimestampQueryPool(
++    SDL_GPURenderer *driverData,
++    SDL_GPUTimestampQueryPool *timestampPool)
++{
++    D3D12Renderer *renderer = (D3D12Renderer *)driverData;
++    D3D12TimestampQueryPool *pool = (D3D12TimestampQueryPool *)timestampPool;
++
++    if (pool == NULL) {
++        return;
++    }
++    if (pool->lastFence != NULL &&
++        ID3D12Fence_GetCompletedValue(pool->lastFence->handle) != pool->lastFenceValue) {
++        SDL_SetError("GPU timestamp query pool is still referenced by a submitted command buffer");
++        return;
++    }
++    if (pool->lastFence != NULL) {
++        D3D12_ReleaseFence(driverData, (SDL_GPUFence *)pool->lastFence);
++        pool->lastFence = NULL;
++    }
++    if (pool->readbackBuffer != NULL) {
++        ID3D12Resource_Release(pool->readbackBuffer);
++    }
++    if (pool->queryHeap != NULL) {
++        ID3D12QueryHeap_Release(pool->queryHeap);
++    }
++    (void)renderer;
++    SDL_free(pool);
++}
++
++static bool D3D12_ResetTimestampQueries(
++    SDL_GPUCommandBuffer *commandBuffer,
++    SDL_GPUTimestampQueryPool *timestampPool,
++    Uint32 first_query,
++    Uint32 query_count)
++{
++    D3D12CommandBuffer *d3d12CommandBuffer = (D3D12CommandBuffer *)commandBuffer;
++    D3D12TimestampQueryPool *pool = (D3D12TimestampQueryPool *)timestampPool;
++    (void)first_query;
++    (void)query_count;
++    // D3D12 timestamp slots are overwritten by EndQuery; no GPU reset command
++    // is required. Tracking still binds the pool to this submission.
++    return D3D12_INTERNAL_TrackTimestampPool(d3d12CommandBuffer, pool);
++}
++
++static bool D3D12_WriteTimestamp(
++    SDL_GPUCommandBuffer *commandBuffer,
++    SDL_GPUTimestampQueryPool *timestampPool,
++    Uint32 query)
++{
++    D3D12CommandBuffer *d3d12CommandBuffer = (D3D12CommandBuffer *)commandBuffer;
++    D3D12TimestampQueryPool *pool = (D3D12TimestampQueryPool *)timestampPool;
++    if (!D3D12_INTERNAL_TrackTimestampPool(d3d12CommandBuffer, pool)) {
++        return false;
++    }
++    ID3D12GraphicsCommandList_EndQuery(
++        d3d12CommandBuffer->graphicsCommandList,
++        pool->queryHeap,
++        D3D12_QUERY_TYPE_TIMESTAMP,
++        query);
++    return true;
++}
++
++static bool D3D12_ResolveTimestampQueries(
++    SDL_GPUCommandBuffer *commandBuffer,
++    SDL_GPUTimestampQueryPool *timestampPool,
++    Uint32 first_query,
++    Uint32 query_count)
++{
++    D3D12CommandBuffer *d3d12CommandBuffer = (D3D12CommandBuffer *)commandBuffer;
++    D3D12TimestampQueryPool *pool = (D3D12TimestampQueryPool *)timestampPool;
++    if (!D3D12_INTERNAL_TrackTimestampPool(d3d12CommandBuffer, pool)) {
++        return false;
++    }
++    ID3D12GraphicsCommandList_ResolveQueryData(
++        d3d12CommandBuffer->graphicsCommandList,
++        pool->queryHeap,
++        D3D12_QUERY_TYPE_TIMESTAMP,
++        first_query,
++        query_count,
++        pool->readbackBuffer,
++        (UINT64)first_query * sizeof(Uint64));
++    return true;
++}
++
++static bool D3D12_GetTimestampQueryResults(
++    SDL_GPURenderer *driverData,
++    SDL_GPUTimestampQueryPool *timestampPool,
++    Uint32 first_query,
++    Uint32 query_count,
++    Uint64 *values,
++    bool *available)
++{
++    D3D12TimestampQueryPool *pool = (D3D12TimestampQueryPool *)timestampPool;
++    Uint8 *mapped;
++    HRESULT res;
++
++    *available = false;
++    if (pool->lastFence == NULL) {
++        SDL_SetError("GPU timestamp query pool has no submitted resolve");
++        return false;
++    }
++    if (ID3D12Fence_GetCompletedValue(pool->lastFence->handle) != pool->lastFenceValue) {
++        return true;
++    }
++
++    res = ID3D12Resource_Map(
++        pool->readbackBuffer,
++        0,
++        NULL,
++        (void **)&mapped);
++    if (FAILED(res)) {
++        D3D12_INTERNAL_SetError((D3D12Renderer *)driverData, "Failed to map D3D12 timestamp readback buffer", res);
++        return false;
++    }
++    SDL_memcpy(
++        values,
++        mapped + ((size_t)first_query * sizeof(Uint64)),
++        (size_t)query_count * sizeof(Uint64));
++    ID3D12Resource_Unmap(pool->readbackBuffer, 0, NULL);
++    *available = true;
++    return true;
++}
++
++static bool D3D12_SupportsTimestampQueries(
++    SDL_GPURenderer *driverData)
++{
++    D3D12Renderer *renderer = (D3D12Renderer *)driverData;
++    UINT64 frequency;
++    return SUCCEEDED(ID3D12CommandQueue_GetTimestampFrequency(
++        renderer->commandQueue,
++        &frequency)) && frequency > 0;
++}
++
++static double D3D12_GetTimestampPeriodNanoseconds(
++    SDL_GPURenderer *driverData)
++{
++    D3D12Renderer *renderer = (D3D12Renderer *)driverData;
++    UINT64 frequency;
++    if (FAILED(ID3D12CommandQueue_GetTimestampFrequency(
++            renderer->commandQueue,
++            &frequency)) || frequency == 0) {
++        SDL_SetError("D3D12 timestamp frequency is unavailable");
++        return 0.0;
++    }
++    return 1000000000.0 / (double)frequency;
++}
++
+ static void D3D12_INTERNAL_DestroyDescriptorHeap(D3D12DescriptorHeap *descriptorHeap)
+ {
+     if (!descriptorHeap) {
+@@ -1601,6 +1875,7 @@ static void D3D12_INTERNAL_DestroyCommandBuffer(D3D12CommandBuffer *commandBuffe
+     SDL_free(commandBuffer->usedComputePipelines);
+     SDL_free(commandBuffer->usedDescriptorHeaps);
+     SDL_free(commandBuffer->usedUniformBuffers);
++    SDL_free(commandBuffer->timestampPools);
+     SDL_free(commandBuffer->textureDownloads);
+     SDL_free(commandBuffer);
+ }
+@@ -7456,6 +7731,11 @@ static bool D3D12_INTERNAL_AllocateCommandBuffer(
+     commandBuffer->textureDownloads = (D3D12TextureDownload **)SDL_calloc(
+         commandBuffer->textureDownloadCapacity, sizeof(D3D12TextureDownload *));
+ 
++    commandBuffer->timestampPoolCapacity = 4;
++    commandBuffer->timestampPoolCount = 0;
++    commandBuffer->timestampPools = (SDL_GPUTimestampQueryPool **)SDL_calloc(
++        commandBuffer->timestampPoolCapacity, sizeof(SDL_GPUTimestampQueryPool *));
++
+     if (
+         (!commandBuffer->presentDatas) ||
+         (!commandBuffer->usedTextures) ||
+@@ -7464,6 +7744,7 @@ static bool D3D12_INTERNAL_AllocateCommandBuffer(
+         (!commandBuffer->usedGraphicsPipelines) ||
+         (!commandBuffer->usedComputePipelines) ||
+         (!commandBuffer->usedUniformBuffers) ||
++        (!commandBuffer->timestampPools) ||
+         (!commandBuffer->textureDownloads)) {
+         D3D12_INTERNAL_DestroyCommandBuffer(commandBuffer);
+         SET_STRING_ERROR_AND_RETURN("Failed to create ID3D12CommandList. Out of Memory", false);
+@@ -7554,6 +7835,7 @@ static SDL_GPUCommandBuffer *D3D12_AcquireCommandBuffer(
+     SDL_zeroa(commandBuffer->computeUniformBuffers);
+ 
+     commandBuffer->autoReleaseFence = true;
++    commandBuffer->timestampPoolCount = 0;
+ 
+     return (SDL_GPUCommandBuffer *)commandBuffer;
+ }
+@@ -7916,6 +8198,8 @@ static bool D3D12_INTERNAL_CleanCommandBuffer(
+ 
+     // Reset presentation
+     commandBuffer->presentDataCount = 0;
++    // Timestamp pool ownership is retained by the pool's completed fence.
++    commandBuffer->timestampPoolCount = 0;
+ 
+     // The fence is now available (unless SubmitAndAcquireFence was called)
+     if (commandBuffer->autoReleaseFence) {
+@@ -8043,6 +8327,20 @@ static bool D3D12_Submit(
+         CHECK_D3D12_ERROR_AND_RETURN("Failed to enqueue fence signal!", false);
+     }
+ 
++    // Keep one fence reference per timestamp pool until its readback is safe.
++    for (Uint32 i = 0; i < d3d12CommandBuffer->timestampPoolCount; i += 1) {
++        D3D12TimestampQueryPool *pool =
++            (D3D12TimestampQueryPool *)d3d12CommandBuffer->timestampPools[i];
++        if (pool->lastFence != NULL) {
++            D3D12_ReleaseFence(
++                (SDL_GPURenderer *)renderer,
++                (SDL_GPUFence *)pool->lastFence);
++        }
++        pool->lastFence = d3d12CommandBuffer->inFlightFence;
++        pool->lastFenceValue = D3D12_FENCE_SIGNAL_VALUE;
++        (void)SDL_AtomicIncRef(&pool->lastFence->referenceCount);
++    }
++
+     // Mark the command buffer as submitted
+     if (renderer->submittedCommandBufferCount + 1 >= renderer->submittedCommandBufferCapacity) {
+         renderer->submittedCommandBufferCapacity = renderer->submittedCommandBufferCount + 1;
+@@ -9573,6 +9871,14 @@ static SDL_GPUDevice *D3D12_CreateDevice(bool debugMode, bool preferLowPower, SD
+     }
+ 
+     ASSIGN_DRIVER(D3D12)
++    result->CreateTimestampQueryPool = D3D12_CreateTimestampQueryPool;
++    result->ReleaseTimestampQueryPool = D3D12_ReleaseTimestampQueryPool;
++    result->ResetTimestampQueries = D3D12_ResetTimestampQueries;
++    result->WriteTimestamp = D3D12_WriteTimestamp;
++    result->ResolveTimestampQueries = D3D12_ResolveTimestampQueries;
++    result->GetTimestampQueryResults = D3D12_GetTimestampQueryResults;
++    result->SupportsTimestampQueries = D3D12_SupportsTimestampQueries;
++    result->GetTimestampPeriodNanoseconds = D3D12_GetTimestampPeriodNanoseconds;
+     result->driverData = (SDL_GPURenderer *)renderer;
+     result->shader_formats = shaderFormats;
+     result->debug_mode = debugMode;
+diff --git a/src/gpu/vulkan/SDL_gpu_vulkan.c b/src/gpu/vulkan/SDL_gpu_vulkan.c
+index 0ed974fd..c6829f03 100644
+--- a/src/gpu/vulkan/SDL_gpu_vulkan.c
++++ b/src/gpu/vulkan/SDL_gpu_vulkan.c
+@@ -447,6 +447,12 @@ typedef struct VulkanFenceHandle
+     SDL_AtomicInt referenceCount;
+ } VulkanFenceHandle;
+ 
++typedef struct VulkanTimestampQueryPool
++{
++    SDL_GPUTimestampQueryPool common;
++    VkQueryPool queryPool;
++} VulkanTimestampQueryPool;
++
+ // Memory Allocation
+ 
+ typedef struct VulkanMemoryFreeRegion
+@@ -1116,6 +1122,7 @@ typedef struct VulkanFeatures
+ 
+ struct VulkanRenderer
+ {
++    SDL_GPUDevice *sdlGPUDevice;
+     VkInstance instance;
+     VkPhysicalDevice physicalDevice;
+     VkPhysicalDeviceProperties2KHR physicalDeviceProperties;
+@@ -1149,6 +1156,7 @@ struct VulkanRenderer
+     Uint32 claimedWindowCapacity;
+ 
+     Uint32 queueFamilyIndex;
++    Uint32 timestampValidBits;
+     VkQueue unifiedQueue;
+ 
+     VulkanCommandBuffer **submittedCommandBuffers;
+@@ -1306,6 +1314,205 @@ static inline const char *VkErrorMessages(VkResult code)
+         }                                                                               \
+     } while (0)
+ 
++static bool VULKAN_SupportsTimestampQueries(
++    SDL_GPURenderer *driverData)
++{
++    VulkanRenderer *renderer = (VulkanRenderer *)driverData;
++    return renderer->timestampValidBits > 0 &&
++           renderer->physicalDeviceProperties.properties.limits.timestampPeriod > 0.0f &&
++           renderer->vkCreateQueryPool != NULL &&
++           renderer->vkDestroyQueryPool != NULL &&
++           renderer->vkCmdResetQueryPool != NULL &&
++           renderer->vkCmdWriteTimestamp != NULL &&
++           renderer->vkGetQueryPoolResults != NULL;
++}
++
++static double VULKAN_GetTimestampPeriodNanoseconds(
++    SDL_GPURenderer *driverData)
++{
++    VulkanRenderer *renderer = (VulkanRenderer *)driverData;
++    if (!VULKAN_SupportsTimestampQueries(driverData)) {
++        SDL_SetError("Vulkan timestamp queries are unavailable");
++        return 0.0;
++    }
++    return (double)renderer->physicalDeviceProperties.properties.limits.timestampPeriod;
++}
++
++static SDL_GPUTimestampQueryPool *VULKAN_CreateTimestampQueryPool(
++    SDL_GPURenderer *driverData,
++    Uint32 query_count)
++{
++    VulkanRenderer *renderer = (VulkanRenderer *)driverData;
++    VulkanTimestampQueryPool *pool;
++    VkQueryPoolCreateInfo createInfo;
++    VkResult result;
++
++    if (query_count == 0) {
++        SDL_InvalidParamError("query_count");
++        return NULL;
++    }
++    if (!VULKAN_SupportsTimestampQueries(driverData)) {
++        SET_STRING_ERROR_AND_RETURN("Vulkan timestamp queries are unavailable", NULL);
++    }
++
++    pool = (VulkanTimestampQueryPool *)SDL_calloc(1, sizeof(*pool));
++    if (!pool) {
++        return NULL;
++    }
++
++    SDL_zero(createInfo);
++    createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
++    createInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
++    createInfo.queryCount = query_count;
++    result = renderer->vkCreateQueryPool(
++        renderer->logicalDevice,
++        &createInfo,
++        NULL,
++        &pool->queryPool);
++    if (result != VK_SUCCESS) {
++        SDL_free(pool);
++        CHECK_VULKAN_ERROR_AND_RETURN(result, vkCreateQueryPool, NULL);
++    }
++
++    pool->common.device = renderer->sdlGPUDevice;
++    pool->common.query_count = query_count;
++    return (SDL_GPUTimestampQueryPool *)pool;
++}
++
++static void VULKAN_ReleaseTimestampQueryPool(
++    SDL_GPURenderer *driverData,
++    SDL_GPUTimestampQueryPool *timestampPool)
++{
++    VulkanRenderer *renderer = (VulkanRenderer *)driverData;
++    VulkanTimestampQueryPool *pool = (VulkanTimestampQueryPool *)timestampPool;
++    if (!pool) {
++        return;
++    }
++    renderer->vkDestroyQueryPool(
++        renderer->logicalDevice,
++        pool->queryPool,
++        NULL);
++    SDL_free(pool);
++}
++
++static bool VULKAN_ResetTimestampQueries(
++    SDL_GPUCommandBuffer *commandBuffer,
++    SDL_GPUTimestampQueryPool *timestampPool,
++    Uint32 first_query,
++    Uint32 query_count)
++{
++    VulkanCommandBuffer *vulkanCommandBuffer = (VulkanCommandBuffer *)commandBuffer;
++    VulkanTimestampQueryPool *pool = (VulkanTimestampQueryPool *)timestampPool;
++    VulkanRenderer *renderer = vulkanCommandBuffer->renderer;
++    if (renderer->vkCmdResetQueryPool == NULL) {
++        SET_STRING_ERROR_AND_RETURN("Vulkan command-buffer query reset is unavailable", false);
++    }
++    renderer->vkCmdResetQueryPool(
++        vulkanCommandBuffer->commandBuffer,
++        pool->queryPool,
++        first_query,
++        query_count);
++    return true;
++}
++
++static bool VULKAN_WriteTimestamp(
++    SDL_GPUCommandBuffer *commandBuffer,
++    SDL_GPUTimestampQueryPool *timestampPool,
++    Uint32 query)
++{
++    VulkanCommandBuffer *vulkanCommandBuffer = (VulkanCommandBuffer *)commandBuffer;
++    VulkanTimestampQueryPool *pool = (VulkanTimestampQueryPool *)timestampPool;
++    VulkanRenderer *renderer = vulkanCommandBuffer->renderer;
++    if (renderer->vkCmdWriteTimestamp == NULL) {
++        SET_STRING_ERROR_AND_RETURN("Vulkan timestamp command is unavailable", false);
++    }
++    renderer->vkCmdWriteTimestamp(
++        vulkanCommandBuffer->commandBuffer,
++        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
++        pool->queryPool,
++        query);
++    return true;
++}
++
++static bool VULKAN_ResolveTimestampQueries(
++    SDL_GPUCommandBuffer *commandBuffer,
++    SDL_GPUTimestampQueryPool *timestampPool,
++    Uint32 first_query,
++    Uint32 query_count)
++{
++    (void)commandBuffer;
++    (void)timestampPool;
++    (void)first_query;
++    (void)query_count;
++    // Vulkan query pools are read directly by vkGetQueryPoolResults; there is
++    // no separate resolve command for timestamp query values.
++    return true;
++}
++
++static bool VULKAN_GetTimestampQueryResults(
++    SDL_GPURenderer *driverData,
++    SDL_GPUTimestampQueryPool *timestampPool,
++    Uint32 first_query,
++    Uint32 query_count,
++    Uint64 *values,
++    bool *available)
++{
++    VulkanRenderer *renderer = (VulkanRenderer *)driverData;
++    VulkanTimestampQueryPool *pool = (VulkanTimestampQueryPool *)timestampPool;
++    Uint64 *scratch;
++    VkResult result;
++
++    *available = false;
++    if (renderer->vkGetQueryPoolResults == NULL) {
++        SET_STRING_ERROR_AND_RETURN("Vulkan query result readback is unavailable", false);
++    }
++
++    scratch = (Uint64 *)SDL_malloc((size_t)query_count * sizeof(Uint64));
++    if (!scratch) {
++        return false;
++    }
++    result = renderer->vkGetQueryPoolResults(
++        renderer->logicalDevice,
++        pool->queryPool,
++        first_query,
++        query_count,
++        (size_t)query_count * sizeof(Uint64),
++        scratch,
++        sizeof(Uint64),
++        VK_QUERY_RESULT_64_BIT);
++    if (result == VK_NOT_READY) {
++        SDL_free(scratch);
++        return true;
++    }
++    if (result != VK_SUCCESS) {
++        SDL_free(scratch);
++        CHECK_VULKAN_ERROR_AND_RETURN(result, vkGetQueryPoolResults, false);
++    }
++
++    if (renderer->timestampValidBits < 64) {
++        const Uint64 wrap = (Uint64)1 << renderer->timestampValidBits;
++        const Uint64 mask = wrap - 1;
++        Uint64 epoch = 0;
++        Uint64 previous = scratch[0] & mask;
++        values[0] = previous;
++        for (Uint32 i = 1; i < query_count; i += 1) {
++            Uint64 current = scratch[i] & mask;
++            if (current < previous) {
++                // Vulkan exposes a modulo-2^timestampValidBits counter. The
++                // query range is expected to span at most one wrap.
++                epoch += wrap;
++            }
++            values[i] = current + epoch;
++            previous = current;
++        }
++    } else {
++        SDL_memcpy(values, scratch, (size_t)query_count * sizeof(Uint64));
++    }
++    SDL_free(scratch);
++    *available = true;
++    return true;
++}
++
+ // Utility
+ 
+ static inline VkPolygonMode SDLToVK_PolygonMode(
+@@ -12372,6 +12579,8 @@ static Uint8 VULKAN_INTERNAL_DeterminePhysicalDevice(VulkanRenderer *renderer, V
+     Sint32 suitableIndex;
+     Uint32 suitableQueueFamilyIndex;
+     Uint64 highestRank;
++    Uint32 queueFamilyCount;
++    VkQueueFamilyProperties *queueProps;
+ 
+     vulkanResult = renderer->vkEnumeratePhysicalDevices(
+         renderer->instance,
+@@ -12450,6 +12659,24 @@ static Uint8 VULKAN_INTERNAL_DeterminePhysicalDevice(VulkanRenderer *renderer, V
+         renderer->supports = physicalDeviceExtensions[suitableIndex];
+         renderer->physicalDevice = physicalDevices[suitableIndex];
+         renderer->queueFamilyIndex = suitableQueueFamilyIndex;
++
++        renderer->timestampValidBits = 0;
++        renderer->vkGetPhysicalDeviceQueueFamilyProperties(
++            renderer->physicalDevice,
++            &queueFamilyCount,
++            NULL);
++        queueProps = SDL_stack_alloc(
++            VkQueueFamilyProperties,
++            queueFamilyCount);
++        renderer->vkGetPhysicalDeviceQueueFamilyProperties(
++            renderer->physicalDevice,
++            &queueFamilyCount,
++            queueProps);
++        if (renderer->queueFamilyIndex < queueFamilyCount) {
++            renderer->timestampValidBits =
++                queueProps[renderer->queueFamilyIndex].timestampValidBits;
++        }
++        SDL_stack_free(queueProps);
+     } else {
+         SDL_stack_free(physicalDevices);
+         SDL_stack_free(physicalDeviceExtensions);
+@@ -12911,6 +13138,16 @@ static SDL_GPUDevice *VULKAN_CreateDevice(bool debugMode, bool preferLowPower, S
+     result = (SDL_GPUDevice *)SDL_calloc(1, sizeof(SDL_GPUDevice));
+     ASSIGN_DRIVER(VULKAN)
+ 
++    renderer->sdlGPUDevice = result;
++    result->CreateTimestampQueryPool = VULKAN_CreateTimestampQueryPool;
++    result->ReleaseTimestampQueryPool = VULKAN_ReleaseTimestampQueryPool;
++    result->ResetTimestampQueries = VULKAN_ResetTimestampQueries;
++    result->WriteTimestamp = VULKAN_WriteTimestamp;
++    result->ResolveTimestampQueries = VULKAN_ResolveTimestampQueries;
++    result->GetTimestampQueryResults = VULKAN_GetTimestampQueryResults;
++    result->SupportsTimestampQueries = VULKAN_SupportsTimestampQueries;
++    result->GetTimestampPeriodNanoseconds = VULKAN_GetTimestampPeriodNanoseconds;
++
+     result->driverData = (SDL_GPURenderer *)renderer;
+     result->shader_formats = SDL_GPU_SHADERFORMAT_SPIRV;
+ 
+diff --git a/src/gpu/vulkan/SDL_gpu_vulkan_vkfuncs.h b/src/gpu/vulkan/SDL_gpu_vulkan_vkfuncs.h
+index a56beff1..9b6b6e56 100644
+--- a/src/gpu/vulkan/SDL_gpu_vulkan_vkfuncs.h
++++ b/src/gpu/vulkan/SDL_gpu_vulkan_vkfuncs.h
+@@ -107,6 +107,8 @@ VULKAN_DEVICE_FUNCTION(vkCmdDrawIndirect)
+ VULKAN_DEVICE_FUNCTION(vkCmdEndRenderPass)
+ VULKAN_DEVICE_FUNCTION(vkCmdPipelineBarrier)
+ VULKAN_DEVICE_FUNCTION(vkCmdResolveImage)
++VULKAN_DEVICE_FUNCTION(vkCmdResetQueryPool)
++VULKAN_DEVICE_FUNCTION(vkCmdWriteTimestamp)
+ VULKAN_DEVICE_FUNCTION(vkCmdSetBlendConstants)
+ VULKAN_DEVICE_FUNCTION(vkCmdSetDepthBias)
+ VULKAN_DEVICE_FUNCTION(vkCmdSetScissor)
+@@ -124,6 +126,7 @@ VULKAN_DEVICE_FUNCTION(vkCreateImage)
+ VULKAN_DEVICE_FUNCTION(vkCreateImageView)
+ VULKAN_DEVICE_FUNCTION(vkCreatePipelineCache)
+ VULKAN_DEVICE_FUNCTION(vkCreatePipelineLayout)
++VULKAN_DEVICE_FUNCTION(vkCreateQueryPool)
+ VULKAN_DEVICE_FUNCTION(vkCreateRenderPass)
+ VULKAN_DEVICE_FUNCTION(vkCreateSampler)
+ VULKAN_DEVICE_FUNCTION(vkCreateSemaphore)
+@@ -140,6 +143,7 @@ VULKAN_DEVICE_FUNCTION(vkDestroyImageView)
+ VULKAN_DEVICE_FUNCTION(vkDestroyPipeline)
+ VULKAN_DEVICE_FUNCTION(vkDestroyPipelineCache)
+ VULKAN_DEVICE_FUNCTION(vkDestroyPipelineLayout)
++VULKAN_DEVICE_FUNCTION(vkDestroyQueryPool)
+ VULKAN_DEVICE_FUNCTION(vkDestroyRenderPass)
+ VULKAN_DEVICE_FUNCTION(vkDestroySampler)
+ VULKAN_DEVICE_FUNCTION(vkDestroySemaphore)
+@@ -150,6 +154,7 @@ VULKAN_DEVICE_FUNCTION(vkFreeCommandBuffers)
+ VULKAN_DEVICE_FUNCTION(vkFreeMemory)
+ VULKAN_DEVICE_FUNCTION(vkGetDeviceQueue)
+ VULKAN_DEVICE_FUNCTION(vkGetPipelineCacheData)
++VULKAN_DEVICE_FUNCTION(vkGetQueryPoolResults)
+ VULKAN_DEVICE_FUNCTION(vkGetFenceStatus)
+ VULKAN_DEVICE_FUNCTION(vkGetBufferMemoryRequirements)
+ VULKAN_DEVICE_FUNCTION(vkGetImageMemoryRequirements)

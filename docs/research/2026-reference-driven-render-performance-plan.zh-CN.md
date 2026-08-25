@@ -2,7 +2,7 @@
 
 > Status: Historical research input; non-authoritative after capture.
 >
-> 目标落点：`D:\cs\Noemancer\docs\research\2026-reference-driven-render-performance-plan.zh-CN.md`
+> 目标落点：`D:\3D\_tools\Noemancer\docs\research\2026-reference-driven-render-performance-plan.zh-CN.md`
 >
 > 文档性质：当前渲染强化批次的研究输入。执行顺序仍由 `docs/current-state.json.currentFrontier` 负责，不能让本报告独立成为第二份路线图。
 
@@ -38,11 +38,11 @@ Noemancer 已经采用现代高性能方向，但还没有证据证明“极致�
 
 | 参考 | 本地固定位置 | 许可/使用边界 | 主要用途 |
 |---|---|---|---|
-| Wicked Engine `f4a0d2635d5224b4509da164fa75d90fbdaaea26` | `D:\cs\_reference\github\_game-engine\WickedEngine` | MIT；允许 Port。AMD FidelityFX DNSR/FSR/ParallelSort 等另有 Notice，不能只保留 Wicked 根许可 | C++/HLSL 高端路径、SSR、SSGI、TAA、天空大气、DDGI、GPU profiler、bindless/RT |
-| Godot `3000096f9aa6f46db98d3a6d2a9442d58cab96ac` | `D:\cs\_reference\github\_game-engine\godot` | MIT；允许 Port。Intel SSIL 与 Spartan/Panos Karabelas TAA 需分别保留二级 Copyright/permission notice | Forward+、SSIL、TAA、Sky、环境参数、质量档与编辑器暴露 |
-| Unreal Engine 5.8.1 | `D:\cs\_reference\github\_game-engine\UnrealEngine` | 受 Epic EULA 约束；只研究，不复制源码、Shader、宏或类型 | RDG、VSM、Lumen、TSR、GPU Scene、Instance Culling 的生产边界与 failure mode |
+| Wicked Engine `f4a0d2635d5224b4509da164fa75d90fbdaaea26` | `D:\3D\_tools\_reference\_game-engine\WickedEngine` | MIT；允许 Port。AMD FidelityFX DNSR/FSR/ParallelSort 等另有 Notice，不能只保留 Wicked 根许可 | C++/HLSL 高端路径、SSR、SSGI、TAA、天空大气、DDGI、GPU profiler、bindless/RT |
+| Godot `3000096f9aa6f46db98d3a6d2a9442d58cab96ac` | `D:\3D\_tools\_reference\_game-engine\godot` | MIT；允许 Port。Intel SSIL 与 Spartan/Panos Karabelas TAA 需分别保留二级 Copyright/permission notice | Forward+、SSIL、TAA、Sky、环境参数、质量档与编辑器暴露 |
+| Unreal Engine 5.8.1 | `D:\3D\_tools\_reference\_game-engine\UnrealEngine` | 受 Epic EULA 约束；只研究，不复制源码、Shader、宏或类型 | RDG、VSM、Lumen、TSR、GPU Scene、Instance Culling 的生产边界与 failure mode |
 | Filament | 官方 PBR/FrameGraph 文档 | 公开文档/许可逐源确认 | PBR 数值、物理单位、曝光、色彩链和资源 lifetime oracle |
-| Bevy | `D:\cs\_reference\github\_game-engine\bevy` | Rust 实现，主要 Adapt | Main World → Extract → Render World、phase 与图式调度 |
+| Bevy | `D:\3D\_tools\_reference\_game-engine\bevy` | Rust 实现，主要 Adapt | Main World → Extract → Render World、phase 与图式调度 |
 
 每个 Port 必须新增 `sourceProvenance` 记录：上游仓库、提交、源文件、许可证、移植日期、关键修改、Noemancer Shader Artifact ID 和验证证据。第三方类型不得进入 Scene、Prefab、项目 C#、Semantic State Plane 或公共 RPC。
 

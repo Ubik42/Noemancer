@@ -1,7 +1,7 @@
 [CmdletBinding(PositionalBinding=$false)]
 param(
     [ValidateSet('Debug','Release')][string]$Config='Release',
-    [string]$ProjectRoot='D:\3D\NoemancerRenderLab',
+    [string]$ProjectRoot='D:\3D\NoemancerProjects\NoemancerRenderLab',
     [string]$OutputRoot='',
     [ValidateRange(640,7680)][int]$Width=1440,
     [ValidateRange(360,4320)][int]$Height=900,
@@ -160,7 +160,8 @@ function Invoke-RenderEvidence {
             shaderArtifact=$renderer.device.shaderArtifact;shaderManifestHash=$renderer.device.artifactContract.manifestHash;shaderSourceContractHash=$renderer.device.artifactContract.sourceContractHash
             importedGpuMeshes=[int]$renderer.importedGpuMeshes;importedPrimitives=[int]$renderer.importedPrimitives;importedTextures=[int]$renderer.importedTextures
             geometryLoading=[ordered]@{cookedArtifactLoads=[int]$loads.cookedArtifactLoads;sourceAssetDecodes=[int]$loads.sourceAssetDecodes;offlineCompiles=[int]$loads.offlineCompiles}
-            gpuTimestampQueries=[bool]$renderer.framePipeline.gpuTimestampQueries;gpuTimestampReason=$renderer.framePipeline.gpuTimestampReason}}
+            gpuTimestampQueries=[bool]$renderer.framePipeline.gpuTimestampQueries;gpuTimestampReason=$renderer.framePipeline.gpuTimestampReason;
+            gpuTimestamp=$renderer.framePipeline.gpuTimestamp}}
 }
 
 $manifestPath=$null
@@ -225,7 +226,14 @@ try{
     $playerRuns=@();foreach($backend in $GpuBackends){$playerRuns+=Invoke-RenderEvidence 'package' $backend $player @('player','--profile',$profilePath) $packageRoot}
 
     $allRuns=@($sourceRuns)+@($playerRuns)
-    foreach($run in $allRuns){Require ($run.renderer.gpuTimestampQueries -eq $false -and -not[string]::IsNullOrWhiteSpace($run.renderer.gpuTimestampReason)) 'gpu.timestamp-report' "$($run.mode)-$($run.backend)" 'SDL_GPU timestamp limitation was not explicit.'}
+    foreach($run in $allRuns){
+        $timestampReported = if($run.renderer.gpuTimestampQueries){
+            $null -ne $run.renderer.gpuTimestamp -and [bool]$run.renderer.gpuTimestamp.supported
+        }else{
+            -not[string]::IsNullOrWhiteSpace($run.renderer.gpuTimestampReason)
+        }
+        Require $timestampReported 'gpu.timestamp-report' "$($run.mode)-$($run.backend)" 'GPU timestamp capability or explicit unsupported reason was not reported.'
+    }
     $manifest=[ordered]@{schemaVersion='noemancer.render-lab-evidence/0.1';capturedAt=[DateTimeOffset]::UtcNow.ToString('o');pass=$true;configuration=$Config
         runtime=[ordered]@{path=$runtime.Replace('\','/');sha256=Get-Sha $runtime}
         contract=[ordered]@{id='commercial-raster.render-lab-classic-scene-contract';schemaVersion=$contract.schemaVersion;source='project://render-lab.contract.json';sha256=Get-Sha $contractFile;projectId=$projectDoc.projectId;sceneGuid=$scene.sceneGuid;startupScene=$projectDoc.startupScene

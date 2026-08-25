@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <map>
 #include <numeric>
 #include <system_error>
 #include <vector>
@@ -181,6 +182,38 @@ bool write_performance_evidence(const std::filesystem::path& path,
         error = "Renderer status is not valid JSON.";
         return false;
     }
+    const auto gpu_pass_timestamps = nlohmann::json::parse(input.gpu_pass_timestamps_json, nullptr, false);
+    if (gpu_pass_timestamps.is_discarded()) {
+        error = "GPU pass timestamp evidence is not valid JSON.";
+        return false;
+    }
+    auto gpu_pass_timestamp_evidence = gpu_pass_timestamps;
+    nlohmann::json pass_distributions = nlohmann::json::object();
+    std::map<std::string, std::vector<double>> pass_samples;
+    std::size_t available_timestamp_frames{};
+    std::size_t unavailable_timestamp_frames{};
+    if (gpu_pass_timestamps.contains("capturedFrames") && gpu_pass_timestamps.at("capturedFrames").is_array()) {
+        for (const auto& frame : gpu_pass_timestamps.at("capturedFrames")) {
+            bool frame_has_value{};
+            if (frame.contains("passes") && frame.at("passes").is_array()) for (const auto& pass : frame.at("passes")) {
+                if (!pass.value("available", false) || !pass.contains("milliseconds") ||
+                    !pass.at("milliseconds").is_number()) continue;
+                const auto pass_id = pass.value("passId", std::string{});
+                const auto milliseconds = pass.at("milliseconds").get<double>();
+                if (pass_id.empty() || !std::isfinite(milliseconds) || milliseconds < 0.0) continue;
+                pass_samples[pass_id].push_back(milliseconds);
+                frame_has_value = true;
+            }
+            if (frame_has_value) ++available_timestamp_frames;
+            else ++unavailable_timestamp_frames;
+        }
+    }
+    const bool gpu_pass_timestamps_available = gpu_pass_timestamps.value("supported", false) &&
+        available_timestamp_frames > 0U;
+    for (const auto& [pass_id, samples] : pass_samples) pass_distributions[pass_id] = distribution(samples);
+    gpu_pass_timestamp_evidence["passDistributions"] = std::move(pass_distributions);
+    gpu_pass_timestamp_evidence["availableFrameCount"] = available_timestamp_frames;
+    gpu_pass_timestamp_evidence["unavailableFrameCount"] = unavailable_timestamp_frames;
     const auto now = std::chrono::system_clock::now();
     const auto document = nlohmann::json{
         {"schemaVersion", "noemancer.performance-evidence/0.1"},
@@ -237,8 +270,11 @@ bool write_performance_evidence(const std::filesystem::path& path,
                 return distribution(values);
             }()},
             {"meaning", "End-to-end main-thread wall time, observed swapchain acquisition blocking, command-submit blocking, and an active estimate with both waits removed; none is GPU execution time."}}},
-        {"gpu", {{"available", false}, {"requiredSource", "PresentMon/2.4.1"},
-            {"reason", "SDL_GPU exposes no portable timestamp-query contract; external presentation telemetry must supply GPUTime."}}},
+        {"gpu", {{"available", gpu_pass_timestamps_available},
+            {"source", gpu_pass_timestamps_available ? "Noemancer SDL_GPU native timestamp adapter" : "unavailable"},
+            {"passTimestamps", gpu_pass_timestamp_evidence},
+            {"presentationTelemetry", {{"available", false}, {"requiredSource", "PresentMon/2.4.1"},
+                {"reason", "In-process pass timestamps do not measure presentation latency; external telemetry remains a separate evidence source."}}}}},
         {"memory", memory_observation()}, {"renderer", renderer}
     };
     std::error_code filesystem_error;

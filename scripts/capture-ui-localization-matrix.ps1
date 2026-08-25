@@ -2,7 +2,7 @@
 param(
     [switch]$SkipBuild,
     [string]$OutputRoot = '',
-    [string]$ProjectPath = 'D:\3D\NoemancerPlatformer',
+    [string]$ProjectPath = 'D:\3D\NoemancerProjects\NoemancerPlatformer',
     [ValidateRange(1, 120)][int]$Frames = 3,
     [ValidateRange(10, 600)][int]$TimeoutSeconds = 180
 )

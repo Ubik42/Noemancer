@@ -21,6 +21,10 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
     GIT_TAG release-3.4.14
     GIT_SHALLOW TRUE
+    PATCH_COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=<SOURCE_DIR>
+        -DPATCH_FILE=${PROJECT_SOURCE_DIR}/cmake/patches/sdl-3.4.14-gpu-timestamps.patch
+        -P ${PROJECT_SOURCE_DIR}/cmake/apply_patch_if_needed.cmake
 )
 
 set(FLECS_SHARED OFF CACHE BOOL "" FORCE)
@@ -244,7 +248,7 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(SDL flecs nlohmann_json imgui imguizmo lodepng libjpeg_turbo miniaudio fastgltf meshoptimizer ktx_software JoltPhysics ozz_animation ufbx freetype harfbuzz)
-set(NOEMANCER_LIBJPEG_TURBO_BINARY_DIR "${PROJECT_BINARY_DIR}/_deps/libjpeg_turbo-external-build")
+set(NOEMANCER_LIBJPEG_TURBO_BINARY_DIR "${FETCHCONTENT_BASE_DIR}/libjpeg_turbo-external-build")
 ExternalProject_Add(noemancer_libjpeg_turbo_external
     SOURCE_DIR "${libjpeg_turbo_SOURCE_DIR}"
     BINARY_DIR "${NOEMANCER_LIBJPEG_TURBO_BINARY_DIR}"

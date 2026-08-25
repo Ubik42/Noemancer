@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-25",
   "status": "active-development",
-  "currentSlice": "performance.gpu-pass-timestamp-foundation",
-  "currentStep": "map-native-d3d12-vulkan-timestamp-capabilities-and-adapter-boundary",
+  "currentSlice": "render.dynamic-sky-atmosphere",
+  "currentStep": "integrate-atmosphere-contract-shaders-and-render-graph-pass",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "performance.gpu-pass-timestamp-foundation",
     "render.dynamic-sky-atmosphere",
     "render.screen-space-hiz-history-and-temporal-denoising",
     "render.ssr-production-path",
@@ -56,7 +55,8 @@
     "editor.dpi-localization-visual-matrix",
     "commercial-raster.render-lab-classic-scene-contract",
     "asset.gltf-external-resource-jpeg-and-large-scene-readiness",
-    "performance.editor-retained-ui-command-recording"
+    "performance.editor-retained-ui-command-recording",
+    "performance.gpu-pass-timestamp-foundation"
   ],
   "closedExperiments": [
     {

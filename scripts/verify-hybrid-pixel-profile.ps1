@@ -47,7 +47,7 @@ $script:Package = $null
 $script:PackageHeadless = $null
 $script:ShaderClosure = $null
 $script:GameProfileContract = $null
-$script:ExpectedShaderCount = 29
+$script:ExpectedShaderCount = 31
 $script:SourceCaptures = [System.Collections.Generic.List[object]]::new()
 $script:PackageCaptures = [System.Collections.Generic.List[object]]::new()
 

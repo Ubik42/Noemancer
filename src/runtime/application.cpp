@@ -2779,6 +2779,9 @@ int Application::run_interactive() {
             performance_render_extract=std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-render_extract_start).count();
             const auto scene_render_record_start=std::chrono::steady_clock::now();
+            scene_renderer->set_gpu_pass_timing_enabled(
+                performance_run && frame>=options_.performance_warmup_frames &&
+                !scene_pick_request && !visibility_readback_this_frame);
             scene_renderer->render(command_buffer, render_world);
             if(visibility_readback_this_frame&&!scene_renderer->enqueue_gpu_visibility_readback(command_buffer))
                 logger_.error("render.gpu_visibility_readback_enqueue",scene_renderer->last_error());
@@ -2903,10 +2906,13 @@ int Application::run_interactive() {
         const auto submit_wait_start=std::chrono::steady_clock::now();
         performance_command_record=std::chrono::duration<double,std::milli>(
             submit_wait_start-command_record_start).count();
-        if (scene_pick_request||visibility_readback_this_frame) {
+        const bool gpu_pass_timing_fence=scene_renderer->gpu_pass_timing_submission_pending();
+        if (scene_pick_request||visibility_readback_this_frame||gpu_pass_timing_fence) {
             auto* readback_fence = SDL_SubmitGPUCommandBufferAndAcquireFence(command_buffer);
             if (!readback_fence) {
-                logger_.error(scene_pick_request?"render.pick_submit":"render.gpu_visibility_readback_submit", SDL_GetError());
+                logger_.error(scene_pick_request?"render.pick_submit":
+                    (visibility_readback_this_frame?"render.gpu_visibility_readback_submit":"render.gpu_timestamp_submit"), SDL_GetError());
+                scene_renderer->abandon_gpu_pass_timing_submission();
                 scene_renderer->rollback_texture_streaming_frame();
                 thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
                 break;
@@ -2914,9 +2920,11 @@ int Application::run_interactive() {
             scene_renderer->commit_texture_streaming_frame();
             thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();retained_asset_browser_gpu.commit_uploads();
             if(scene_pick_request)scene_renderer->attach_pick_fence(readback_fence);
-            else scene_renderer->attach_gpu_visibility_readback_fence(readback_fence);
+            else if(visibility_readback_this_frame)scene_renderer->attach_gpu_visibility_readback_fence(readback_fence);
+            else scene_renderer->attach_gpu_pass_timing_fence(readback_fence);
         } else if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
             logger_.error("render.submit", SDL_GetError());
+            scene_renderer->abandon_gpu_pass_timing_submission();
             scene_renderer->rollback_texture_streaming_frame();
             thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
             break;
@@ -2980,6 +2988,7 @@ int Application::run_interactive() {
         else logger_.error("render.gpu_visibility_readback",scene_renderer->status_json());
     }
     SDL_WaitForGPUIdle(device);
+    scene_renderer->poll_gpu_pass_timings();
     if (has_gpu_probe) logger_.info("render.scene.final", scene_renderer->status_json());
     bool performance_evidence_written=true;
     if(performance_run) {
@@ -3015,6 +3024,7 @@ int Application::run_interactive() {
                 performance_editor_ui_panel_milliseconds[4],performance_editor_ui_panel_milliseconds[5],
                 performance_editor_ui_panel_milliseconds[6],performance_editor_ui_panel_milliseconds[7],
                 performance_editor_ui_panel_milliseconds[8]},
+            .gpu_pass_timestamps_json=scene_renderer->gpu_pass_timing_evidence_json(),
             .renderer_status_json=scene_renderer->status_json()};
         if(write_performance_evidence(options_.performance_evidence_path,evidence,evidence_error))
             logger_.info("performance.evidence",options_.performance_evidence_path);

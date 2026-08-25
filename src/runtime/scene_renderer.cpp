@@ -552,7 +552,7 @@ SceneRenderer::SceneRenderer(SDL_GPUDevice* device, const AssetRegistry& asset_r
                              TextureResourceTable& texture_resources, const bool gpu_debug)
     : device_(device), asset_registry_(asset_registry), virtual_file_system_(std::move(virtual_file_system)),
       asset_vfs_catalog_(asset_vfs_catalog), texture_resources_(texture_resources),
-      gpu_debug_(gpu_debug), render_graph_(make_forward_render_graph()) {
+      gpu_debug_(gpu_debug), gpu_pass_timestamps_(device), render_graph_(make_forward_render_graph()) {
     gpu_backend_=SDL_GetGPUDeviceDriver(device_);
     const auto properties=SDL_GetGPUDeviceProperties(device_);
     gpu_device_name_=SDL_GetStringProperty(properties,SDL_PROP_GPU_DEVICE_NAME_STRING,"unknown");
@@ -3077,7 +3077,9 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         }
     };
     bloom_record_microseconds_=0.0;ao_denoise_record_microseconds_=0.0;
+    (void)gpu_pass_timestamps_.begin_frame(command,frame_index_,render_graph_.execution_order);
     for (const auto& pass_id : render_graph_.execution_order) {
+    gpu_pass_timestamps_.begin_pass(command,pass_id);
     SDL_PushGPUDebugGroup(command,pass_id.c_str());
     const auto record_start=std::chrono::steady_clock::now();
     if (pass_id == "render.pass.shadow-depth") {
@@ -3133,7 +3135,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         shadow_target.load_op=SDL_GPU_LOADOP_CLEAR; shadow_target.store_op=SDL_GPU_STOREOP_STORE;
         shadow_target.stencil_load_op=SDL_GPU_LOADOP_DONT_CARE; shadow_target.stencil_store_op=SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,nullptr,0,&shadow_target);
-        if(!pass){last_error_=SDL_GetError();return;}
+        if(!pass){last_error_=SDL_GetError();gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;}
         std::vector<bool> submitted(objects.size(),false);
         for (std::size_t object_index=0;object_index<objects.size();++object_index) {
             if (submitted[object_index] || !cascade_visible[object_index]) continue;
@@ -3224,7 +3226,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         shadow_target.load_op=SDL_GPU_LOADOP_CLEAR;shadow_target.store_op=SDL_GPU_STOREOP_STORE;
         shadow_target.stencil_load_op=SDL_GPU_LOADOP_DONT_CARE;shadow_target.stencil_store_op=SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,nullptr,0,&shadow_target);
-        if(!pass){last_error_=SDL_GetError();return;}
+        if(!pass){last_error_=SDL_GetError();gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;}
         ++local_shadow_faces_rendered_;
         std::vector<bool> submitted(objects.size(),false);
         for(std::size_t object_index=0;object_index<objects.size();++object_index) {
@@ -3625,6 +3627,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     SDL_EndGPURenderPass(pass);
     }
     SDL_PopGPUDebugGroup(command);
+    gpu_pass_timestamps_.end_pass(command,pass_id);
     const auto record_duration=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-record_start).count();
     if (pass_id=="render.pass.shadow-depth") shadow_record_microseconds_=record_duration;
     else if(pass_id=="render.pass.gpu-visibility")gpu_visibility_record_microseconds_=record_duration;
@@ -3639,6 +3642,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     else if (pass_id=="render.pass.tone-map") tone_map_record_microseconds_=record_duration;
     else if (pass_id=="render.pass.fxaa") fxaa_record_microseconds_=record_duration;
     }
+    gpu_pass_timestamps_.end_frame(command);
     previous_view_projection_=view_projection.value;
     previous_temporal_frame_=frame_index_;
     previous_camera_id_=active_camera_id_;
@@ -4002,6 +4006,7 @@ std::string SceneRenderer::last_pixel_evidence_json() const {
 
 std::string SceneRenderer::status_json() const {
     const auto& shader_contract=runtime_shader_artifacts();
+    const auto gpu_timestamp_evidence=nlohmann::json::parse(gpu_pass_timestamps_.status_json());
     const nlohmann::json device_evidence{
         {"backend",gpu_backend_}, {"adapter",gpu_device_name_}, {"driverName",gpu_driver_name_},
         {"driverVersion",gpu_driver_version_}, {"driverInfo",gpu_driver_info_},
@@ -4103,7 +4108,11 @@ std::string SceneRenderer::status_json() const {
         << ",\"renderScale\":" << render_scale_ << ",\"effectiveRenderScale\":" << (hybrid_pixel_active()?1.0F:render_scale_)
         << "},\"hybridPixel\":" << hybrid_pixel_evidence.dump()
         << ",\"framePipeline\":{\"allowedFramesInFlight\":" << allowed_frames_in_flight_
-        << ",\"resourceCycling\":\"SDL_GPU-native-cycle-on-write\",\"gpuTimestampQueries\":false,\"gpuTimestampReason\":\"SDL_GPU-3.4-no-query-api\",\"debugCapture\":{\"commandGroups\":true,\"renderGraphPassLabels\":18,\"namedRenderTextures\":29,\"namedVfxBuffers\":13}},\"renderWorld\":{\"extractionId\":\"" << extraction_id_
+        << ",\"resourceCycling\":\"SDL_GPU-native-cycle-on-write\",\"gpuTimestampQueries\":"
+        << (gpu_pass_timestamps_.supported()?"true":"false") << ",\"gpuTimestamp\":" << gpu_timestamp_evidence.dump()
+        << ",\"gpuTimestampReason\":\"" << (gpu_pass_timestamps_.supported()?"ok":gpu_timestamp_evidence.value("reason",std::string{"unavailable"})) << "\""
+        << ",\"debugCapture\":{\"commandGroups\":true,\"renderGraphPassLabels\":" << render_graph_.execution_order.size()
+        << ",\"namedRenderTextures\":29,\"namedVfxBuffers\":13}},\"renderWorld\":{\"extractionId\":\"" << extraction_id_
         << "\",\"worldRevision\":" << world_revision_ << ",\"frameIndex\":" << frame_index_ << "},\"graph\":" << render_graph_json(render_graph_) << ","
         << "\"vfxGpu\":{\"pipelineCreated\":" << (vfx_compute_pipeline_&&vfx_spawn_pipeline_&&vfx_group_pipeline_&&vfx_sort_alpha_pipeline_&&vfx_alpha_draw_pipeline_&&vfx_additive_draw_pipeline_?"true":"false") << ",\"resourcesAllocated\":" << (vfx_particle_buffer_&&vfx_alive_buffers_[0]&&vfx_alive_buffers_[1]&&vfx_dead_buffer_&&vfx_counter_buffers_[0]&&vfx_counter_buffers_[1]&&vfx_dead_counter_buffer_&&vfx_spawn_buffer_&&vfx_spawn_graph_buffer_&&vfx_additive_indices_buffer_&&vfx_alpha_indices_buffer_&&vfx_additive_counter_buffer_&&vfx_alpha_counter_buffer_?"true":"false") << ",\"kernels\":[\"vfx_sim.comp\",\"vfx_spawn.comp\",\"vfx_group.comp\",\"vfx_sort_alpha.comp\"],\"drawShader\":\"vfx_billboard\",\"threadGroupSize\":64,\"alphaSortThreadGroupSize\":256,\"capacity\":" << vfx_gpu_capacity << ",\"particleStrideBytes\":" << vfx_particle_stride << ",\"spawnIdentityStrideBytes\":" << vfx_spawn_identity_stride << ",\"spawnGraphStrideBytes\":" << vfx_spawn_graph_stride << ",\"workingSetBytes\":" << (vfx_gpu_capacity*(vfx_particle_stride+vfx_spawn_identity_stride+vfx_spawn_graph_stride+20U)+vfx_counter_bytes*5U) << ",\"dispatchGroups\":" << vfx_dispatch_groups_ << ",\"controlUploads\":" << vfx_state_uploads_ << ",\"spawnIdentitiesUploaded\":" << vfx_particles_uploaded_ << ",\"spawnGraphCommandsUploaded\":" << vfx_spawn_graph_commands_uploaded_ << ",\"aliveIndicesUploaded\":0,\"dynamicParticleStateUploaded\":false,\"cpuExpectedResidentParticles\":" << vfx_resident_particles_ << ",\"cpuExpectedBlendGroups\":{\"additive\":" << vfx_expected_additive_particles_ << ",\"alpha\":" << vfx_expected_alpha_particles_ << "},\"cpuIdsReclaimedThisFrame\":" << vfx_slots_reclaimed_ << ",\"cpuSpawnPayloadsDroppedThisFrame\":" << vfx_particles_dropped_ << ",\"uploadBytesTotal\":" << vfx_upload_bytes_ << ",\"inputMode\":\"gpu-alive-ping-pong/dead-list/particle-identity-plus-emitter-graph-parameters\",\"particleStatePersistence\":true,\"fullParticleStateUploadPerFrame\":false,\"curveEvaluation\":\"gpu-age/color-size-start-end\",\"gpuNativeSlotAllocation\":true,\"gpuNativeAliveDeadLifecycle\":true,\"gpuNativeBlendGrouping\":true,\"gpuNativeAlphaSort\":true,\"alphaSortPolicy\":\"back-to-front/stable-particle-id/multi-dispatch-bitonic/dynamic-power-of-two-span/max-8192\",\"alphaSortSynchronization\":\"compute-pass-boundary-per-compare-stage\",\"gpuNativeRandomGeneration\":true,\"randomAlgorithm\":\"stateless-u32-hash/seed-particle-index-channel\",\"spawnCatchUp\":\"fixed-60hz/max-512-steps\",\"simulationDispatchesRecorded\":" << vfx_compute_dispatches_ << ",\"spawnDispatchesRecorded\":" << vfx_spawn_dispatches_ << ",\"groupDispatchesRecorded\":" << vfx_group_dispatches_ << ",\"sortDispatchesRecorded\":" << vfx_sort_dispatches_ << ",\"indirectDrawsRecorded\":" << vfx_indirect_draws_ << ",\"simulationReadWriteStorageBuffers\":7,\"spawnReadWriteStorageBuffers\":7,\"groupReadWriteStorageBuffers\":7,\"sortReadWriteStorageBuffers\":3,\"vertexStorageBuffers\":2,\"dispatchActive\":" << (vfx_compute_dispatches_>0?"true":"false") << ",\"compactionActive\":true,\"outputConsumedByDraw\":" << (vfx_indirect_draws_>0?"true":"false") << ",\"drawMode\":\"gpu-blend-grouped/additive-then-alpha/dual-indirect-billboard\",\"abi\":\"structured-particle-gpu-lifecycle-indirect/0.7\"},"
         << "\"evidence\":{\"objectId\":\"render.resource.object-id\",\"depth\":\"render.resource.scene-depth\",\"normal\":\"render.resource.world-normal\",\"motion\":\"render.resource.motion-vectors\",\"reactiveMask\":\"render.resource.reactive-mask\",\"lastPixel\":" << last_pixel_evidence_json() << "},"

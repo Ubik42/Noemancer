@@ -10,5 +10,6 @@
 | 0006 | Accepted | Semantic State Plane |
 | 0007 | Accepted | Noemancer name |
 | 0008 | Accepted | libjpeg-turbo image adapter and external glTF source closure |
+| 0009 | Accepted; implementation in progress | GPU pass timestamp Adapter |
 
 ADRs record decisions, not implementation progress or task order. Consult `docs/architecture.md` and `docs/development-plan.zh-CN.md` for those.

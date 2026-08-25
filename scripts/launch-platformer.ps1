@@ -14,7 +14,7 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = if ($env:NOEMANCER_PLATFORMER_PROJECT) {
         $env:NOEMANCER_PLATFORMER_PROJECT
     } else {
-        Join-Path ([IO.Path]::GetPathRoot($engineRoot)) '3D\NoemancerPlatformer'
+        Join-Path ([IO.Path]::GetPathRoot($engineRoot)) '3D\NoemancerProjects\NoemancerPlatformer'
     }
 }
 $ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)

@@ -15,6 +15,7 @@
 #include "engine/vfx_gpu_residency.hpp"
 #include "runtime/runtime_texture_upload.hpp"
 #include "runtime/asset_vfs_catalog.hpp"
+#include "runtime/gpu_pass_timestamp_adapter.hpp"
 #include "runtime/texture_resource_table.hpp"
 
 #include <array>
@@ -55,6 +56,14 @@ public:
     void rollback_texture_streaming_frame();
     void set_temporal_debug_mode(const std::string& mode);
     void set_gpu_driven_enabled(bool enabled);
+    void set_gpu_pass_timing_enabled(bool enabled) noexcept { gpu_pass_timestamps_.set_enabled(enabled); }
+    [[nodiscard]] bool gpu_pass_timing_submission_pending() const noexcept {
+        return gpu_pass_timestamps_.submission_requires_fence();
+    }
+    void attach_gpu_pass_timing_fence(SDL_GPUFence* fence) { gpu_pass_timestamps_.attach_submission_fence(fence); }
+    void abandon_gpu_pass_timing_submission() noexcept { gpu_pass_timestamps_.abandon_submission(); }
+    void poll_gpu_pass_timings() { gpu_pass_timestamps_.poll(); }
+    [[nodiscard]] std::string gpu_pass_timing_evidence_json() const { return gpu_pass_timestamps_.evidence_json(); }
     void set_ambient_occlusion_enabled(bool enabled) noexcept { ambient_occlusion_enabled_ = enabled; }
     [[nodiscard]] bool enqueue_gpu_visibility_readback(SDL_GPUCommandBuffer* command_buffer);
     void attach_gpu_visibility_readback_fence(SDL_GPUFence* fence);
@@ -147,6 +156,7 @@ private:
     TextureResourceTable& texture_resources_;
     std::string gpu_backend_;
     bool gpu_debug_{};
+    GpuPassTimestampAdapter gpu_pass_timestamps_;
     bool gpu_driven_enabled_{true};
     std::string gpu_device_name_;
     std::string gpu_driver_name_;

@@ -427,6 +427,34 @@
         1,
         1
       ]
+    },
+    {
+      "stem": "sky_atmosphere.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "sky_atmosphere.vert",
+      "stage": "vertex",
+      "profile": "vs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 0,
+        "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
     }
   ]
 }

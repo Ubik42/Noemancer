@@ -153,6 +153,19 @@ add_executable(noemancer_render_architecture_tests render_architecture_tests.cpp
 target_link_libraries(noemancer_render_architecture_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.render_architecture COMMAND noemancer_render_architecture_tests)
 
+add_executable(noemancer_sky_atmosphere_tests sky_atmosphere_tests.cpp)
+target_link_libraries(noemancer_sky_atmosphere_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.sky_atmosphere COMMAND noemancer_sky_atmosphere_tests)
+
+add_executable(noemancer_gpu_pass_timestamp_evidence_tests
+    gpu_pass_timestamp_evidence_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/performance_evidence.cpp)
+target_link_libraries(noemancer_gpu_pass_timestamp_evidence_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(noemancer_gpu_pass_timestamp_evidence_tests PRIVATE psapi)
+endif()
+add_test(NAME noemancer.gpu_pass_timestamp_evidence COMMAND noemancer_gpu_pass_timestamp_evidence_tests)
+
 add_executable(noemancer_hybrid_pixel_profile_tests hybrid_pixel_profile_tests.cpp)
 target_link_libraries(noemancer_hybrid_pixel_profile_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.hybrid_pixel_profile COMMAND noemancer_hybrid_pixel_profile_tests)

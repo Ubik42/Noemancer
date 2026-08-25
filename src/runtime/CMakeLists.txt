@@ -4,6 +4,7 @@ add_executable(noemancer
     application.cpp
     game_persistence_store.cpp
     gpu_batch_resource_identity.cpp
+    gpu_pass_timestamp_adapter.cpp
     input_source_adapter.cpp
     live_editor_transport.cpp
     audio_output_backend.cpp
@@ -50,7 +51,7 @@ if(WIN32)
     endif()
     set(NOEMANCER_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
     set(NOEMANCER_SHADER_OUTPUTS)
-    foreach(shader IN ITEMS scene_lit.vert scene_gpu_driven.vert scene_lit.frag sprite.vert sprite.frag sprite_shadow.vert shadow_depth.vert shadow_depth.frag tone_map.vert tone_map.frag gtao.frag ao_denoise.frag ao_composite.frag auto_exposure.frag bloom_downsample.frag bloom_upsample.frag fxaa.vert fxaa.frag taa.vert taa.frag retained_ui.vert retained_ui.frag gpu_visibility.comp vfx_sim.comp vfx_spawn.comp vfx_group.comp vfx_sort_alpha.comp vfx_billboard.vert vfx_billboard.frag)
+    foreach(shader IN ITEMS scene_lit.vert scene_gpu_driven.vert scene_lit.frag sprite.vert sprite.frag sprite_shadow.vert shadow_depth.vert shadow_depth.frag tone_map.vert tone_map.frag gtao.frag ao_denoise.frag ao_composite.frag auto_exposure.frag bloom_downsample.frag bloom_upsample.frag fxaa.vert fxaa.frag taa.vert taa.frag retained_ui.vert retained_ui.frag gpu_visibility.comp vfx_sim.comp vfx_spawn.comp vfx_group.comp vfx_sort_alpha.comp vfx_billboard.vert vfx_billboard.frag sky_atmosphere.vert sky_atmosphere.frag)
         if(shader MATCHES "\\.vert$")
             set(profile vs_6_0)
         elseif(shader MATCHES "\\.comp$")

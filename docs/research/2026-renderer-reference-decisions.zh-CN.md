@@ -18,7 +18,7 @@
 | Wicked Engine | `f4a0d2635d52` | 轻量 C++ 多后端、bindless、GPU profiler、DDGI/光追/粒子与高压场景 | 不采用全局静态子系统，也不整块嵌入黑盒 renderer |
 | Unreal Engine 5.8.1 | `71fe36aac5a8` | Deferred/Mobile 双路径、RDG、GPU Scene、Instance Culling、Nanite、Lumen、VSM、TSR、Shader/PSO 和生产诊断 | 不复制源码、宏/UObject/RHI 体系；不默认承担高端桌面路径的复杂度 |
 
-UE 官方源码位于 `D:\cs\_reference\github\_game-engine\UnrealEngine`。这是 `release` 分支的浅层、blob-filtered、sparse checkout，保留 Renderer、RenderCore、RHI、D3D12/Vulkan、Engine、ShaderCompiler、UnrealBuildTool、Shaders 与 Build 版本信息；没有下载完整历史、模板和二进制依赖。
+UE 官方源码位于 `D:\3D\_tools\_reference\_game-engine\UnrealEngine`。这是 `release` 分支的浅层、blob-filtered、sparse checkout，保留 Renderer、RenderCore、RHI、D3D12/Vulkan、Engine、ShaderCompiler、UnrealBuildTool、Shaders 与 Build 版本信息；没有下载完整历史、模板和二进制依赖。
 
 ## 不同引擎为什么选择不同路径
 

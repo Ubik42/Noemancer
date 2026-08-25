@@ -15,7 +15,8 @@
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
         "BUILD_TESTING": "ON",
-        "NOEMANCER_WARNINGS_AS_ERRORS": "ON"
+        "NOEMANCER_WARNINGS_AS_ERRORS": "ON",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/build/windows-msvc-debug/dependencies"
       }
     }
   ],
