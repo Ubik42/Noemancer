@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <array>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -86,6 +87,25 @@ struct EditorSceneAction final {
     std::uint64_t revision{};
 };
 
+// A non-owning view over whichever World currently has Editor authority.
+// EditorModel does not retain this data: Edit uses its existing object and
+// selection caches, while Play callers may project their existing read-only
+// runtime snapshot without creating a second World or Selection authority.
+struct EditorOutlinerAuthorityView final {
+    std::string_view authority{"edit-world"};
+    std::string_view simulation_state{"edit"};
+    bool writable{true};
+    std::uint64_t world_revision{};
+    std::span<const EditorObject> objects;
+    std::span<const std::string> selected_object_ids;
+    std::string_view primary_selected_object_id;
+};
+
+struct EditorOutlinerSemanticOptions final {
+    std::size_t entity_limit{512U};
+    std::size_t selection_limit{64U};
+};
+
 class EditorModel final {
 public:
     EditorModel(World& world, AssetRegistry& assets);
@@ -95,6 +115,11 @@ public:
     [[nodiscard]] const std::vector<EditorPanel>& panels() const noexcept;
     [[nodiscard]] const std::vector<InspectorSection>& inspector_sections() const noexcept;
     [[nodiscard]] std::string inspector_semantic_ui_document_json(std::string_view locale="en-US") const;
+    [[nodiscard]] std::string outliner_semantic_ui_document_json(
+        EditorOutlinerSemanticOptions options = {}) const;
+    [[nodiscard]] std::string outliner_semantic_ui_document_json(
+        const EditorOutlinerAuthorityView& authority,
+        EditorOutlinerSemanticOptions options = {}) const;
     [[nodiscard]] std::size_t selected_object_index() const noexcept;
     [[nodiscard]] const EditorObject& selected_object() const;
     [[nodiscard]] const std::vector<std::string>& selected_object_ids() const noexcept;

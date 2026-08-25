@@ -208,6 +208,7 @@ int main() {
         .hybrid_pixel_profile=noemancer::HybridPixelProfile{}});
     editor.set_exposure(2.0F);
     editor.set_render_surface(1, 960, 540);
+    editor.set_retained_outliner_surface(2,320,640);
     editor.set_render_status(R"({"passes":["shadow-depth","opaque-lit"]})");
     editor.set_managed_debug_context(
         R"({"schemaVersion":"noemancer.managed-debug-session-events/0.1","success":true,"events":[{"kind":"event","event":"stopped","body":{"reason":"breakpoint","threadId":1}}]})",
@@ -217,6 +218,15 @@ int main() {
     ImGui::Render();
 
     const auto snapshot = editor.semantic_snapshot_json();
+    const auto retained_outliner=editor.retained_outliner_document_json();
+    const auto outliner_origin=editor.retained_outliner_window_at(0,0);
+    const auto outliner_pointer=outliner_origin?editor.retained_outliner_pointer_at(
+        static_cast<float>(outliner_origin->x),static_cast<float>(outliner_origin->y)):std::nullopt;
+    const bool has_retained_outliner=retained_outliner.find(R"("documentId":"editor.world-outliner")")!=std::string::npos&&
+        retained_outliner.find("entity.demo-cube")!=std::string::npos&&outliner_origin&&outliner_pointer&&
+        outliner_pointer->x>=0&&outliner_pointer->x<320&&outliner_pointer->y>=0&&outliner_pointer->y<640&&
+        !editor.retained_outliner_window_at(-1,0)&&editor.requested_outliner_width()>=192&&
+        editor.requested_outliner_height()>=160;
     const bool has_live_selection = snapshot.find("entity.demo-cube") != std::string::npos;
     const bool has_gizmo_contract=snapshot.find(R"("transformTool":"translate")")!=std::string::npos &&
         snapshot.find("ImGuizmo 1.10 + Noemancer transaction adapter")!=std::string::npos;
@@ -247,6 +257,8 @@ int main() {
         snapshot.find(R"("id":"editor.animation-graph")")!=std::string::npos&&
         snapshot.find(R"("role":"asset-workspace")")!=std::string::npos&&
         snapshot.find("noemancer.editor-retained-panels/0.1")!=std::string::npos&&
+        snapshot.find(R"("outlinerSurface":{"controls":["search","tree","multi-selection","context-menu","drag-drop"],"coordinateRoute":"dock-window-to-surface","height":640)")!=std::string::npos&&
+        snapshot.find(R"("surfaceId":"editor.world-outliner")")!=std::string::npos&&
         snapshot.find("noemancer.retained-ui-actions/0.1")!=std::string::npos&&
         snapshot.find(R"("dispatch":"runtime-adapter-to-domain-plan-apply-receipt")")!=std::string::npos&&
         snapshot.find(R"("role":"main-workspace")")!=std::string::npos&&
@@ -279,7 +291,7 @@ int main() {
     const bool produced_draw_data = ImGui::GetDrawData() != nullptr;
     ImGui::DestroyContext();
 
-    if (!has_live_selection || !has_gizmo_contract || !has_tile_brush_contract || !has_palette_rule_contract || !has_editor_camera || !has_project_context || !has_hybrid_profile_authoring || !has_editor_chrome || !has_scene_lifecycle || !has_scripting_context || !has_play_state || !produced_draw_data || editor.requested_exposure() != 2.0F ||
+    if (!has_live_selection || !has_gizmo_contract || !has_tile_brush_contract || !has_palette_rule_contract || !has_editor_camera || !has_project_context || !has_hybrid_profile_authoring || !has_editor_chrome || !has_retained_outliner || !has_scene_lifecycle || !has_scripting_context || !has_play_state || !produced_draw_data || editor.requested_exposure() != 2.0F ||
         editor.requested_scene_width() < 64 || editor.requested_scene_height() < 64) {
         std::cerr << "Editor UI did not render a semantic frame from the live World\n";
         return 2;

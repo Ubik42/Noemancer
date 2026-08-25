@@ -375,6 +375,17 @@ void EditorUi::set_retained_inspector_surface(const std::uintptr_t texture_id,co
     retained_inspector_texture_height_=height;
 }
 
+void EditorUi::set_retained_outliner_surface(const std::uintptr_t texture_id,const std::uint32_t width,
+                                              const std::uint32_t height) {
+    retained_outliner_texture_id_=texture_id;
+    retained_outliner_texture_width_=width;
+    retained_outliner_texture_height_=height;
+    if(texture_id==0U) {
+        retained_outliner_canvas_width_=0.0F;
+        retained_outliner_canvas_height_=0.0F;
+    }
+}
+
 void EditorUi::set_render_status(std::string status_json) {
     render_status_json_ = std::move(status_json);
 }
@@ -696,6 +707,28 @@ std::uint32_t EditorUi::requested_scene_height() const { return requested_scene_
 std::uint32_t EditorUi::requested_inspector_width() const noexcept {return requested_inspector_width_;}
 std::uint32_t EditorUi::requested_inspector_height() const noexcept {return requested_inspector_height_;}
 std::string EditorUi::retained_inspector_document_json() const {return model_.inspector_semantic_ui_document_json();}
+std::uint32_t EditorUi::requested_outliner_width() const noexcept {return requested_outliner_width_;}
+std::uint32_t EditorUi::requested_outliner_height() const noexcept {return requested_outliner_height_;}
+std::string EditorUi::retained_outliner_document_json() const {
+    if(simulation_state_==EditorSimulationState::edit)return model_.outliner_semantic_ui_document_json();
+    const auto observation=nlohmann::json::parse(play_world_observation_json_,nullptr,false);
+    std::vector<EditorObject> objects;
+    if(observation.is_object())for(const auto& entity:observation.value("entities",nlohmann::json::array())) {
+        if(!entity.is_object())continue;
+        const auto id=entity.value("id",std::string{});if(id.empty())continue;
+        const auto parent=entity.value("parentId",nlohmann::json(nullptr));
+        objects.push_back({.id=id,.name=entity.value("displayName",entity.value("name",id)),
+            .kind=entity.value("type",std::string{"entity"}),
+            .parent_id=parent.is_string()?parent.get<std::string>():std::string{},
+            .revision=entity.value("revision",0ULL)});
+    }
+    std::vector<std::string> selection;
+    if(!play_world_selected_entity_id_.empty())selection.push_back(play_world_selected_entity_id_);
+    return model_.outliner_semantic_ui_document_json(EditorOutlinerAuthorityView{
+        .authority="play-world-read-only",.simulation_state=simulation_state_==EditorSimulationState::paused?"paused":"playing",
+        .writable=false,.world_revision=observation.is_object()?observation.value("revision",0ULL):0ULL,
+        .objects=objects,.selected_object_ids=selection,.primary_selected_object_id=play_world_selected_entity_id_});
+}
 float EditorUi::requested_exposure() const { return requested_exposure_; }
 void EditorUi::set_exposure(const float exposure) { requested_exposure_=std::clamp(exposure,0.125F,8.0F); }
 std::optional<RenderCameraSnapshot> EditorUi::render_camera_override() const {
@@ -784,6 +817,19 @@ std::optional<ScenePointerPosition> EditorUi::retained_inspector_pointer_at(cons
                    static_cast<std::int32_t>(retained_inspector_texture_height_-1U))};
 }
 
+std::optional<ScenePointerPosition> EditorUi::retained_outliner_pointer_at(const float window_x,const float window_y) const {
+    if(retained_outliner_texture_id_==0||retained_outliner_texture_width_==0||retained_outliner_texture_height_==0||
+       retained_outliner_canvas_width_<=0.0F||retained_outliner_canvas_height_<=0.0F||
+       window_x<retained_outliner_canvas_x_||window_y<retained_outliner_canvas_y_||
+       window_x>=retained_outliner_canvas_x_+retained_outliner_canvas_width_||
+       window_y>=retained_outliner_canvas_y_+retained_outliner_canvas_height_)return std::nullopt;
+    return ScenePointerPosition{
+        std::clamp(static_cast<std::int32_t>((window_x-retained_outliner_canvas_x_)*retained_outliner_texture_width_/
+            retained_outliner_canvas_width_),0,static_cast<std::int32_t>(retained_outliner_texture_width_-1U)),
+        std::clamp(static_cast<std::int32_t>((window_y-retained_outliner_canvas_y_)*retained_outliner_texture_height_/
+            retained_outliner_canvas_height_),0,static_cast<std::int32_t>(retained_outliner_texture_height_-1U))};
+}
+
 std::optional<SceneWindowPosition> EditorUi::scene_window_at(const std::int32_t scene_x, const std::int32_t scene_y) const {
     if (scene_canvas_width_ <= 0.0F || scene_canvas_height_ <= 0.0F ||
         scene_texture_width_ == 0 || scene_texture_height_ == 0) return std::nullopt;
@@ -805,6 +851,20 @@ std::optional<SceneWindowPosition> EditorUi::retained_inspector_window_at(const 
         static_cast<std::int32_t>(std::lround(retained_inspector_canvas_y_+surface_y*retained_inspector_canvas_height_/
             retained_inspector_texture_height_)),
         retained_inspector_canvas_height_/retained_inspector_texture_height_};
+}
+
+std::optional<SceneWindowPosition> EditorUi::retained_outliner_window_at(const std::int32_t surface_x,
+                                                                         const std::int32_t surface_y) const {
+    if(retained_outliner_texture_id_==0||retained_outliner_texture_width_==0||retained_outliner_texture_height_==0||
+       retained_outliner_canvas_width_<=0.0F||retained_outliner_canvas_height_<=0.0F||surface_x<0||surface_y<0||
+       surface_x>=static_cast<std::int32_t>(retained_outliner_texture_width_)||
+       surface_y>=static_cast<std::int32_t>(retained_outliner_texture_height_))return std::nullopt;
+    return SceneWindowPosition{
+        static_cast<std::int32_t>(std::lround(retained_outliner_canvas_x_+surface_x*retained_outliner_canvas_width_/
+            retained_outliner_texture_width_)),
+        static_cast<std::int32_t>(std::lround(retained_outliner_canvas_y_+surface_y*retained_outliner_canvas_height_/
+            retained_outliner_texture_height_)),
+        retained_outliner_canvas_height_/retained_outliner_texture_height_};
 }
 
 bool EditorUi::select_entity(const std::string_view entity_id) {
@@ -1275,7 +1335,16 @@ std::string EditorUi::semantic_snapshot_json() const {
     }
     const auto retained_inspector=edit_authority?model_.inspector_semantic_ui_document_json():
         semantic_ui_document_from_inspector(play_world_inspector_json_);
+    const auto retained_outliner=retained_outliner_document_json();
     snapshot["editorChrome"]["retainedPanels"]={{"schemaVersion","noemancer.editor-retained-panels/0.1"},
+        {"outliner",nlohmann::json::parse(retained_outliner,nullptr,false)},
+        {"outlinerSurface",{{"surfaceId","editor.world-outliner"},
+            {"visible",retained_outliner_texture_id_!=0&&retained_outliner_texture_width_>0&&
+                retained_outliner_texture_height_>0},
+            {"renderer","RmlUi/SDL_GPU"},{"width",retained_outliner_texture_width_},
+            {"height",retained_outliner_texture_height_},{"coordinateRoute","dock-window-to-surface"},
+            {"input",nlohmann::json::array({"pointer","keyboard","text","ime"})},
+            {"controls",nlohmann::json::array({"search","tree","multi-selection","context-menu","drag-drop"})}}},
         {"inspector",nlohmann::json::parse(retained_inspector,nullptr,false)},
         {"inspectorSurface",{{"surfaceId","editor.inspector"},{"visible",retained_inspector_texture_id_!=0},
             {"renderer","RmlUi/SDL_GPU"},{"width",retained_inspector_texture_width_},{"height",retained_inspector_texture_height_},
@@ -1971,6 +2040,23 @@ void EditorUi::draw_world_outliner() {
     ImGui::Begin("World Outliner");
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.outliner");
     const bool edit_world=simulation_state_==EditorSimulationState::edit;
+    if(retained_outliner_texture_id_!=0&&retained_outliner_texture_width_>0&&
+       retained_outliner_texture_height_>0) {
+        const auto available=ImGui::GetContentRegionAvail();
+        const auto draw_width=std::max(1.0F,available.x);
+        const auto draw_height=std::max(1.0F,available.y);
+        const auto origin=ImGui::GetCursorScreenPos();
+        retained_outliner_canvas_x_=origin.x;retained_outliner_canvas_y_=origin.y;
+        retained_outliner_canvas_width_=draw_width;retained_outliner_canvas_height_=draw_height;
+        const auto scale=ImGui::GetIO().DisplayFramebufferScale;
+        requested_outliner_width_=static_cast<std::uint32_t>(std::clamp(std::lround(draw_width*scale.x),192L,2048L));
+        requested_outliner_height_=static_cast<std::uint32_t>(std::clamp(std::lround(draw_height*scale.y),160L,4096L));
+        ImGui::Image(static_cast<ImTextureID>(retained_outliner_texture_id_),{draw_width,draw_height});
+        ImGui::End();
+        return;
+    }
+    retained_outliner_canvas_width_=0.0F;
+    retained_outliner_canvas_height_=0.0F;
     const bool authoring=edit_world&&!script_compile_busy_;
     const auto runtime_observation=edit_world?nlohmann::json::object():nlohmann::json::parse(play_world_observation_json_,nullptr,false);
     const auto object_count=edit_world?model_.objects().size():

@@ -3,7 +3,7 @@
   "updated": "2026-08-24",
   "status": "active-development",
   "currentSlice": "editor.retained-outliner-and-asset-browser",
-  "currentStep": "migrate-outliner-to-retained-semantic-ui",
+  "currentStep": "migrate-asset-browser-to-retained-semantic-ui",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -35,7 +35,8 @@
     "development-loop.source-project-first-visual-latency",
     "agent.open-editor-live-session-transport",
     "production.virtual-filesystem-and-package-mount",
-    "production.vfs-project-and-cooked-asset-migration"
+    "production.vfs-project-and-cooked-asset-migration",
+    "editor.retained-outliner"
   ],
   "closedExperiments": [
     {

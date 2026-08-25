@@ -147,6 +147,122 @@ std::string EditorModel::inspector_semantic_ui_document_json(const std::string_v
     return world_.semantic_ui_document_json(selected_object_id_,locale);
 }
 
+std::string EditorModel::outliner_semantic_ui_document_json(
+    const EditorOutlinerSemanticOptions options) const {
+    return outliner_semantic_ui_document_json(EditorOutlinerAuthorityView{
+        .authority = "edit-world",
+        .simulation_state = "edit",
+        .writable = true,
+        .world_revision = world_.revision(),
+        .objects = objects_,
+        .selected_object_ids = selected_object_ids_,
+        .primary_selected_object_id = selected_object_id_}, options);
+}
+
+std::string EditorModel::outliner_semantic_ui_document_json(
+    const EditorOutlinerAuthorityView& authority,
+    const EditorOutlinerSemanticOptions options) const {
+    const auto entity_limit = std::min<std::size_t>(options.entity_limit, 4096U);
+    const auto selection_limit = std::min<std::size_t>(options.selection_limit, 256U);
+
+    std::vector<const EditorObject*> ordered;
+    ordered.reserve(authority.objects.size());
+    for (const auto& object : authority.objects) ordered.push_back(&object);
+    std::ranges::sort(ordered, {}, [](const EditorObject* object) { return object->id; });
+
+    std::unordered_map<std::string_view, const EditorObject*> by_id;
+    by_id.reserve(ordered.size());
+    for (const auto* object : ordered) by_id.try_emplace(object->id, object);
+    std::unordered_map<std::string_view, std::vector<const EditorObject*>> children;
+    std::vector<const EditorObject*> roots;
+    for (const auto* object : ordered) {
+        if (object->parent_id.empty() || object->parent_id == object->id || !by_id.contains(object->parent_id))
+            roots.push_back(object);
+        else
+            children[object->parent_id].push_back(object);
+    }
+
+    std::vector<const EditorObject*> hierarchy;
+    hierarchy.reserve(std::min(entity_limit, ordered.size()));
+    std::unordered_set<std::string_view> visited;
+    visited.reserve(ordered.size());
+    const auto append_tree = [&](const auto& self, const EditorObject* object) -> void {
+        if (hierarchy.size() >= entity_limit || !visited.insert(object->id).second) return;
+        hierarchy.push_back(object);
+        const auto found = children.find(object->id);
+        if (found == children.end()) return;
+        for (const auto* child : found->second) self(self, child);
+    };
+    for (const auto* root : roots) append_tree(append_tree, root);
+    // Malformed cyclic input is still represented deterministically as
+    // top-level entries rather than disappearing from the semantic surface.
+    for (const auto* object : ordered) append_tree(append_tree, object);
+
+    std::vector<std::string> selected;
+    selected.reserve(std::min(selection_limit, authority.selected_object_ids.size()));
+    for (const auto& id : authority.selected_object_ids) {
+        if (selected.size() >= selection_limit) break;
+        if (by_id.contains(id) && std::ranges::find(selected, id) == selected.end()) selected.push_back(id);
+    }
+    std::ranges::sort(selected);
+    const auto selected_set = std::unordered_set<std::string>(selected.begin(), selected.end());
+    const auto primary = by_id.contains(authority.primary_selected_object_id) ?
+        std::string(authority.primary_selected_object_id) : std::string{};
+
+    const auto action = [](const std::string_view id, const std::string_view handler) {
+        return Json{{"id", id}, {"dispatch", "existing-editor-model"}, {"handler", handler}};
+    };
+    Json panel_actions = Json::array();
+    if (authority.writable) {
+        panel_actions.push_back(action("outliner.create-empty", "EditorModel.create_empty_entity"));
+        panel_actions.push_back(action("outliner.paste", "EditorModel.paste_copied"));
+    }
+    Json nodes = Json::array({Json{
+        {"id", "editor.panel.outliner"}, {"parentId", nullptr}, {"role", "tree"},
+        {"label", "World Outliner"},
+        {"state", {{"visible", true}, {"enabled", true}, {"editable", authority.writable}}},
+        {"actions", std::move(panel_actions)}}});
+    for (const auto* object : hierarchy) {
+        const auto parent_is_included = !object->parent_id.empty() && visited.contains(object->parent_id);
+        auto select_action = action("outliner.select", "EditorModel.select_object");
+        select_action["binding"] = {{"kind", "editor-entity-selection"}, {"entityId", object->id}};
+        Json actions = Json::array({std::move(select_action)});
+        if (authority.writable) {
+            actions.push_back(action("outliner.rename", "EditorModel.rename_selected"));
+            actions.push_back(action("outliner.copy", "EditorModel.copy_selected"));
+            actions.push_back(action("outliner.duplicate", "EditorModel.duplicate_selected"));
+            actions.push_back(action("outliner.reparent", "EditorModel.reparent_entity"));
+            actions.push_back(action("outliner.delete", "EditorModel.delete_selected"));
+        }
+        const auto selected_entity = selected_set.contains(object->id);
+        nodes.push_back({
+            {"id", "editor.outliner.entity." + object->id},
+            {"parentId", parent_is_included ? Json("editor.outliner.entity." + object->parent_id) :
+                Json("editor.panel.outliner")},
+            {"role", "treeitem"}, {"label", object->name},
+            {"entity", {{"id", object->id}, {"parentId", object->parent_id.empty() ? Json(nullptr) : Json(object->parent_id)},
+                {"type", object->kind}, {"revision", object->revision}}},
+            {"state", {{"visible", true}, {"enabled", true}, {"editable", authority.writable},
+                {"selected", selected_entity}, {"primarySelected", object->id == primary},
+                {"expanded", children.contains(object->id)}}},
+            {"status", {{"authority", authority.authority}, {"simulationState", authority.simulation_state},
+                {"writable", authority.writable}}},
+            {"actions", std::move(actions)}});
+    }
+
+    return Json{
+        {"schemaVersion", "noemancer.ui-document/0.1"}, {"documentId", "editor.world-outliner"},
+        {"valid", true}, {"code", "ok"}, {"revision", authority.world_revision},
+        {"authority", authority.authority}, {"simulationState", authority.simulation_state},
+        {"writable", authority.writable},
+        {"selection", {{"primaryEntityId", primary.empty() ? Json(nullptr) : Json(primary)},
+            {"entityIds", selected}, {"total", authority.selected_object_ids.size()},
+            {"limit", selection_limit}, {"truncated", selected.size() < authority.selected_object_ids.size()}}},
+        {"entities", {{"total", ordered.size()}, {"included", hierarchy.size()},
+            {"limit", entity_limit}, {"truncated", hierarchy.size() < ordered.size()}}},
+        {"nodes", std::move(nodes)}}.dump();
+}
+
 std::size_t EditorModel::selected_object_index() const noexcept {
     for (std::size_t index = 0; index < objects_.size(); ++index) {
         if (objects_[index].id == selected_object_id_) return index;

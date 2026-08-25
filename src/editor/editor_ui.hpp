@@ -155,6 +155,7 @@ public:
     void set_engine_status(std::string status_json);
     void set_render_surface(std::uintptr_t texture_id, std::uint32_t width, std::uint32_t height);
     void set_retained_inspector_surface(std::uintptr_t texture_id,std::uint32_t width,std::uint32_t height);
+    void set_retained_outliner_surface(std::uintptr_t texture_id,std::uint32_t width,std::uint32_t height);
     void set_render_status(std::string status_json);
     void set_input_status(std::string status_json);
     void set_project_input_capture(ProjectSettingsInputMapCaptureObservation observation);
@@ -188,6 +189,9 @@ public:
     [[nodiscard]] std::uint32_t requested_inspector_width() const noexcept;
     [[nodiscard]] std::uint32_t requested_inspector_height() const noexcept;
     [[nodiscard]] std::string retained_inspector_document_json() const;
+    [[nodiscard]] std::uint32_t requested_outliner_width() const noexcept;
+    [[nodiscard]] std::uint32_t requested_outliner_height() const noexcept;
+    [[nodiscard]] std::string retained_outliner_document_json() const;
     [[nodiscard]] float requested_exposure() const;
     void set_exposure(float exposure);
     [[nodiscard]] std::optional<RenderCameraSnapshot> render_camera_override() const;
@@ -195,8 +199,10 @@ public:
     [[nodiscard]] std::optional<ScenePickRequest> consume_scene_pick_request();
     [[nodiscard]] std::optional<ScenePointerPosition> scene_pointer_at(float window_x, float window_y) const;
     [[nodiscard]] std::optional<ScenePointerPosition> retained_inspector_pointer_at(float window_x,float window_y) const;
+    [[nodiscard]] std::optional<ScenePointerPosition> retained_outliner_pointer_at(float window_x,float window_y) const;
     [[nodiscard]] std::optional<SceneWindowPosition> scene_window_at(std::int32_t scene_x, std::int32_t scene_y) const;
     [[nodiscard]] std::optional<SceneWindowPosition> retained_inspector_window_at(std::int32_t surface_x,std::int32_t surface_y) const;
+    [[nodiscard]] std::optional<SceneWindowPosition> retained_outliner_window_at(std::int32_t surface_x,std::int32_t surface_y) const;
     [[nodiscard]] bool select_entity(std::string_view entity_id);
     [[nodiscard]] bool select_asset(std::string_view asset_id) noexcept;
     [[nodiscard]] EditorUiContextSnapshot editor_context_snapshot() const;
@@ -292,6 +298,15 @@ private:
     float retained_inspector_canvas_y_{};
     float retained_inspector_canvas_width_{};
     float retained_inspector_canvas_height_{};
+    std::uintptr_t retained_outliner_texture_id_{};
+    std::uint32_t retained_outliner_texture_width_{320};
+    std::uint32_t retained_outliner_texture_height_{640};
+    std::uint32_t requested_outliner_width_{320};
+    std::uint32_t requested_outliner_height_{640};
+    float retained_outliner_canvas_x_{};
+    float retained_outliner_canvas_y_{};
+    float retained_outliner_canvas_width_{};
+    float retained_outliner_canvas_height_{};
     bool layout_initialized_{false};
     float requested_exposure_{1.0F};
     std::optional<RenderCameraSnapshot> editor_camera_;

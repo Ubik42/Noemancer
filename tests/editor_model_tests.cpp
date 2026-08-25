@@ -1,5 +1,6 @@
 #include "editor/editor_model.hpp"
 #include "engine/process_diagnostics.hpp"
+#include "engine/semantic_ui.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -107,6 +108,70 @@ int main() {
     if (model.selected_object().id != "entity.demo-cube") {
         std::cerr << "Bootstrap selection is not deterministic\n";
         return 3;
+    }
+    const auto edit_outliner = nlohmann::json::parse(model.outliner_semantic_ui_document_json());
+    const auto& edit_nodes = edit_outliner.at("nodes");
+    const auto root_node = std::ranges::find_if(edit_nodes, [](const auto& node) {
+        return node.value("id", std::string{}) == "editor.outliner.entity.entity.bootstrap-root";
+    });
+    const auto cube_node = std::ranges::find_if(edit_nodes, [](const auto& node) {
+        return node.value("id", std::string{}) == "editor.outliner.entity.entity.demo-cube";
+    });
+    const auto edit_outliner_validation = nlohmann::json::parse(
+        noemancer::semantic_ui_validation_json(edit_outliner.dump()));
+    if (!edit_outliner.value("valid", false) || !edit_outliner_validation.value("valid", false) ||
+        edit_outliner.value("authority", "") != "edit-world" ||
+        !edit_outliner.value("writable", false) || root_node == edit_nodes.end() || cube_node == edit_nodes.end() ||
+        cube_node->at("parentId") != root_node->at("id") ||
+        !cube_node->at("state").value("selected", false) ||
+        cube_node->at("actions").size() != 6U ||
+        cube_node->at("actions").at(0).at("binding").value("kind", "") != "editor-entity-selection" ||
+        cube_node->at("actions").at(0).at("binding").value("entityId", "") != "entity.demo-cube") {
+        std::cerr << "Edit World Outliner semantic hierarchy or selection is incomplete\n";
+        return 38;
+    }
+    const auto edit_outliner_repeat = model.outliner_semantic_ui_document_json();
+    if (edit_outliner.dump() != edit_outliner_repeat) {
+        std::cerr << "Outliner semantic ordering is not deterministic\n";
+        return 39;
+    }
+    const std::vector<std::string> play_selection{"entity.demo-sphere"};
+    const auto play_outliner = nlohmann::json::parse(model.outliner_semantic_ui_document_json(
+        noemancer::EditorOutlinerAuthorityView{
+            .authority = "play-world-read-only", .simulation_state = "playing", .writable = false,
+            .world_revision = world.revision() + 10U, .objects = model.objects(),
+            .selected_object_ids = play_selection,
+            .primary_selected_object_id = "entity.demo-sphere"}));
+    const auto play_sphere = std::ranges::find_if(play_outliner.at("nodes"), [](const auto& node) {
+        return node.value("id", std::string{}) == "editor.outliner.entity.entity.demo-sphere";
+    });
+    if (play_outliner.value("authority", "") != "play-world-read-only" ||
+        play_outliner.value("writable", true) || play_sphere == play_outliner.at("nodes").end() ||
+        !play_sphere->at("state").value("selected", false) || play_sphere->at("actions").size() != 1U ||
+        play_sphere->at("actions").at(0).value("handler", "") != "EditorModel.select_object") {
+        std::cerr << "Play World Outliner did not remain a read-only authority projection\n";
+        return 40;
+    }
+    std::vector<noemancer::EditorObject> bulk_objects;
+    bulk_objects.reserve(700U);
+    for (std::size_t index = 700U; index-- > 0U;) {
+        const auto suffix = std::to_string(10000U + index).substr(1U);
+        bulk_objects.push_back({.id = "entity.bulk." + suffix, .name = "Bulk " + suffix, .kind = "Entity"});
+    }
+    const std::vector<std::string> bulk_selection{"entity.bulk.0699"};
+    const auto truncated_outliner = nlohmann::json::parse(model.outliner_semantic_ui_document_json(
+        noemancer::EditorOutlinerAuthorityView{
+            .authority = "play-world-read-only", .simulation_state = "paused", .writable = false,
+            .world_revision = 900U, .objects = bulk_objects, .selected_object_ids = bulk_selection,
+            .primary_selected_object_id = "entity.bulk.0699"},
+        {.entity_limit = 32U, .selection_limit = 1U}));
+    if (!truncated_outliner.at("entities").value("truncated", false) ||
+        truncated_outliner.at("entities").value("total", 0U) != bulk_objects.size() ||
+        truncated_outliner.at("entities").value("included", 0U) != 32U ||
+        truncated_outliner.at("nodes").size() != 33U ||
+        truncated_outliner.at("nodes").at(1).at("entity").value("id", "") != "entity.bulk.0000") {
+        std::cerr << "Large Outliner projection did not publish bounded truncation metadata\n";
+        return 41;
     }
     if(model.inspector_sections().size()<3U||model.semantic_snapshot_json().find("noemancer.inspector-document/0.1")==std::string::npos) {
         std::cerr<<"Editor did not consume the generated declarative Inspector document\n";

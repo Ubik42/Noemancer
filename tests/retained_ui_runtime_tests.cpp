@@ -159,6 +159,66 @@ int main() {
            surface_actions.front().surface_id!="editor.inspector"||surface_actions.front().action_id!="asset.cook"||
            !binary_runtime.destroy_surface("editor.inspector")||
            !binary_runtime.surface_render_packet("editor.inspector").draws.empty())return 32;
+        const auto collection_document=nlohmann::json{
+            {"schemaVersion","noemancer.ui-document/0.1"},{"documentId","ui.collection"},
+            {"nodes",nlohmann::json::array({
+                {{"id","ui.assets"},{"role","tree"},{"label","Assets"},{"state",{{"enabled",true}}}},
+                {{"id","asset.alpha"},{"parentId","ui.assets"},{"role","tree-item"},{"label","Alpha"},
+                    {"state",{{"enabled",true},{"selected",true}}},
+                    {"binding",{{"assetId","asset.alpha"}}},{"actions",nlohmann::json::array({{{"id","asset.open"}}})}},
+                {{"id","asset.beta"},{"parentId","ui.assets"},{"role","tree-item"},{"label","Beta"},
+                    {"state",{{"enabled",true}}},{"binding",{{"assetId","asset.beta"}}},
+                    {"actions",nlohmann::json::array({{{"id","asset.open"}}})}},
+                {{"id","asset.gamma"},{"parentId","ui.assets"},{"role","tree-item"},{"label","Gamma"},
+                    {"state",{{"enabled",true}}},{"binding",{{"assetId","asset.gamma"}}},
+                    {"actions",nlohmann::json::array({{{"id","asset.open"}}})}}
+            })}};
+        const auto collection_rml=noemancer::retained_ui_rml_from_semantic_document(collection_document.dump());
+        if(collection_rml.find("data-role=\"tree-item\"")==std::string::npos||
+           collection_rml.find("aria-selected=\"true\"")==std::string::npos||
+           !binary_runtime.load_document("ui.collection",collection_rml)||
+           !binary_runtime.focus_node("ui.collection","asset.alpha"))return 40;
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::down,true));
+        if(!binary_runtime.update())return 41;
+        auto collection_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.collection"));
+        const auto row_state=[&](const std::string_view id) {
+            for(const auto& node:collection_observation.at("nodes"))
+                if(node.at("id").get<std::string>()==id)return node.at("state");
+            return nlohmann::json{};
+        };
+        if(!row_state("asset.beta").value("selected",false)||!row_state("asset.beta").value("focused",false)||
+           row_state("asset.alpha").value("selected",true)) {
+            std::cerr<<"Selectable tree row did not move focus and selection with Down\n";return 42;
+        }
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::end,true));
+        if(!binary_runtime.update()||!binary_runtime.reload_document("ui.collection",collection_rml))return 43;
+        collection_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.collection"));
+        if(!row_state("asset.gamma").value("selected",false)) {
+            std::cerr<<"Selectable tree row state did not survive document reload\n";return 44;
+        }
+        if(!binary_runtime.focus_node("ui.collection","asset.gamma"))return 45;
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::home,true));
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::enter,true));
+        const auto collection_actions=binary_runtime.consume_action_events();
+        if(collection_actions.size()!=1U||collection_actions.front().sequence!=5U||
+           collection_actions.front().node_id!="asset.alpha"||collection_actions.front().action_id!="asset.open"||
+           nlohmann::json::parse(collection_actions.front().binding_json).at("assetId")!="asset.alpha") {
+            std::cerr<<"Selectable tree Enter did not emit stable bounded semantic intent\n";return 46;
+        }
+        for(std::size_t index=0;index<132U;++index)
+            static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::enter,true));
+        const auto bounded_actions=binary_runtime.consume_action_events();
+        const auto bounded_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.collection"));
+        if(bounded_actions.size()!=128U||bounded_observation.at("interaction").at("actions").at("droppedCount")<4U) {
+            std::cerr<<"Selectable row action queue exceeded its bounded contract\n";return 47;
+        }
+        auto excessive_document=collection_document;
+        excessive_document["nodes"]=nlohmann::json::array();
+        for(std::size_t index=0;index<2049U;++index)
+            excessive_document["nodes"].push_back({{"id","node."+std::to_string(index)},{"role","list-item"}});
+        if(!noemancer::retained_ui_rml_from_semantic_document(excessive_document.dump()).empty()) {
+            std::cerr<<"Retained UI claimed an unbounded collection document\n";return 48;
+        }
         auto themed=nlohmann::json::parse(semantic_document);
         themed["designTokens"]={{"surfaceColor","#201028ee"},{"groupColor","#30203a"},{"textColor","#fff4ff"},
                                 {"accentColor","#ff77dd"},{"surfaceWidthPx",420}};

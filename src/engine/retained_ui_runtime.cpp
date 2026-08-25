@@ -26,6 +26,7 @@
 #include <optional>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -176,6 +177,9 @@ std::string role_class(const std::string_view role) {
     if (role == "group") return "group";
     if (role == "property") return "property-row";
     if (role == "button") return "action-button";
+    if (role == "tree" || role == "list") return "selectable-collection";
+    if (role == "tree-item" || role == "treeitem") return "selectable-row tree-row";
+    if (role == "list-item" || role == "listitem") return "selectable-row list-row";
     if (role == "meter" || role == "status" || role == "ability-slot") return "property-row " + std::string(role);
     return "node";
 }
@@ -200,6 +204,33 @@ Rml::Element* ancestor_with_role(Rml::Element* element,const std::string_view ro
     return nullptr;
 }
 
+bool selectable_row_role(const std::string_view role) {
+    return role=="tree-item"||role=="treeitem"||role=="list-item"||role=="listitem";
+}
+
+Rml::Element* selectable_row(Rml::Element* element) {
+    for(auto* current=element;current!=nullptr;current=current->GetParentNode())
+        if(selectable_row_role(current->GetAttribute<Rml::String>("data-role","")))return current;
+    return nullptr;
+}
+
+Rml::Element* selectable_collection(Rml::Element* element) {
+    for(auto* current=element;current!=nullptr;current=current->GetParentNode()) {
+        const auto role=current->GetAttribute<Rml::String>("data-role","");
+        if(role=="tree"||role=="list")return current;
+    }
+    return nullptr;
+}
+
+void collect_selectable_rows(Rml::Element* element,std::vector<Rml::Element*>& rows,const bool visible_only=true) {
+    if(element==nullptr)return;
+    if(selectable_row_role(element->GetAttribute<Rml::String>("data-role",""))&&
+       element->GetAttribute<Rml::String>("data-enabled","true")=="true"&&(!visible_only||element->IsVisible(true)))
+        rows.push_back(element);
+    for(int index=0;index<element->GetNumChildren();++index)
+        collect_selectable_rows(element->GetChild(index),rows,visible_only);
+}
+
 std::optional<double> numeric_control_value(Rml::Element* root,const char* selector) {
     if(root==nullptr)return std::nullopt;
     auto* element=root->QuerySelector(selector);
@@ -216,21 +247,46 @@ public:
     void ProcessEvent(Rml::Event& event) override {
         auto* target=event.GetTargetElement();
         if(target==nullptr)return;
+        if(event==Rml::EventId::Keydown) {
+            process_selectable_key(target,event);
+            return;
+        }
+        if(event==Rml::EventId::Click)
+            if(auto* row=selectable_row(target);row!=nullptr)select(row,true);
         if(event==Rml::EventId::Click&&inherited_attribute(target,"data-local-action")=="toggle-group") {
             auto* group=ancestor_with_role(target,"group");
             if(group==nullptr)return;
             const auto expanded=group->GetAttribute<Rml::String>("data-expanded","true")!="true";
             apply_expansion(group,expanded);
             const auto* document=group->GetOwnerDocument();
-            expansion_state_[local_state_key(inherited_attribute(group,"data-surface-id"),
-                document==nullptr?std::string{}:std::string(document->GetId()),semantic_id_for_element(group))]=expanded;
+            remember(expansion_state_, expansion_order_, local_state_key(inherited_attribute(group,"data-surface-id"),
+                document==nullptr?std::string{}:std::string(document->GetId()),semantic_id_for_element(group)),expanded);
             return;
         }
+        emit_action(target,event==Rml::EventId::Change,event);
+    }
+
+    [[nodiscard]] std::vector<RetainedUiActionEvent> consume() {
+        std::vector<RetainedUiActionEvent> result;
+        result.reserve(events_.size());
+        while(!events_.empty()){result.push_back(std::move(events_.front()));events_.pop_front();}
+        return result;
+    }
+    [[nodiscard]] std::size_t pending_count() const noexcept{return events_.size();}
+    [[nodiscard]] std::uint64_t dropped_count() const noexcept{return dropped_events_;}
+    [[nodiscard]] std::uint64_t sequence() const noexcept{return sequence_;}
+
+    void restore_local_state(Rml::ElementDocument* document,const std::string_view surface_id,
+                             const std::string_view document_id) {
+        if(document!=nullptr)restore_local_state_recursive(document,surface_id,document_id);
+    }
+
+private:
+    void emit_action(Rml::Element* target,const bool value_changed,Rml::Event& event) {
         const auto action_id=inherited_attribute(target,"data-action");
         const auto node_id=semantic_id_for_element(target);
         if(action_id.empty()||node_id.empty())return;
 
-        const bool value_changed=event==Rml::EventId::Change;
         if(!value_changed&&event!=Rml::EventId::Click)return;
         if(!value_changed&&rmlui_dynamic_cast<Rml::ElementFormControl*>(target)!=nullptr)return;
 
@@ -268,22 +324,67 @@ public:
         events_.push_back(std::move(action));
     }
 
-    [[nodiscard]] std::vector<RetainedUiActionEvent> consume() {
-        std::vector<RetainedUiActionEvent> result;
-        result.reserve(events_.size());
-        while(!events_.empty()){result.push_back(std::move(events_.front()));events_.pop_front();}
-        return result;
+    void emit_invoke(Rml::Element* target) {
+        const auto action_id=inherited_attribute(target,"data-action");
+        const auto node_id=semantic_id_for_element(target);
+        if(action_id.empty()||node_id.empty())return;
+        const auto* document=target->GetOwnerDocument();
+        const auto binding_source=inherited_attribute(target,"data-binding");
+        const auto binding=Json::parse(binding_source,nullptr,false);
+        RetainedUiActionEvent action{.sequence=++sequence_,.kind=RetainedUiActionKind::invoke,
+            .surface_id=inherited_attribute(target,"data-surface-id"),
+            .document_id=document==nullptr?std::string{}:std::string(document->GetId()),
+            .node_id=node_id,.action_id=action_id,
+            .binding_json=binding.is_object()?binding.dump():Json{{"value",binding_source}}.dump(),
+            .value_json="null"};
+        if(events_.size()>=maximum_events){events_.pop_front();++dropped_events_;}
+        events_.push_back(std::move(action));
     }
-    [[nodiscard]] std::size_t pending_count() const noexcept{return events_.size();}
-    [[nodiscard]] std::uint64_t dropped_count() const noexcept{return dropped_events_;}
-    [[nodiscard]] std::uint64_t sequence() const noexcept{return sequence_;}
 
-    void restore_local_state(Rml::ElementDocument* document,const std::string_view surface_id,
-                             const std::string_view document_id) {
-        if(document!=nullptr)restore_local_state_recursive(document,surface_id,document_id);
+    void select(Rml::Element* row,const bool focus) {
+        auto* collection=selectable_collection(row);
+        if(collection==nullptr)return;
+        std::vector<Rml::Element*> rows;collect_selectable_rows(collection,rows);
+        for(auto* candidate:rows) {
+            const auto selected=candidate==row;
+            candidate->SetAttribute("data-selected",selected?"true":"false");
+            candidate->SetAttribute("aria-selected",selected?"true":"false");
+            candidate->SetClass("selected",selected);
+        }
+        const auto* document=row->GetOwnerDocument();
+        const auto key=local_state_key(inherited_attribute(row,"data-surface-id"),
+            document==nullptr?std::string{}:std::string(document->GetId()),semantic_id_for_element(collection));
+        remember(selection_state_,selection_order_,key,semantic_id_for_element(row));
+        if(focus)static_cast<void>(row->Focus(true));
     }
 
-private:
+    void process_selectable_key(Rml::Element* target,Rml::Event& event) {
+        auto* row=selectable_row(target);auto* collection=selectable_collection(row);
+        if(row==nullptr||collection==nullptr)return;
+        const auto key=static_cast<Rml::Input::KeyIdentifier>(event.GetParameter<int>("key_identifier",0));
+        if(key==Rml::Input::KI_RETURN) {emit_invoke(row);event.StopPropagation();return;}
+        if(key!=Rml::Input::KI_UP&&key!=Rml::Input::KI_DOWN&&key!=Rml::Input::KI_HOME&&key!=Rml::Input::KI_END)return;
+        std::vector<Rml::Element*> rows;collect_selectable_rows(collection,rows);
+        if(rows.empty())return;
+        const auto found=std::ranges::find(rows,row);
+        std::size_t index=found==rows.end()?0U:static_cast<std::size_t>(std::distance(rows.begin(),found));
+        if(key==Rml::Input::KI_HOME)index=0U;
+        else if(key==Rml::Input::KI_END)index=rows.size()-1U;
+        else if(key==Rml::Input::KI_UP&&index>0U)--index;
+        else if(key==Rml::Input::KI_DOWN&&index+1U<rows.size())++index;
+        select(rows[index],true);event.StopPropagation();
+    }
+
+    template<class Value>
+    static void remember(std::unordered_map<std::string,Value>& state,std::deque<std::string>& order,
+                         std::string key,Value value) {
+        if(!state.contains(key)) {
+            if(order.size()>=maximum_local_states){state.erase(order.front());order.pop_front();}
+            order.push_back(key);
+        }
+        state[std::move(key)]=std::move(value);
+    }
+
     static std::string local_state_key(const std::string_view surface_id,const std::string_view document_id,
                                        const std::string_view node_id) {
         return std::string(surface_id)+"\n"+std::string(document_id)+"\n"+std::string(node_id);
@@ -300,12 +401,29 @@ private:
             const auto found=expansion_state_.find(local_state_key(surface_id,document_id,node_id));
             if(found!=expansion_state_.end())apply_expansion(element,found->second);
         }
+        const auto role=element->GetAttribute<Rml::String>("data-role","");
+        if(role=="tree"||role=="list") {
+            const auto found=selection_state_.find(local_state_key(surface_id,document_id,semantic_id_for_element(element)));
+            if(found!=selection_state_.end()) {
+                std::vector<Rml::Element*> rows;collect_selectable_rows(element,rows,false);
+                for(auto* row:rows) {
+                    const auto selected=semantic_id_for_element(row)==found->second;
+                    row->SetAttribute("data-selected",selected?"true":"false");
+                    row->SetAttribute("aria-selected",selected?"true":"false");
+                    row->SetClass("selected",selected);
+                }
+            }
+        }
         for(int index=0;index<element->GetNumChildren();++index)
             restore_local_state_recursive(element->GetChild(index),surface_id,document_id);
     }
     static constexpr std::size_t maximum_events=128;
+    static constexpr std::size_t maximum_local_states=256;
     std::deque<RetainedUiActionEvent> events_;
     std::unordered_map<std::string,bool> expansion_state_;
+    std::deque<std::string> expansion_order_;
+    std::unordered_map<std::string,std::string> selection_state_;
+    std::deque<std::string> selection_order_;
     std::uint64_t sequence_{};
     std::uint64_t dropped_events_{};
 };
@@ -340,6 +458,10 @@ void collect_element_observations(Rml::Element* element, const std::string& sema
             observation["state"]["editable"]=element->GetAttribute<Rml::String>("data-editable","false")=="true";
         if(element->HasAttribute("data-error"))
             observation["state"]["error"]=element->GetAttribute<Rml::String>("data-error","");
+        if(element->HasAttribute("data-selected"))
+            observation["state"]["selected"]=element->GetAttribute<Rml::String>("data-selected","false")=="true";
+        if(selectable_row_role(element->GetAttribute<Rml::String>("data-role","")))
+            observation["state"]["focused"]=element->IsPseudoClassSet("focus");
         if (auto* input = element->QuerySelector("input")) {
             if (auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(input))
                 observation["editableValue"] = control->GetValue();
@@ -595,11 +717,13 @@ RetainedUiRuntime::~RetainedUiRuntime() {
     if(impl_->context) {
         impl_->context->RemoveEventListener("click",&impl_->actions);
         impl_->context->RemoveEventListener("change",&impl_->actions);
+        impl_->context->RemoveEventListener("keydown",&impl_->actions);
     }
     for(auto& [id,surface]:impl_->surfaces) {
         static_cast<void>(id);
         surface.context->RemoveEventListener("click",&impl_->actions);
         surface.context->RemoveEventListener("change",&impl_->actions);
+        surface.context->RemoveEventListener("keydown",&impl_->actions);
     }
     impl_->documents.clear();
     if(Rml::GetTextInputHandler()==&impl_->text_input) Rml::SetTextInputHandler(nullptr);
@@ -649,6 +773,7 @@ bool RetainedUiRuntime::initialize(const std::uint32_t width, const std::uint32_
     impl_->context->SetDensityIndependentPixelRatio(density_scale);
     impl_->context->AddEventListener("click",&impl_->actions);
     impl_->context->AddEventListener("change",&impl_->actions);
+    impl_->context->AddEventListener("keydown",&impl_->actions);
     impl_->last_error.clear();
     return true;
 }
@@ -754,7 +879,8 @@ bool RetainedUiRuntime::focus_node(const std::string_view document_id, const std
     if (found == impl_->documents.end() || semantic_node_id.empty()) return false;
     auto* element = found->second->GetElementById(std::string(semantic_node_id));
     if (!element) return false;
-    if (auto* input = element->QuerySelector("input")) element = input;
+    if (!selectable_row_role(element->GetAttribute<Rml::String>("data-role","")))
+        if (auto* input = element->QuerySelector("input")) element = input;
     return element->Focus(true) && update();
 }
 
@@ -780,6 +906,7 @@ bool RetainedUiRuntime::create_surface(const std::string_view surface_id,const s
     context->SetDensityIndependentPixelRatio(density_scale);
     context->AddEventListener("click",&impl_->actions);
     context->AddEventListener("change",&impl_->actions);
+    context->AddEventListener("keydown",&impl_->actions);
     impl_->surfaces.emplace(std::string(surface_id),RetainedSurfaceState{context_name,context,{},{},{}});
     impl_->last_error.clear();return true;
 }
@@ -789,6 +916,7 @@ bool RetainedUiRuntime::destroy_surface(const std::string_view surface_id) {
     if(found==impl_->surfaces.end()){impl_->last_error="Retained UI surface not found: "+std::string(surface_id);return false;}
     found->second.context->RemoveEventListener("click",&impl_->actions);
     found->second.context->RemoveEventListener("change",&impl_->actions);
+    found->second.context->RemoveEventListener("keydown",&impl_->actions);
     found->second.documents.clear();
     if(!Rml::RemoveContext(found->second.context_name)){
         impl_->last_error="RmlUi surface context removal failed: "+std::string(surface_id);return false;
@@ -881,7 +1009,9 @@ bool RetainedUiRuntime::focus_surface_node(const std::string_view surface_id,con
     const auto found=impl_->surfaces.find(std::string(surface_id));if(found==impl_->surfaces.end()||semantic_node_id.empty())return false;
     const auto document=found->second.documents.find(std::string(document_id));if(document==found->second.documents.end())return false;
     auto* element=document->second->GetElementById(std::string(semantic_node_id));if(element==nullptr)return false;
-    if(auto* input=element->QuerySelector("input"))element=input;return element->Focus(true)&&update_surface(surface_id);
+    if(!selectable_row_role(element->GetAttribute<Rml::String>("data-role","")))
+        if(auto* input=element->QuerySelector("input"))element=input;
+    return element->Focus(true)&&update_surface(surface_id);
 }
 
 bool RetainedUiRuntime::initialized() const noexcept { return impl_ && impl_->context; }
@@ -989,6 +1119,16 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
     const auto source = Json::parse(source_json, nullptr, false);
     if (source.is_discarded() || !source.is_object() || source.value("schemaVersion", "") != "noemancer.ui-document/0.1") return {};
     const auto& nodes = source.value("nodes", Json::array());
+    // RmlUi currently retains the complete document. This is an explicit
+    // bounded-document contract, not a claim of virtualized list rendering.
+    constexpr std::size_t maximum_retained_nodes=2048U;
+    if(!nodes.is_array()||nodes.size()>maximum_retained_nodes)return {};
+    std::unordered_set<std::string> node_ids;
+    for(const auto& node:nodes) {
+        if(!node.is_object())return {};
+        const auto id=node.value("id",std::string{});
+        if(id.empty()||!node_ids.insert(id).second)return {};
+    }
     std::unordered_map<std::string, std::vector<Json>> children;
     std::vector<Json> roots;
     for (const auto& node : nodes) {
@@ -1016,6 +1156,15 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
               ".group.collapsed .group-content{display:none;}.group.collapsed .group-header{border-bottom-width:0;}"
               ".property-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;justify-content:space-between;width:100%;min-height:28px;padding:4px 8px;}"
               ".property-row:hover{background:#222b38;}.property-row.disabled{opacity:0.48;}.property-row.error{background:#3a2025;border-left-width:2px;border-left-color:#ff6b78;}"
+              ".selectable-collection{box-sizing:border-box;display:flex;flex-direction:column;width:100%;overflow-y:auto;pointer-events:auto;}"
+              ".selectable-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;align-items:center;width:100%;min-height:28px;padding:4px 8px;pointer-events:auto;}"
+              ".selectable-row:hover{background:#222b38;}.selectable-row:focus{background:#28384c;outline:1px " << escape_markup(accent_color) << ";}"
+              ".selectable-row.selected{background:#294461;color:#ffffff;}.selectable-row.disabled{opacity:0.48;}"
+              ".tree-row{flex-direction:column;align-items:stretch;min-height:0;padding:0;background:transparent;}"
+              ".tree-row>.label{box-sizing:border-box;width:100%;min-height:28px;padding:5px 8px;pointer-events:auto;}"
+              ".tree-row:hover,.tree-row:focus,.tree-row.selected{background:transparent;outline-width:0;}"
+              ".tree-row:hover>.label{background:#222b38;}.tree-row:focus>.label{background:#28384c;outline:1px " << escape_markup(accent_color) << ";}"
+              ".tree-row.selected>.label{background:#294461;color:#ffffff;}.tree-row>.tree-row{padding-left:14px;}"
               ".label,.value{min-width:0;word-break:break-word;}"
               ".label{width:46%;}.value{width:50%;color:" << escape_markup(accent_color) << ";}"
               ".value-editor{box-sizing:border-box;width:50%;min-width:0;padding:3px 6px;background:#080b10;color:" << escape_markup(accent_color) << ";border-width:1px;border-color:#34445a;}"
@@ -1053,12 +1202,15 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
         const auto enabled=state.value("enabled",true);
         const auto editable=state.value("editable",false);
         const auto expanded=state.value("expanded",true);
+        const auto selected=state.value("selected",false);
+        const auto selectable=selectable_row_role(role);
         std::string error;
         if(state.contains("error"))error=state.at("error").is_string()?state.at("error").get<std::string>():state.at("error").dump();
         auto classes=role_class(role);
         if(!enabled)classes+=" disabled";
         if(!error.empty())classes+=" error";
         if(role=="group"&&!expanded)classes+=" collapsed";
+        if(selectable&&selected)classes+=" selected";
         const auto actions=node.value("actions",Json::array());
         const auto has_action=actions.is_array()&&!actions.empty()&&actions.front().is_object();
         const auto action_binding=has_action&&actions.front().contains("binding")?
@@ -1069,6 +1221,9 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
                << "\" data-editable=\"" << (editable?"true":"false") << "\"";
         if(action_button&&!enabled)output << " disabled";
         if(role=="group")output << " data-expanded=\"" << (expanded?"true":"false") << "\"";
+        if(selectable)output << " data-selected=\"" << (selected?"true":"false")
+                             << "\" aria-selected=\"" << (selected?"true":"false")
+                             << "\" tabindex=\"0\"";
         if(!error.empty())output << " data-error=\"" << escape_markup(error) << "\"";
         if(action_binding.is_object()&&!action_binding.empty())
             output << " data-binding=\"" << escape_markup(action_binding.dump()) << "\"";

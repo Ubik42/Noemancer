@@ -60,8 +60,8 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 - 保留 Dear ImGui 作为 Dockspace、Profiler、Render Debugger 和低层诊断壳；不把当前换色 ImGui 首版误认为最终产品 UI。
 - 建立 Editor 专用视觉 token、字体/图标、表面层级、状态色、控件密度和一致的 hover/focus/disabled/error/success 反馈；中央 Scene View 保持最大工作面积，Outliner、Inspector、Asset Browser 和底部工具服务当前选择与制作循环。
 - 首批收口应用顶栏、Edit/Play/Paused/Build 状态、场景工具栏、面板标题/搜索/空状态与 Inspector 信息层级；去除 `Bootstrap`、`GPU Scene` 等面向开发夹具的产品文案。
-- 完成证据：现代壳层以及 Outliner/Inspector/Asset Browser 三大核心面板的首轮产品化已成立；搜索、authority、选择、组件/资产数量和后台 Job 进入同一有界语义投影。Edit Inspector 已成为首个实际迁移的 Retained 面板：`editor.inspector` 使用独立 SDL_GPU 目标，尺寸随 Dock 内容区变化，窗口/Surface 指针和 IME 坐标显式换算，字符串、资产、标量/滑杆、布尔、枚举以及 vector3/color3 三轴控件均由同一 Semantic UI binding/constraints 生成；Action 继续进入既有 World plan/apply/receipt。组件组可折叠，稳定展开状态跨投影刷新保留并进入 Agent 的同一 observation，但本地折叠不会伪造 World transaction；控件已有统一 hover/focus/disabled/error 与滚动条视觉状态。顶栏、Scene 工具栏和 Outliner 操作采用不依赖字体私有区的统一矢量图标，Dock 临时菜单三角已移除。`--capture-editor-frame` 的最终 D3D12 2160×1350 整窗证据通过亮度合同，默认布局、紧凑分组、三轴值和图标未产生可见溢出。
-- 按价值逐步把 Inspector、Outliner、Asset Browser 迁移到 Semantic UI/RmlUi Editor 组件库；GUI 与 Agent 继续调用同一 Authority，迁移不能复制第二份编辑器状态。
+- 完成证据：现代壳层以及 Outliner/Inspector/Asset Browser 三大核心面板的首轮产品化已成立；搜索、authority、选择、组件/资产数量和后台 Job 进入同一有界语义投影。Edit Inspector 与 Outliner 已实际迁移为独立 Retained Surface：两者使用各自的 SDL_GPU 目标，尺寸随 Dock 内容区变化，窗口/Surface 指针、键盘和 IME 坐标显式路由。Inspector 控件仍从同一 Semantic UI binding/constraints 生成并进入 World plan/apply/receipt；Outliner 直接投影 Edit/Play World 的非持有 Authority View，以稳定实体 ID 构建父先于子的有界 Tree，点击与 Up/Down/Home/End/Enter 选择均回到 EditorUi 唯一 Selection Authority。局部焦点、选择和折叠可跨投影刷新保留，但不伪造 World transaction；4096 实体语义上限与 2048 DOM 节点上限被明确报告，当前不是大世界虚拟化实现。顶栏、Scene 工具栏和 Outliner 操作采用不依赖字体私有区的统一矢量图标，Dock 临时菜单三角已移除。隐藏 D3D12 整窗证据已在真实 Platformer 工程确认 Outliner 层级、选择高亮、Inspector 与 Scene 同帧合成。
+- 下一步只迁移 Asset Browser 到 Semantic UI/RmlUi Editor 组件库；GUI 与 Agent 继续调用同一 Asset Registry、Selection 与 Job Authority，迁移不能复制第二份资产状态。
 
 退出条件：编辑器在默认工作站尺寸下呈现统一、清晰、紧凑的现代专业工具界面；首屏可辨当前项目、场景、编辑/运行/编译状态和主操作；核心面板具备稳定语义投影，且不牺牲连续交互性能。
 
@@ -150,7 +150,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 
 `production.vfs-project-and-cooked-asset-migration` 已退出：Source Project 的 Manifest/Scene/HUD、多个 Registry manifest、Player Profile/Scene/HUD，以及主要 Runtime/Cooked 资源均已进入同一 VFS Authority；两个 `D:\3D` 真实项目与三类正式包均通过当前 Runtime 探针。Registry `refresh()` 会重新读取其 VFS URI，Animation Graph Agent inspect 通过 Engine plain callback 验证 Registry hash，不持有路径或 VFS 句柄。managed assembly 与离线 FBX/GLB 保持显式私有物理 Adapter，因为 HostFXR 与作者导入器当前需要文件路径；没有证据时不增加一次“VFS→临时文件”的复制层。长音频 range 当前每次重新 resolve/open/hash，先作为明确性能债记录；只有固定长流 workload 证明瓶颈后才在 VFS Authority 增加 opaque sequential reader，不允许 Adapter 绕开 VFS。
 
-当前前沿转入 `editor.retained-outliner-and-asset-browser`：先把 Outliner 迁移为与现有 Semantic UI/Editor Context 共用稳定实体身份、选择和动作的 Retained Surface，再迁移 Asset Browser。ImGui 继续承载 Dockspace 与低层工具；迁移不得创建第二份 World/Selection/Asset Job 状态，也不得为了换皮牺牲大场景虚拟化、键盘导航、拖放或连续交互性能。每个面板先完成 renderer-neutral model、语义/交互合同和 Headless 测试，再接 RmlUi Surface 与隐藏整窗视觉证据。
+当前前沿仍为 `editor.retained-outliner-and-asset-browser`，其中 Outliner 已退出：renderer-neutral 文档、Edit/Play Authority、稳定层级、选择 binding、键盘导航、独立 RmlUi/SDL_GPU Surface、输入路由与真实项目隐藏整窗证据已经贯通，ImGui fallback 只保留尚未迁移的创建/重命名/拖放等作者工具。下一批迁移 Asset Browser；必须复用现有 Asset Registry、Selection、Thumbnail Cache、后台 Job 与修复 Authority，先建立有界可分页/虚拟化的 renderer-neutral collection 和动作合同，再接独立 Surface。ImGui 继续承载 Dockspace 与低层工具，不创建第二份 World/Selection/Asset Job 状态。
 
 该最小纵切的退出不等于完整射击游戏生产栈：当前 Prefab 生成/销毁仍重建完整 Scene，项目碰撞使用有界实体观察上的半径判断；只有后续更大迁移或性能证据表明需要时，才增加池化生成和原生批量重叠查询。Hybrid Pixel/HD2D 项目仍在 Pixel Grid、Sprite normal/depth/material、混合光照和像素 VFX 的核心 Profile 成立后启动。任何迁移都不得因单个游戏的特殊需求向 Engine/Runtime C++ 写入专用规则；需求只有在能抽象为稳定通用能力，并通过独立 Fixture、Schema/命令、最小回归与性能证据后，才回写引擎。
 
