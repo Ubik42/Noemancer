@@ -1724,11 +1724,17 @@ int Application::run_interactive() {
     ImGui::GetStyle().ScaleAllSizes(options_.ui_scale);
     bool editor_font_loaded{};
 #ifdef _WIN32
-    // Use the native Windows UI face when present. The default embedded ImGui
-    // bitmap font remains the deterministic fallback for minimal deployments.
-    constexpr auto editor_font_path="C:\\Windows\\Fonts\\segoeui.ttf";
-    if(std::filesystem::exists(editor_font_path))
-        editor_font_loaded=io.Fonts->AddFontFromFileTTF(editor_font_path,15.0F*options_.ui_scale)!=nullptr;
+    // Prefer a host CJK-capable UI face so the visible Editor chrome can switch
+    // between English and Simplified Chinese without rebuilding the font atlas.
+    // Redistribution remains a separate packaging concern; the embedded vector
+    // font is still the deterministic fallback on minimal hosts.
+    constexpr auto cjk_editor_font_path="C:\\Windows\\Fonts\\msyh.ttc";
+    constexpr auto latin_editor_font_path="C:\\Windows\\Fonts\\segoeui.ttf";
+    if(std::filesystem::exists(cjk_editor_font_path))
+        editor_font_loaded=io.Fonts->AddFontFromFileTTF(cjk_editor_font_path,15.0F*options_.ui_scale,
+            nullptr,io.Fonts->GetGlyphRangesChineseSimplifiedCommon())!=nullptr;
+    if(!editor_font_loaded&&std::filesystem::exists(latin_editor_font_path))
+        editor_font_loaded=io.Fonts->AddFontFromFileTTF(latin_editor_font_path,15.0F*options_.ui_scale)!=nullptr;
 #endif
     if(!editor_font_loaded) {
         ImFontConfig fallback_font{};
@@ -1857,9 +1863,9 @@ int Application::run_interactive() {
     if(options_.project_path.empty())
         static_cast<void>(world_.gameplay_ability_grant_json(ui_entity_id,"ability.combat.impact"));
     const auto project_hud_document=[&](const World& source) {
-        if(source.has_project_hud())return source.semantic_ui_project_document_json(options_.ui_locale);
+        if(source.has_project_hud())return source.semantic_ui_project_document_json(editor_ui_.ui_locale());
         if(options_.player_mode)return semantic_ui_game_hud_document(
-            source.gameplay_ability_observation_json(ui_entity_id),ui_entity_id,options_.ui_locale);
+            source.gameplay_ability_observation_json(ui_entity_id),ui_entity_id,editor_ui_.ui_locale());
         return nlohmann::json{{"schemaVersion","noemancer.ui-document/0.1"},{"valid",true},{"code","ok"},
             {"documentId","ui.game-hud.empty"},{"surface","game"},{"kind","hud"},{"revision",0},
             {"nodes",nlohmann::json::array()}}.dump();

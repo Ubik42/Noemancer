@@ -39,6 +39,7 @@ target_link_libraries(noemancer_editor
 if(MSVC)
     target_compile_options(noemancer_editor PRIVATE
         /W4
+        /utf-8
         /permissive-
         /Zc:preprocessor
         /external:anglebrackets

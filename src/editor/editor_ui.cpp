@@ -689,6 +689,12 @@ bool EditorUi::set_ui_locale(const std::string_view locale) {
     ui_locale_=locale;
     return true;
 }
+bool EditorUi::chinese_ui() const noexcept {
+    return ui_locale_.starts_with("zh")||ui_locale_.starts_with("ZH");
+}
+const char* EditorUi::localized(const char* english,const char* simplified_chinese) const noexcept {
+    return chinese_ui()?simplified_chinese:english;
+}
 void EditorUi::set_project_context(EditorProjectContext context) {
     project_context_=std::move(context);model_.reset_for_loaded_project();
     if(project_context_.root!="engine://") {
@@ -747,15 +753,17 @@ void EditorUi::draw_startup_hub() {
         draw->AddLine({x+18,y+76},{x+74,y+76},green,4.0F);
         ImGui::Dummy({mark,mark+38.0F});
         ImGui::SetWindowFontScale(2.0F);ImGui::TextUnformatted(startup_hub_.brand().title.c_str());ImGui::SetWindowFontScale(1.0F);
-        ImGui::TextColored({0.83F,0.63F,0.36F,1.0F},"ENGINE / EDITOR");
+        ImGui::TextColored({0.83F,0.63F,0.36F,1.0F},"%s",localized("ENGINE / EDITOR","引擎 / 编辑器"));
         ImGui::Dummy({1.0F,22.0F});
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+std::max(220.0F,left_width-96.0F));
         ImGui::TextColored({0.77F,0.83F,0.86F,1.0F},
-            "Build worlds with one readable state shared by the editor, runtime, and coding agents.");
+            "%s",localized("Build worlds with one readable state shared by the editor, runtime, and coding agents.",
+                "用一份可读状态连接编辑器、运行时与编程智能体，共同构建世界。"));
         ImGui::PopTextWrapPos();
         ImGui::Dummy({1.0F,std::max(20.0F,extent.y-390.0F)});
         ImGui::TextDisabled("PRE-ALPHA  |  WINDOWS x64");
-        ImGui::TextDisabled("Source-first. Agent-readable. Runtime-verifiable.");
+        ImGui::TextDisabled("%s",localized("Source-first. Agent-readable. Runtime-verifiable.",
+            "源码优先 · 智能体可读 · 运行时可验证"));
     }
     ImGui::EndChild();ImGui::PopStyleVar();ImGui::PopStyleColor();
 
@@ -763,36 +771,38 @@ void EditorUi::draw_startup_hub() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.043F,0.051F,0.070F,1.0F});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{44.0F,40.0F});
     if(ImGui::BeginChild("##startup-projects",{0,extent.y},ImGuiChildFlags_None)) {
-        ImGui::SetWindowFontScale(1.45F);ImGui::TextUnformatted("Start a project");ImGui::SetWindowFontScale(1.0F);
-        ImGui::TextDisabled("Open an existing workspace or create a clean Noemancer project.");
+        ImGui::SetWindowFontScale(1.45F);ImGui::TextUnformatted(localized("Start a project","开始一个项目"));ImGui::SetWindowFontScale(1.0F);
+        ImGui::TextDisabled("%s",localized("Open an existing workspace or create a clean Noemancer project.",
+            "打开已有工作区，或创建一个全新的 Noemancer 项目。"));
         ImGui::Dummy({1.0F,18.0F});
 
         if(project_dialog_mode_==0)project_dialog_mode_=2;
-        if(ImGui::Button("Open Project",{150.0F,38.0F}))project_dialog_mode_=2;
-        ImGui::SameLine();if(ImGui::Button("New Project",{150.0F,38.0F}))project_dialog_mode_=1;
+        if(ImGui::Button(localized("Open Project###hub-open","打开项目###hub-open"),{150.0F,38.0F}))project_dialog_mode_=2;
+        ImGui::SameLine();if(ImGui::Button(localized("New Project###hub-new","新建项目###hub-new"),{150.0F,38.0F}))project_dialog_mode_=1;
         if(project_context_.root!="engine://") {
-            ImGui::SameLine();if(ImGui::Button("Back to Editor",{150.0F,38.0F}))startup_hub_open_=false;
+            ImGui::SameLine();if(ImGui::Button(localized("Back to Editor###hub-back","返回编辑器###hub-back"),{150.0F,38.0F}))startup_hub_open_=false;
         } else {
-            ImGui::SameLine();if(ImGui::Button("Empty Workspace",{150.0F,38.0F}))startup_hub_open_=false;
+            ImGui::SameLine();if(ImGui::Button(localized("Empty Workspace###hub-empty","空白工作区###hub-empty"),{150.0F,38.0F}))startup_hub_open_=false;
         }
         ImGui::Dummy({1.0F,14.0F});
 
         const auto creating=project_dialog_mode_==1;
-        ImGui::TextUnformatted(creating?"Create a workspace":"Open a workspace");
-        ImGui::TextDisabled(creating?"The target folder must not already contain a project.":
-            "Use a project directory or its noemancer.project.json path.");
+        ImGui::TextUnformatted(creating?localized("Create a workspace","创建工作区"):localized("Open a workspace","打开工作区"));
+        ImGui::TextDisabled("%s",creating?localized("The target folder must not already contain a project.","目标文件夹不能已经包含项目。"):
+            localized("Use a project directory or its noemancer.project.json path.","请输入项目目录或 noemancer.project.json 的路径。"));
         if(creating) {
-            ImGui::SetNextItemWidth(-1.0F);ImGui::InputText("Project name",project_name_.data(),project_name_.size());
-            constexpr const char* presets[]={"Starter 3D","Hybrid Pixel / HD2D"};
-            ImGui::SetNextItemWidth(-1.0F);ImGui::Combo("Project preset",&project_preset_index_,presets,2);
+            ImGui::SetNextItemWidth(-1.0F);ImGui::InputText(localized("Project name###hub-project-name","项目名称###hub-project-name"),project_name_.data(),project_name_.size());
+            const char* presets[]={localized("Starter 3D","基础 3D"),"Hybrid Pixel / HD2D"};
+            ImGui::SetNextItemWidth(-1.0F);ImGui::Combo(localized("Project preset###hub-project-preset","项目预设###hub-project-preset"),&project_preset_index_,presets,2);
             ImGui::TextDisabled(project_preset_index_==1?
                 "Pixel-stable 320 x 180 canvas, nearest integer presentation, and shared 2D/3D rendering.":
                 "General-purpose scene, C# entry point, HUD, input, animation, and built-in assets.");
         }
-        ImGui::SetNextItemWidth(-1.0F);ImGui::InputText("Project path",project_path_.data(),project_path_.size());
+        ImGui::SetNextItemWidth(-1.0F);ImGui::InputText(localized("Project path###hub-project-path","项目路径###hub-project-path"),project_path_.data(),project_path_.size());
         const auto ready=project_path_[0]!='\0'&&(!creating||project_name_[0]!='\0');
         ImGui::BeginDisabled(!ready);
-        if(ImGui::Button(creating?"Create and Open":"Open in Editor",{180.0F,38.0F})) {
+        if(ImGui::Button(creating?localized("Create and Open###hub-submit","创建并打开###hub-submit"):
+            localized("Open in Editor###hub-submit","在编辑器中打开###hub-submit"),{180.0F,38.0F})) {
             project_request_=EditorProjectRequest{creating?EditorProjectCommand::create:EditorProjectCommand::open,
                 project_path_.data(),creating?project_name_.data():std::string{},
                 creating&&project_preset_index_==1?"hybrid-pixel":"starter"};
@@ -800,11 +810,11 @@ void EditorUi::draw_startup_hub() {
         ImGui::EndDisabled();
 
         ImGui::Dummy({1.0F,24.0F});ImGui::Separator();ImGui::Dummy({1.0F,14.0F});
-        ImGui::TextUnformatted("Recent projects");
+        ImGui::TextUnformatted(localized("Recent projects","最近项目"));
         const auto& recent=startup_hub_.view().recent_projects;
         if(recent.empty()) {
-            ImGui::TextDisabled("No project has been opened in this session yet.");
-            ImGui::TextDisabled("Choose a path above; recent workspaces will appear here.");
+            ImGui::TextDisabled("%s",localized("No project has been opened in this session yet.","还没有打开过项目。"));
+            ImGui::TextDisabled("%s",localized("Choose a path above; recent workspaces will appear here.","从上方选择路径后，最近使用的工作区会显示在这里。"));
         }
         for(std::size_t index=0;index<recent.size();++index) {
             const auto& project=recent[index];ImGui::PushID(static_cast<int>(index));
@@ -1773,26 +1783,26 @@ void EditorUi::draw_root_dockspace() {
     ImGui::PopStyleVar(3);
 
     if (ImGui::BeginMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if(ImGui::MenuItem("Project Hub..."))startup_hub_open_=true;
+        if (ImGui::BeginMenu(localized("File","文件"))) {
+            if(ImGui::MenuItem(localized("Project Hub...","项目中心...")))startup_hub_open_=true;
             ImGui::Separator();
             ImGui::BeginDisabled(model_.scene_dirty()||simulation_state_!=EditorSimulationState::edit||script_compile_busy_);
-            if(ImGui::MenuItem("New Project...")) {project_dialog_mode_=1;project_preset_index_=0;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}
-            if(ImGui::MenuItem("Open Project...")) {project_dialog_mode_=2;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}
+            if(ImGui::MenuItem(localized("New Project...","新建项目..."))) {project_dialog_mode_=1;project_preset_index_=0;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}
+            if(ImGui::MenuItem(localized("Open Project...","打开项目..."))) {project_dialog_mode_=2;project_path_[0]='\0';project_name_[0]='\0';ImGui::OpenPopup("Project Workspace");}
             ImGui::EndDisabled();
             ImGui::Separator();
-            if(ImGui::MenuItem("New Scene...",nullptr,false,simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
+            if(ImGui::MenuItem(localized("New Scene...","新建场景..."),nullptr,false,simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
                 std::snprintf(new_scene_name_.data(),new_scene_name_.size(),"%s","Untitled Scene");ImGui::OpenPopup("New Scene");
             }
-            if (ImGui::MenuItem("Open Scene...", "Ctrl+O",false,simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
+            if (ImGui::MenuItem(localized("Open Scene...","打开场景..."), "Ctrl+O",false,simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
                 scene_path_buffer[0]='\0';
                 ImGui::OpenPopup("Open Scene Source");
             }
-            if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, model_.can_save_scene()&&simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
+            if (ImGui::MenuItem(localized("Save Scene","保存场景"), "Ctrl+S", false, model_.can_save_scene()&&simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
                 const auto action=model_.save_scene();last_action_status_=action.detail;
                 if(action.success)scene_recovery_candidates_json_=model_.scene_recovery_candidates_json(project_context_.root);
             }
-            if (ImGui::MenuItem("Save Scene As...", "Ctrl+Shift+S",false,simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
+            if (ImGui::MenuItem(localized("Save Scene As...","场景另存为..."), "Ctrl+Shift+S",false,simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
                 std::snprintf(scene_path_buffer,sizeof(scene_path_buffer),"%s",model_.scene_source().c_str());
                 ImGui::OpenPopup("Save Scene As Source");
             }
@@ -1802,26 +1812,31 @@ void EditorUi::draw_root_dockspace() {
                 ImGui::OpenPopup("Scene Recovery Candidates");
             }
             ImGui::Separator();
-            if(ImGui::MenuItem("Package Game...",nullptr,false,project_context_.root!="engine://"&&!package_busy_))
+            if(ImGui::MenuItem(localized("Package Game...","打包游戏..."),nullptr,false,project_context_.root!="engine://"&&!package_busy_))
                 package_panel_open_=true;
             ImGui::Separator();
-            if(ImGui::MenuItem("Exit"))request_close();
+            if(ImGui::MenuItem(localized("Exit","退出")))request_close();
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Edit")) {
-            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, model_.can_undo()&&simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
+        if (ImGui::BeginMenu(localized("Edit","编辑"))) {
+            if (ImGui::MenuItem(localized("Undo","撤销"), "Ctrl+Z", false, model_.can_undo()&&simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
                 last_action_status_ = model_.undo().detail;
             }
-            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, model_.can_redo()&&simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
+            if (ImGui::MenuItem(localized("Redo","重做"), "Ctrl+Y", false, model_.can_redo()&&simulation_state_==EditorSimulationState::edit&&!script_compile_busy_)) {
                 last_action_status_ = model_.redo().detail;
             }
             ImGui::Separator();
-            if(ImGui::MenuItem("Project Settings...",nullptr,project_settings_open_,
+            if(ImGui::MenuItem(localized("Project Settings...","项目设置..."),nullptr,project_settings_open_,
                 project_context_.root!="engine://"))project_settings_open_=!project_settings_open_;
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Reset Layout");
+        if (ImGui::BeginMenu(localized("View","视图"))) {
+            ImGui::MenuItem(localized("Reset Layout","重置布局"));
+            ImGui::EndMenu();
+        }
+        if(ImGui::BeginMenu(localized("Language","语言"))) {
+            if(ImGui::MenuItem("简体中文",nullptr,chinese_ui()))static_cast<void>(set_ui_locale("zh-CN"));
+            if(ImGui::MenuItem("English",nullptr,!chinese_ui()))static_cast<void>(set_ui_locale("en-US"));
             ImGui::EndMenu();
         }
         ImGui::EndMenuBar();
@@ -1845,21 +1860,21 @@ void EditorUi::draw_root_dockspace() {
             ImGui::BeginDisabled(script_compile_busy_);
             ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.11F,0.34F,0.25F,1.0F));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(0.14F,0.44F,0.32F,1.0F));
-            if(draw_icon_button("##play",EditorIcon::play,"PLAY",false,"Enter Play World"))simulation_command_=EditorSimulationCommand::play;
+            if(draw_icon_button("##play",EditorIcon::play,localized("PLAY","运行"),false,localized("Enter Play World","进入运行世界")))simulation_command_=EditorSimulationCommand::play;
             ImGui::PopStyleColor(2);ImGui::EndDisabled();
         } else {
             ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.42F,0.16F,0.17F,1.0F));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(0.56F,0.19F,0.20F,1.0F));
-            if(draw_icon_button("##stop",EditorIcon::stop,"STOP",false,"Stop Play World"))simulation_command_=EditorSimulationCommand::stop;
+            if(draw_icon_button("##stop",EditorIcon::stop,localized("STOP","停止"),false,localized("Stop Play World","停止运行世界")))simulation_command_=EditorSimulationCommand::stop;
             ImGui::PopStyleColor(2);
             ImGui::SameLine();
             if(simulation_state_==EditorSimulationState::playing) {
-                if(draw_icon_button("##pause",EditorIcon::pause,"PAUSE",false,"Pause Play World"))simulation_command_=EditorSimulationCommand::pause;
-            } else if(draw_icon_button("##resume",EditorIcon::resume,"RESUME",false,"Resume Play World"))simulation_command_=EditorSimulationCommand::resume;
+                if(draw_icon_button("##pause",EditorIcon::pause,localized("PAUSE","暂停"),false,localized("Pause Play World","暂停运行世界")))simulation_command_=EditorSimulationCommand::pause;
+            } else if(draw_icon_button("##resume",EditorIcon::resume,localized("RESUME","继续"),false,localized("Resume Play World","继续运行世界")))simulation_command_=EditorSimulationCommand::resume;
         }
         ImGui::SameLine();
-        draw_status_badge(simulation_state_==EditorSimulationState::edit?"EDIT WORLD":
-            simulation_state_==EditorSimulationState::playing?"PLAY WORLD":"PAUSED",
+        draw_status_badge(simulation_state_==EditorSimulationState::edit?localized("EDIT WORLD","编辑世界"):
+            simulation_state_==EditorSimulationState::playing?localized("PLAY WORLD","运行世界"):localized("PAUSED","已暂停"),
             simulation_state_==EditorSimulationState::edit?color_accent:
             simulation_state_==EditorSimulationState::playing?color_success:color_warning);
         if(script_compile_busy_) {ImGui::SameLine();draw_status_badge("BUILDING C#",color_warning);}
@@ -1867,7 +1882,7 @@ void EditorUi::draw_root_dockspace() {
         constexpr float right_reserve=205.0F;
         if(ImGui::GetCursorPosX()<ImGui::GetWindowWidth()-right_reserve)ImGui::SameLine(ImGui::GetWindowWidth()-right_reserve);
         ImGui::BeginDisabled(!model_.can_save_scene()||simulation_state_!=EditorSimulationState::edit||script_compile_busy_);
-        if(draw_icon_button("##save",EditorIcon::save,"SAVE",false,"Save Scene (Ctrl+S)")) {const auto action=model_.save_scene();last_action_status_=action.detail;}
+        if(draw_icon_button("##save",EditorIcon::save,localized("SAVE","保存"),false,localized("Save Scene (Ctrl+S)","保存场景 (Ctrl+S)"))) {const auto action=model_.save_scene();last_action_status_=action.detail;}
         ImGui::EndDisabled();ImGui::SameLine();
         ImGui::TextDisabled("%.0f FPS",ImGui::GetIO().Framerate);
     }
@@ -2054,7 +2069,7 @@ void EditorUi::draw_root_dockspace() {
 
 void EditorUi::draw_scene_view() {
     prepare_panel_window("editor.panel.scene");
-    ImGui::Begin("Scene View", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::Begin(localized("Scene View###Scene View","场景视图###Scene View"), nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.scene");
 
     ImGui::TextDisabled("TOOLS");ImGui::SameLine();
@@ -2389,7 +2404,7 @@ void EditorUi::draw_transform_gizmo(const float x,const float y,const float widt
 
 void EditorUi::draw_world_outliner() {
     prepare_panel_window("editor.panel.outliner");
-    ImGui::Begin("World Outliner");
+    ImGui::Begin(localized("World Outliner###World Outliner","世界大纲###World Outliner"));
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.outliner");
     const bool edit_world=simulation_state_==EditorSimulationState::edit;
     if(retained_outliner_texture_id_!=0&&retained_outliner_texture_width_>0&&
@@ -2582,7 +2597,7 @@ void EditorUi::draw_world_outliner() {
 
 void EditorUi::draw_inspector() {
     prepare_panel_window("editor.panel.inspector");
-    ImGui::Begin("Inspector");
+    ImGui::Begin(localized("Inspector###Inspector","检查器###Inspector"));
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.inspector");
     if(simulation_state_!=EditorSimulationState::edit) {
         const auto inspector=nlohmann::json::parse(play_world_inspector_json_,nullptr,false);
@@ -2820,7 +2835,7 @@ void EditorUi::draw_animation_graph() {
 
     prepare_panel_window("editor.panel.animation-graph");
     if(animation_graph_focus_frames_>0)ImGui::SetNextWindowFocus();
-    ImGui::Begin("Animation Graph");
+    ImGui::Begin(localized("Animation Graph###Animation Graph","动画图###Animation Graph"));
     if(animation_graph_focus_frames_>0) {
         ImGui::SetWindowFocus();
         set_focused_panel("editor.panel.animation-graph");
@@ -3070,7 +3085,7 @@ void EditorUi::draw_animation_graph() {
 
 void EditorUi::draw_asset_browser() {
     prepare_panel_window("editor.panel.assets");
-    ImGui::Begin("Asset Browser");
+    ImGui::Begin(localized("Asset Browser###Asset Browser","资源浏览器###Asset Browser"));
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.assets");
     if(const auto reconciliation=model_.reconcile_active_asset_job())last_action_status_=reconciliation->detail;
     const auto registry=nlohmann::json::parse(model_.asset_registry_status_json(),nullptr,false);
@@ -3290,7 +3305,7 @@ void EditorUi::draw_asset_browser() {
 
 void EditorUi::draw_console() {
     prepare_panel_window("editor.panel.console");
-    ImGui::Begin("Console");
+    ImGui::Begin(localized("Console###Console","控制台###Console"));
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.console");
     const auto scripting=nlohmann::json::parse(scripting_status_cache_,nullptr,false);
     const auto project=scripting.is_object()&&scripting.value("project",nlohmann::json{}).is_object()?
@@ -3457,7 +3472,7 @@ void EditorUi::draw_console() {
 
 void EditorUi::draw_agent_context() {
     prepare_panel_window("editor.panel.agent-context");
-    ImGui::Begin("Agent Context");
+    ImGui::Begin(localized("Agent Context###Agent Context","智能体上下文###Agent Context"));
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.agent-context");
     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(accent), "Semantic Observation Preview");
     ImGui::TextWrapped(

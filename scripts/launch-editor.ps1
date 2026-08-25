@@ -6,6 +6,8 @@ param(
 
     [string]$Config = 'Release',
 
+    [string]$Locale = 'zh-CN',
+
     [switch]$NoBuild,
     [switch]$VerifyOnly,
     [Alias('h')]
@@ -40,8 +42,8 @@ function Write-LaunchHelp {
 Noemancer Editor launcher
 
 Usage:
-  Noemancer Editor.cmd [PROJECT_PATH] [-Config Debug|Release] [-NoBuild] [-VerifyOnly]
-  powershell -File scripts/launch-editor.ps1 [-Project PROJECT_PATH] [-Config Debug|Release]
+  Noemancer Editor.cmd [PROJECT_PATH] [-Config Debug|Release] [-Locale zh-CN|en-US] [-NoBuild] [-VerifyOnly]
+  powershell -File scripts/launch-editor.ps1 [-Project PROJECT_PATH] [-Config Debug|Release] [-Locale zh-CN|en-US]
 
 PROJECT_PATH is optional. When omitted, the editor opens the Noemancer Project
 Hub. -VerifyOnly performs a headless project/runtime check and never
@@ -49,6 +51,9 @@ opens a GUI window. The launcher resolves the repository from its own script
 location, so the caller's current directory does not matter. Release is the
 interactive product default; pass -Config Debug when debugging native engine
 code.
+
+The official launcher starts in Simplified Chinese by default. Choose Language
+in the Editor menu to switch immediately, or pass -Locale en-US at launch.
 '@ | Write-Output
 }
 
@@ -61,6 +66,12 @@ if ($Config -notin @('Debug', 'Release')) {
     Write-LaunchFailure -Code 'config.invalid' `
         -Message 'The editor configuration must be Debug or Release.' `
         -Details @{ config = $Config }
+}
+
+if ($Locale -notmatch '^[A-Za-z0-9_-]{1,32}$') {
+    Write-LaunchFailure -Code 'locale.invalid' `
+        -Message 'The editor locale must contain only letters, digits, hyphen, or underscore.' `
+        -Details @{ locale = $Locale }
 }
 
 if (-not (Test-Path -LiteralPath $engineScript -PathType Leaf)) {
@@ -112,7 +123,7 @@ if (-not (Test-Path -LiteralPath $runtime -PathType Leaf)) {
         -Details @{ config = $Config; runtime = $runtime; noBuild = [bool]$NoBuild }
 }
 
-$runtimeArguments = @('run')
+$runtimeArguments = @('run', '--ui-locale', $Locale)
 if ($null -ne $resolvedProject) { $runtimeArguments += @('--project', $resolvedProject) }
 
 if ($VerifyOnly) {
@@ -194,7 +205,7 @@ public static class NoemancerEditorDetachedProcess {
         -Details @{ detail = $_.Exception.Message }
 }
 
-$argumentText = 'run'
+$argumentText = 'run --ui-locale "' + $Locale + '"'
 if ($null -ne $resolvedProject) { $argumentText += ' --project "' + $resolvedProject + '"' }
 try {
     $processId = [NoemancerEditorDetachedProcess]::Start($runtime, $argumentText, $engineRoot)
@@ -209,6 +220,7 @@ try {
     success = $true
     code = 'started'
     config = $Config
+    locale = $Locale
     runtime = $runtime
     projectPath = $resolvedProject
     processId = $processId

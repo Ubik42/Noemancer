@@ -178,6 +178,7 @@ public:
     void set_recent_projects(std::vector<StartupHubRecentProject> projects,
                              std::string_view persistence_observation_json = {});
     [[nodiscard]] bool set_ui_locale(std::string_view locale);
+    [[nodiscard]] std::string_view ui_locale() const noexcept { return ui_locale_; }
     void set_project_context(EditorProjectContext context);
     [[nodiscard]] std::string compile_scripts(std::string_view configuration = "Debug");
     [[nodiscard]] bool begin_compile_scripts(std::string_view configuration = "Debug");
@@ -276,6 +277,8 @@ private:
     [[nodiscard]] bool apply_entity_selection(const std::vector<std::string>& entity_ids,
                                               std::string_view primary_entity_id);
     [[nodiscard]] bool entity_exists_in_play_world(std::string_view entity_id) const;
+    [[nodiscard]] bool chinese_ui() const noexcept;
+    [[nodiscard]] const char* localized(const char* english,const char* simplified_chinese) const noexcept;
 
     EditorModel model_;
     StartupHubModel startup_hub_;
