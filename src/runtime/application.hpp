@@ -109,6 +109,7 @@ private:
     void apply_project_request(const EditorProjectRequest& request);
     void apply_project_input_map_request(const ProjectSettingsInputMapPanelRequest& request);
     void apply_hybrid_pixel_profile_request(const HybridPixelProfilePanelRequest& request);
+    void apply_sky_atmosphere_request(const SkyAtmosphereAuthoringRequest& request);
     void apply_project_ui_request(const ProjectUiAuthoringPanelRequest& request);
     void apply_source_open_request(const EditorSourceOpenRequest& request);
     void apply_script_build_completion(const EditorScriptBuildCompletion& completion);
@@ -161,6 +162,7 @@ private:
     std::vector<InputActionDefinition> project_input_actions_;
     std::unique_ptr<ProjectInputEditSession> project_input_session_;
     std::unique_ptr<ProjectHybridPixelAuthoring> project_hybrid_pixel_session_;
+    std::unique_ptr<SkyAtmosphereAuthoringSession> project_sky_atmosphere_session_;
     std::unique_ptr<ProjectUiAuthoringSession> project_ui_session_;
     std::unique_ptr<CommandRegistry> live_editor_command_registry_;
     LiveEditorSessionStore live_editor_session_store_;
@@ -177,6 +179,7 @@ private:
     std::string player_profile_document_json_;
     std::optional<HybridPixelProfile> hybrid_pixel_profile_;
     SkyAtmosphereSettings sky_atmosphere_{make_sky_atmosphere_settings(SkyAtmosphereQuality::high)};
+    std::uint64_t sky_atmosphere_revision_{1U};
     std::uint64_t hybrid_pixel_profile_revision_{1U};
     std::unique_ptr<GamePersistenceStore> persistence_store_;
     std::string managed_debug_last_action_json_;

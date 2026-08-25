@@ -19,13 +19,14 @@ CompiledRenderGraph RenderGraphCompiler::compile(
     for (const auto& resource : graph.resources) {
         if (resource.id.empty() || !resource_ids.insert(resource.id).second)
             graph.errors.push_back("duplicate-or-empty-resource:" + resource.id);
-        if (resource.format.empty() || resource.layers==0U || (resource.dimension!="2d" && resource.dimension!="2d-array" && resource.dimension!="cube" && resource.dimension!="buffer"))
+        if (resource.format.empty() || resource.layers==0U || (resource.dimension!="2d" && resource.dimension!="2d-array" && resource.dimension!="3d" && resource.dimension!="cube" && resource.dimension!="buffer"))
             graph.errors.push_back("invalid-resource-description:"+resource.id);
         if (resource.resolution_space!="render" && resource.resolution_space!="output" &&
             resource.resolution_space!="half-output" && resource.resolution_space!="half-render" &&
             resource.resolution_space!="quarter-output" && resource.resolution_space!="eighth-output" &&
             resource.resolution_space!="sixteenth-output" &&
-            resource.resolution_space!="scalar" && resource.resolution_space!="shadow")
+            resource.resolution_space!="scalar" && resource.resolution_space!="shadow" &&
+            resource.resolution_space!="camera-volume")
             graph.errors.push_back("invalid-resolution-space:"+resource.id);
     }
     std::unordered_map<std::string, std::size_t> pass_indices;
@@ -95,8 +96,10 @@ CompiledRenderGraph RenderGraphCompiler::compile(
 }
 
 CompiledRenderGraph make_forward_render_graph() {
-    auto graph = RenderGraphCompiler::compile("render.graph.forward.v12",
+    auto graph = RenderGraphCompiler::compile("render.graph.forward.v13",
         {{"render.resource.shadow-depth", "D32_FLOAT", true, "2d-array", 4, false, "shadow"}, {"render.resource.scene-hdr", "RGBA16_FLOAT", true},
+         {"render.resource.atmosphere-camera-volume", "RGBA16_FLOAT", false, "3d", 1, true, "camera-volume"},
+         {"render.resource.scene-hdr-aerial", "RGBA16_FLOAT", true},
          {"render.resource.scene-indirect", "RGBA16_FLOAT", true},
          {"render.resource.scene-hdr-ao", "RGBA16_FLOAT", true},
          {"render.resource.scene-color", "RGBA8_SRGB", false, "2d", 1, false, "output"},
@@ -127,7 +130,7 @@ CompiledRenderGraph make_forward_render_graph() {
           {"render.resource.gpu-scene-instances","render.resource.gpu-draw-batches"},
           {"render.resource.gpu-visible-indices","render.resource.gpu-indirect-commands"},{"render.pass.shadow-depth"}},
          {"render.pass.sky-atmosphere", "render.pipeline.sky-atmosphere", {},
-          {"render.resource.scene-hdr"}, {"render.pass.gpu-visibility"}},
+          {"render.resource.scene-hdr", "render.resource.atmosphere-camera-volume"}, {"render.pass.gpu-visibility"}},
          {"render.pass.opaque-lit", "render.pipeline.pbr-forward", {"render.resource.scene-hdr","render.resource.shadow-depth","render.resource.gpu-scene-instances","render.resource.gpu-visible-indices","render.resource.gpu-indirect-commands"},
           {"render.resource.scene-hdr", "render.resource.scene-indirect", "render.resource.scene-depth", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"},
           {"render.pass.gpu-visibility", "render.pass.sky-atmosphere"}},
@@ -139,9 +142,12 @@ CompiledRenderGraph make_forward_render_graph() {
          {"render.pass.ambient-occlusion-denoise-vertical", "render.pipeline.ao-bilateral-vertical",
           {"render.resource.ambient-occlusion-temp", "render.resource.scene-depth", "render.resource.world-normal"},
           {"render.resource.ambient-occlusion-filtered"}, {"render.pass.ambient-occlusion-denoise-horizontal"}},
+         {"render.pass.aerial-perspective", "render.pipeline.aerial-perspective",
+          {"render.resource.scene-hdr", "render.resource.scene-depth", "render.resource.atmosphere-camera-volume"},
+          {"render.resource.scene-hdr-aerial"}, {"render.pass.opaque-lit"}},
          {"render.pass.ambient-occlusion-composite", "render.pipeline.ao-indirect-composite",
-          {"render.resource.scene-hdr", "render.resource.scene-indirect", "render.resource.ambient-occlusion-filtered"},
-          {"render.resource.scene-hdr-ao"}, {"render.pass.ambient-occlusion-denoise-vertical", "render.pass.opaque-lit"}},
+          {"render.resource.scene-hdr-aerial", "render.resource.scene-indirect", "render.resource.ambient-occlusion-filtered"},
+          {"render.resource.scene-hdr-ao"}, {"render.pass.ambient-occlusion-denoise-vertical", "render.pass.aerial-perspective"}},
          {"render.pass.transparent-lit", "render.pipeline.pbr-forward-alpha", {"render.resource.shadow-depth", "render.resource.scene-hdr-ao", "render.resource.scene-indirect", "render.resource.scene-depth", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"},
           {"render.resource.scene-hdr-ao", "render.resource.scene-indirect", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"}, {"render.pass.ambient-occlusion-composite", "render.pass.opaque-lit"}},
          {"render.pass.temporal-resolve", "render.pipeline.taa", {"render.resource.scene-hdr-ao", "render.resource.motion-vectors", "render.resource.scene-depth", "render.resource.temporal-history", "render.resource.temporal-depth-history", "render.resource.reactive-mask"},

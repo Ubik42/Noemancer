@@ -443,6 +443,20 @@
       "threadGroup": null
     },
     {
+      "stem": "aerial_perspective.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 3,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
       "stem": "sky_atmosphere.vert",
       "stage": "vertex",
       "profile": "vs_6_0",
@@ -496,6 +510,25 @@
     },
     {
       "stem": "sky_atmosphere_sky_view.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 2,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "storageTextures": 1,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": [
+        8,
+        8,
+        1
+      ]
+    },
+    {
+      "stem": "sky_atmosphere_camera_volume.comp",
       "stage": "compute",
       "profile": "cs_6_0",
       "entrypoint": "main",

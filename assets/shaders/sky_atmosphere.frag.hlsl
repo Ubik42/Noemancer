@@ -266,6 +266,9 @@ float4 main(FragmentInput input) : SV_Target0
         const float2 uv = clamp(sky_view_uv(rayDirection, sunDirection), texel, 1.0f - texel);
         const float exposureStops = clamp(safe_finite(sunColorExposure.w), -16.0f, 16.0f);
         float3 lutRadiance = skyViewLut.SampleLevel(skyViewSampler, uv, 0.0f).rgb;
+        const float horizonWeight = saturate(1.0f - abs(rayDirection.y) * 12.0f);
+        const float3 horizonCeiling = fallback * 1.5f + 0.03f;
+        lutRadiance = lerp(lutRadiance, min(lutRadiance, horizonCeiling), horizonWeight);
         // A sky background is not a planetary terrain renderer. Fade the LUT's
         // below-horizon ground solution into the authored lower hemisphere;
         // real scene geometry drawn by the opaque pass still occludes it.

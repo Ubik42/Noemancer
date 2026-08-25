@@ -291,6 +291,38 @@ std::filesystem::path default_user_data_root() {
     return std::filesystem::temp_directory_path()/"noemancer-user-data"/"projects";
 }
 
+bool persist_project_sky_atmosphere(const std::filesystem::path& manifest_path,
+    const std::optional<SkyAtmosphereSettings>& settings,std::string& detail) {
+    std::ifstream input(manifest_path,std::ios::binary);std::ostringstream contents;contents<<input.rdbuf();
+    if(!input.good()&&!input.eof()) {detail="Project manifest could not be read.";return false;}
+    auto document=nlohmann::json::parse(contents.str(),nullptr,false);
+    if(!document.is_object()||document.value("schema",std::string{})!="noemancer.project/0.2") {
+        detail="Sky Atmosphere authoring requires a noemancer.project/0.2 manifest.";return false;
+    }
+    if(settings)document["skyAtmosphere"]=nlohmann::json::parse(
+        SkyAtmosphereSettingsCodec::write_canonical_json(*settings));
+    else document.erase("skyAtmosphere");
+    static std::atomic_uint64_t sequence{1U};
+    const auto temporary=manifest_path.parent_path()/("."+manifest_path.filename().string()+
+        ".sky-atmosphere-"+std::to_string(sequence.fetch_add(1U))+".tmp");
+    const auto serialized=document.dump(2)+"\n";
+    {std::ofstream output(temporary,std::ios::binary|std::ios::trunc);
+        if(!output) {detail="Sky Atmosphere temporary manifest could not be opened.";return false;}
+        output.write(serialized.data(),static_cast<std::streamsize>(serialized.size()));output.flush();
+        if(!output) {output.close();std::error_code cleanup;std::filesystem::remove(temporary,cleanup);
+            detail="Sky Atmosphere temporary manifest could not be flushed.";return false;}}
+    std::error_code error;
+#ifdef _WIN32
+    if(!MoveFileExW(temporary.c_str(),manifest_path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+        error=std::error_code(static_cast<int>(GetLastError()),std::system_category());
+#else
+    std::filesystem::rename(temporary,manifest_path,error);
+#endif
+    if(error) {std::error_code cleanup;std::filesystem::remove(temporary,cleanup);
+        detail="Sky Atmosphere manifest atomic replacement failed: "+error.message();return false;}
+    detail="Sky Atmosphere settings were atomically persisted.";return true;
+}
+
 } // namespace
 
 Application::Application(RunOptions options)
@@ -537,6 +569,9 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
     hybrid_pixel_profile_=loaded.project->hybrid_pixel_profile;
     sky_atmosphere_=loaded.project->sky_atmosphere.value_or(
         make_sky_atmosphere_settings(SkyAtmosphereQuality::high));
+    project_sky_atmosphere_session_=std::make_unique<SkyAtmosphereAuthoringSession>(
+        loaded.project->sky_atmosphere);
+    ++sky_atmosphere_revision_;
     ++hybrid_pixel_profile_revision_;
     project_hybrid_pixel_session_=std::make_unique<ProjectHybridPixelAuthoring>(
         hybrid_pixel_profile_,loaded.project->root/"noemancer.project.json");
@@ -573,6 +608,10 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
     context.hybrid_pixel_profile_revision=project_hybrid_pixel_session_->revision();
     context.hybrid_pixel_profile_can_undo=project_hybrid_pixel_session_->can_undo();
     context.hybrid_pixel_profile_can_redo=project_hybrid_pixel_session_->can_redo();
+    context.sky_atmosphere=project_sky_atmosphere_session_->settings();
+    context.sky_atmosphere_revision=project_sky_atmosphere_session_->revision();
+    context.sky_atmosphere_can_undo=project_sky_atmosphere_session_->can_undo();
+    context.sky_atmosphere_can_redo=project_sky_atmosphere_session_->can_redo();
     if(project_ui_session_) {
         context.project_ui_document_json=project_ui_session_->source_json();
         context.project_ui_revision=project_ui_session_->revision();
@@ -740,6 +779,52 @@ void Application::apply_hybrid_pixel_profile_request(
         project_hybrid_pixel_session_->revision(),project_hybrid_pixel_session_->can_undo(),
         project_hybrid_pixel_session_->can_redo());
     logger_.info("project.hybrid-pixel-profile",evidence);
+}
+
+void Application::apply_sky_atmosphere_request(const SkyAtmosphereAuthoringRequest& request) {
+    using Json=nlohmann::json;
+    if(!project_sky_atmosphere_session_||project_root_.empty()) {
+        const auto detail=std::string("Open a project before editing Sky Atmosphere.");
+        editor_ui_.set_last_action_status(detail);logger_.error("project.sky-atmosphere",
+            Json{{"success",false},{"code","project.sky-atmosphere.session-unavailable"},{"detail",detail}}.dump());return;
+    }
+    const auto invoke=[&](const bool dry_run) {
+        const SkyAtmosphereAuthoringEditOptions options{
+            .expected_revision=request.expected_revision,.dry_run=dry_run};
+        switch(request.kind) {
+        case SkyAtmosphereAuthoringRequestKind::apply:
+            return project_sky_atmosphere_session_->replace(request.settings,options);
+        case SkyAtmosphereAuthoringRequestKind::disable:
+            return project_sky_atmosphere_session_->disable(options);
+        case SkyAtmosphereAuthoringRequestKind::remove:
+            return project_sky_atmosphere_session_->remove(options);
+        case SkyAtmosphereAuthoringRequestKind::undo:
+            return project_sky_atmosphere_session_->undo(options);
+        case SkyAtmosphereAuthoringRequestKind::redo:
+            return project_sky_atmosphere_session_->redo(options);
+        }
+        return project_sky_atmosphere_session_->replace(request.settings,options);
+    };
+    auto receipt=invoke(true);
+    if(!receipt) {editor_ui_.set_last_action_status(receipt.detail);
+        logger_.error("project.sky-atmosphere",receipt.to_json());return;}
+    if(request.dry_run) {editor_ui_.set_last_action_status(receipt.detail);
+        logger_.info("project.sky-atmosphere",receipt.to_json());return;}
+    std::string persistence_detail;
+    if(!persist_project_sky_atmosphere(project_root_/"noemancer.project.json",receipt.settings,persistence_detail)) {
+        editor_ui_.set_last_action_status(persistence_detail);logger_.error("project.sky-atmosphere",
+            Json{{"success",false},{"code","project.sky-atmosphere.persist-failed"},
+                {"detail",persistence_detail},{"revision",receipt.revision}}.dump());return;
+    }
+    receipt=invoke(false);
+    if(!receipt) {editor_ui_.set_last_action_status(receipt.detail);
+        logger_.error("project.sky-atmosphere",receipt.to_json());return;}
+    sky_atmosphere_=receipt.settings.value_or(make_sky_atmosphere_settings(SkyAtmosphereQuality::high));
+    ++sky_atmosphere_revision_;
+    editor_ui_.set_project_sky_atmosphere(project_sky_atmosphere_session_->settings(),
+        project_sky_atmosphere_session_->revision(),project_sky_atmosphere_session_->can_undo(),
+        project_sky_atmosphere_session_->can_redo());
+    editor_ui_.set_last_action_status(persistence_detail);logger_.info("project.sky-atmosphere",receipt.to_json());
 }
 
 void Application::apply_project_ui_request(const ProjectUiAuthoringPanelRequest& request) {
@@ -1802,9 +1887,16 @@ int Application::run_interactive() {
         return 16;
     }
     std::uint64_t applied_hybrid_pixel_profile_revision=hybrid_pixel_profile_revision_;
+    std::uint64_t applied_sky_atmosphere_revision=sky_atmosphere_revision_;
     scene_renderer->set_gpu_driven_enabled(!options_.disable_gpu_driven);
     scene_renderer->set_ambient_occlusion_enabled(!options_.disable_ambient_occlusion);
-    scene_renderer->set_sky_atmosphere(sky_atmosphere_);
+    // The versioned commercial-raster fixture owns a controlled dark
+    // background for its Bloom and color-response ROIs. Dynamic atmosphere
+    // has a separate visual/per-pass evidence lane; mixing both would make
+    // the fixture's baseline rings depend on the authored horizon gradient.
+    auto renderer_sky_atmosphere=sky_atmosphere_;
+    if(!options_.reference_scene_id.empty())renderer_sky_atmosphere.enabled=false;
+    scene_renderer->set_sky_atmosphere(renderer_sky_atmosphere);
     scene_renderer->set_texture_streaming_budget_kib(options_.texture_streaming_budget_kib);
     scene_renderer->set_texture_streaming_resident_budget_kib(options_.texture_streaming_resident_budget_kib);
     scene_renderer->set_texture_streaming_workload(options_.texture_streaming_workload);
@@ -2472,6 +2564,10 @@ int Application::run_interactive() {
             }
             applied_hybrid_pixel_profile_revision=hybrid_pixel_profile_revision_;
         }
+        if(applied_sky_atmosphere_revision!=sky_atmosphere_revision_) {
+            scene_renderer->set_sky_atmosphere(sky_atmosphere_);
+            applied_sky_atmosphere_revision=sky_atmosphere_revision_;
+        }
         std::uint32_t requested_width=editor_ui_.requested_scene_width(),requested_height=editor_ui_.requested_scene_height();
         if(runtime_surface_mode||!options_.capture_frame_path.empty()||!options_.reference_scene_id.empty()) {int width{},height{};SDL_GetWindowSizeInPixels(window,&width,&height);
             requested_width=static_cast<std::uint32_t>(std::max(1,width));requested_height=static_cast<std::uint32_t>(std::max(1,height));}
@@ -2710,6 +2806,8 @@ int Application::run_interactive() {
             }
             if(const auto request=editor_ui_.consume_hybrid_pixel_profile_request())
                 apply_hybrid_pixel_profile_request(*request);
+            if(const auto request=editor_ui_.consume_sky_atmosphere_request())
+                apply_sky_atmosphere_request(*request);
             if(const auto request=editor_ui_.consume_project_ui_request())
                 apply_project_ui_request(*request);
             if (const auto command=editor_ui_.consume_simulation_command()) apply_simulation_command(*command);

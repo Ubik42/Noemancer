@@ -3,7 +3,7 @@
   "updated": "2026-08-25",
   "status": "active-development",
   "currentSlice": "render.dynamic-sky-atmosphere",
-  "currentStep": "extend-three-lut-atmosphere-with-aerial-perspective-camera-volume-and-editor-authoring",
+  "currentStep": "add-time-of-day-weather-authority-and-orthographic-aerial-policy",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -57,7 +57,8 @@
     "asset.gltf-external-resource-jpeg-and-large-scene-readiness",
     "performance.editor-retained-ui-command-recording",
     "performance.gpu-pass-timestamp-foundation",
-    "render.dynamic-sky-atmosphere-three-lut-foundation"
+    "render.dynamic-sky-atmosphere-three-lut-foundation",
+    "render.dynamic-sky-atmosphere-camera-volume-aerial-authoring"
   ],
   "closedExperiments": [
     {

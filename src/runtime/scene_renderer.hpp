@@ -112,7 +112,9 @@ private:
     [[nodiscard]] bool create_sky_atmosphere_resources();
     [[nodiscard]] bool ensure_sky_atmosphere_resources();
     [[nodiscard]] bool dispatch_sky_atmosphere_luts(SDL_GPUCommandBuffer* command_buffer,
-        const std::array<float,3>& camera_position);
+        const std::array<float,3>& camera_position,const std::array<float,3>& camera_right,
+        const std::array<float,3>& camera_up,const std::array<float,3>& camera_forward,
+        float tan_half_fov_y,float aspect_ratio,float near_clip,float far_clip);
     [[nodiscard]] bool upload_vfx_compute_state(SDL_GPUCommandBuffer* command_buffer, const RenderWorldSnapshot& render_world);
     void dispatch_vfx_compute(SDL_GPUCommandBuffer* command_buffer);
     void dispatch_vfx_group_sort(SDL_GPUCommandBuffer* command_buffer, const std::array<float,3>& camera_position);
@@ -210,17 +212,23 @@ private:
     SDL_GPUGraphicsPipeline* auto_exposure_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* tone_map_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* sky_atmosphere_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* aerial_perspective_pipeline_{nullptr};
     SDL_GPUComputePipeline* sky_transmittance_pipeline_{nullptr};
     SDL_GPUComputePipeline* sky_multi_scattering_pipeline_{nullptr};
     SDL_GPUComputePipeline* sky_view_pipeline_{nullptr};
+    SDL_GPUComputePipeline* sky_camera_volume_pipeline_{nullptr};
     SDL_GPUTexture* sky_transmittance_lut_{nullptr};
     SDL_GPUTexture* sky_multi_scattering_lut_{nullptr};
     SDL_GPUTexture* sky_view_lut_{nullptr};
+    SDL_GPUTexture* sky_camera_volume_lut_{nullptr};
     SDL_GPUSampler* sky_lut_sampler_{nullptr};
     std::string sky_lut_identity_;
     std::uint32_t sky_lut_width_{};
     std::uint32_t sky_lut_height_{};
+    std::array<std::uint32_t,3> sky_camera_volume_extent_{};
     std::uint64_t sky_lut_regenerations_{};
+    std::uint64_t sky_camera_volume_regenerations_{};
+    std::string sky_camera_volume_identity_;
     bool sky_lut_valid_{};
     SDL_GPUGraphicsPipeline* fxaa_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* taa_pipeline_{nullptr};
@@ -272,6 +280,7 @@ private:
     std::uint32_t allowed_frames_in_flight_{3U};
     SDL_GPUTexture* color_texture_{nullptr};
     SDL_GPUTexture* hdr_texture_{nullptr};
+    SDL_GPUTexture* aerial_hdr_texture_{nullptr};
     SDL_GPUTexture* ao_composited_hdr_texture_{nullptr};
     SDL_GPUTexture* indirect_lighting_texture_{nullptr};
     SDL_GPUTexture* tone_mapped_texture_{nullptr};
@@ -565,6 +574,7 @@ private:
     double gpu_visibility_record_microseconds_{};
     double opaque_record_microseconds_{};
     double sky_atmosphere_record_microseconds_{};
+    double aerial_perspective_record_microseconds_{};
     double transparent_record_microseconds_{};
     double bloom_record_microseconds_{};
     double gtao_record_microseconds_{};

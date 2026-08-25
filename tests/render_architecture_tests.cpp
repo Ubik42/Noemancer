@@ -29,7 +29,7 @@ int main() {
     const auto graph = noemancer::make_forward_render_graph();
     const std::vector<std::string> expected_forward_order{
         "render.pass.shadow-depth", "render.pass.gpu-visibility", "render.pass.sky-atmosphere", "render.pass.opaque-lit",
-        "render.pass.ambient-occlusion", "render.pass.ambient-occlusion-denoise-horizontal",
+        "render.pass.aerial-perspective", "render.pass.ambient-occlusion", "render.pass.ambient-occlusion-denoise-horizontal",
         "render.pass.ambient-occlusion-denoise-vertical", "render.pass.ambient-occlusion-composite", "render.pass.transparent-lit",
         "render.pass.temporal-resolve", "render.pass.auto-exposure", "render.pass.bloom-downsample-half",
         "render.pass.bloom-downsample-quarter", "render.pass.bloom-downsample-eighth",
@@ -71,17 +71,36 @@ int main() {
         graph_json.find("render.pipeline.compute-frustum-compact") == std::string::npos ||
         graph_json.find("render.pass.sky-atmosphere") == std::string::npos ||
         graph_json.find("render.pipeline.sky-atmosphere") == std::string::npos ||
+        graph_json.find("render.resource.atmosphere-camera-volume") == std::string::npos ||
+        graph_json.find("render.resource.scene-hdr-aerial") == std::string::npos ||
+        graph_json.find("render.pass.aerial-perspective") == std::string::npos ||
+        graph_json.find("render.pipeline.aerial-perspective") == std::string::npos ||
         graph_json.find("render.resource.world-normal") == std::string::npos ||
         graph_json.find("render.resource.scene-depth") == std::string::npos) {
         std::cerr << "Render evidence resources are absent from the graph\n";
         return 2;
     }
+    const auto atmosphere_volume_resource=std::ranges::find_if(graph.resources,[](const noemancer::RenderResourceDefinition& resource){
+        return resource.id=="render.resource.atmosphere-camera-volume";
+    });
+    const auto aerial_hdr_resource=std::ranges::find_if(graph.resources,[](const noemancer::RenderResourceDefinition& resource){
+        return resource.id=="render.resource.scene-hdr-aerial";
+    });
+    if (atmosphere_volume_resource==graph.resources.end() || atmosphere_volume_resource->format!="RGBA16_FLOAT" ||
+        atmosphere_volume_resource->dimension!="3d" || atmosphere_volume_resource->layers!=1U ||
+        atmosphere_volume_resource->transient || !atmosphere_volume_resource->external ||
+        atmosphere_volume_resource->resolution_space!="camera-volume" ||
+        aerial_hdr_resource==graph.resources.end() || aerial_hdr_resource->format!="RGBA16_FLOAT" ||
+        !aerial_hdr_resource->transient || aerial_hdr_resource->external) {
+        std::cerr << "Atmosphere camera-volume resources are not described with the expected lifetime and dimensionality\n";
+        return 22;
+    }
     const auto hdr_plan=std::ranges::find_if(graph.resource_plans,[](const noemancer::RenderResourcePlan& plan){
         return plan.resource_id=="render.resource.scene-hdr";
     });
-    if (hdr_plan==graph.resource_plans.end() || hdr_plan->first_use_pass!=2U || hdr_plan->last_use_pass!=7U ||
+    if (hdr_plan==graph.resource_plans.end() || hdr_plan->first_use_pass!=2U || hdr_plan->last_use_pass!=4U ||
         hdr_plan->writers!=std::vector<std::string>{"render.pass.sky-atmosphere", "render.pass.opaque-lit"} ||
-        hdr_plan->readers!=std::vector<std::string>{"render.pass.opaque-lit", "render.pass.ambient-occlusion-composite"} ||
+        hdr_plan->readers!=std::vector<std::string>{"render.pass.opaque-lit", "render.pass.aerial-perspective"} ||
         !hdr_plan->alias_candidate || graph.schema_version!="noemancer.render-graph.v11") {
         std::cerr << "Render resource lifetime plan is incomplete\n";
         return 10;
@@ -92,14 +111,21 @@ int main() {
     const auto sky_pass=std::ranges::find_if(graph.passes,[](const noemancer::RenderPassDefinition& pass){
         return pass.id=="render.pass.sky-atmosphere";
     });
+    const auto aerial_pass=std::ranges::find_if(graph.passes,[](const noemancer::RenderPassDefinition& pass){
+        return pass.id=="render.pass.aerial-perspective";
+    });
     const auto gpu_instances_plan=std::ranges::find_if(graph.resource_plans,[](const noemancer::RenderResourcePlan& plan){
         return plan.resource_id=="render.resource.gpu-scene-instances";
     });
     if (sky_pass==graph.passes.end() || sky_pass->pipeline_id!="render.pipeline.sky-atmosphere" ||
         !sky_pass->reads.empty() ||
-        sky_pass->writes!=std::vector<std::string>{"render.resource.scene-hdr"} ||
+        sky_pass->writes!=std::vector<std::string>{"render.resource.scene-hdr", "render.resource.atmosphere-camera-volume"} ||
         sky_pass->depends_on!=std::vector<std::string>{"render.pass.gpu-visibility"} ||
-        graph.graph_id!="render.graph.forward.v12" ||
+        graph.graph_id!="render.graph.forward.v13" ||
+        aerial_pass==graph.passes.end() || aerial_pass->pipeline_id!="render.pipeline.aerial-perspective" ||
+        aerial_pass->reads!=std::vector<std::string>{"render.resource.scene-hdr", "render.resource.scene-depth", "render.resource.atmosphere-camera-volume"} ||
+        aerial_pass->writes!=std::vector<std::string>{"render.resource.scene-hdr-aerial"} ||
+        aerial_pass->depends_on!=std::vector<std::string>{"render.pass.opaque-lit"} ||
         opaque_pass==graph.passes.end() ||
         std::ranges::count(opaque_pass->reads,"render.resource.gpu-scene-instances")!=1 ||
         std::ranges::count(opaque_pass->reads,"render.resource.scene-hdr")!=1 ||
@@ -170,7 +196,7 @@ int main() {
        ao_vertical->reads!=std::vector<std::string>{"render.resource.ambient-occlusion-temp","render.resource.scene-depth","render.resource.world-normal"} ||
        ao_vertical->writes!=std::vector<std::string>{"render.resource.ambient-occlusion-filtered"} ||
        ao_composite==graph.passes.end() ||
-       ao_composite->reads!=std::vector<std::string>{"render.resource.scene-hdr","render.resource.scene-indirect","render.resource.ambient-occlusion-filtered"} ||
+       ao_composite->reads!=std::vector<std::string>{"render.resource.scene-hdr-aerial","render.resource.scene-indirect","render.resource.ambient-occlusion-filtered"} ||
        ao_composite->writes!=std::vector<std::string>{"render.resource.scene-hdr-ao"} ||
        transparent==graph.passes.end() ||
        std::ranges::count(transparent->reads,"render.resource.scene-hdr-ao")!=1 ||
@@ -214,11 +240,23 @@ int main() {
     };
     const auto bloom_sixteenth_plan=find_plan("render.resource.bloom-sixteenth-down");
     const auto bloom_half_plan=find_plan("render.resource.bloom-half");
-    if (bloom_sixteenth_plan==graph.resource_plans.end() || bloom_sixteenth_plan->first_use_pass!=14U ||
-        bloom_sixteenth_plan->last_use_pass!=15U || bloom_sixteenth_plan->writers!=std::vector<std::string>{"render.pass.bloom-downsample-sixteenth"} ||
+    const auto atmosphere_volume_plan=find_plan("render.resource.atmosphere-camera-volume");
+    const auto aerial_hdr_plan=find_plan("render.resource.scene-hdr-aerial");
+    if (atmosphere_volume_plan==graph.resource_plans.end() || atmosphere_volume_plan->first_use_pass!=2U ||
+        atmosphere_volume_plan->last_use_pass!=4U ||
+        atmosphere_volume_plan->writers!=std::vector<std::string>{"render.pass.sky-atmosphere"} ||
+        atmosphere_volume_plan->readers!=std::vector<std::string>{"render.pass.aerial-perspective"} ||
+        atmosphere_volume_plan->transient || atmosphere_volume_plan->alias_candidate ||
+        aerial_hdr_plan==graph.resource_plans.end() || aerial_hdr_plan->first_use_pass!=4U ||
+        aerial_hdr_plan->last_use_pass!=8U ||
+        aerial_hdr_plan->writers!=std::vector<std::string>{"render.pass.aerial-perspective"} ||
+        aerial_hdr_plan->readers!=std::vector<std::string>{"render.pass.ambient-occlusion-composite"} ||
+        !aerial_hdr_plan->transient || !aerial_hdr_plan->alias_candidate ||
+        bloom_sixteenth_plan==graph.resource_plans.end() || bloom_sixteenth_plan->first_use_pass!=15U ||
+        bloom_sixteenth_plan->last_use_pass!=16U || bloom_sixteenth_plan->writers!=std::vector<std::string>{"render.pass.bloom-downsample-sixteenth"} ||
         bloom_sixteenth_plan->readers!=std::vector<std::string>{"render.pass.bloom-upsample-eighth"} ||
-        bloom_half_plan==graph.resource_plans.end() || bloom_half_plan->first_use_pass!=17U ||
-        bloom_half_plan->last_use_pass!=18U ||
+        bloom_half_plan==graph.resource_plans.end() || bloom_half_plan->first_use_pass!=18U ||
+        bloom_half_plan->last_use_pass!=19U ||
         bloom_half_plan->writers!=std::vector<std::string>{"render.pass.bloom-upsample-half"} ||
         bloom_half_plan->readers!=std::vector<std::string>{"render.pass.tone-map"}) {
         std::cerr << "Bloom resource lifetime plans do not match the multi-scale DAG\n";

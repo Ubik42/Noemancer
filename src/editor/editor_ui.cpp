@@ -535,6 +535,7 @@ void EditorUi::render() {
     measure(8,[&]{draw_agent_context();});
     if(project_settings_open_&&project_input_panel_)project_input_panel_->render();
     if(project_settings_open_&&hybrid_pixel_profile_panel_)hybrid_pixel_profile_panel_->render();
+    if(project_settings_open_&&sky_atmosphere_panel_)sky_atmosphere_panel_->render();
     if(project_settings_open_&&project_ui_panel_)project_ui_panel_->render();
     synchronize_editor_context_revision();
 }
@@ -609,6 +610,15 @@ void EditorUi::set_project_hybrid_pixel_profile(std::optional<HybridPixelProfile
         hybrid_pixel_profile_panel_->set_undo_redo_available(can_undo,can_redo);
     }
 }
+void EditorUi::set_project_sky_atmosphere(std::optional<SkyAtmosphereSettings> settings,
+                                          const std::uint64_t revision,
+                                          const bool can_undo,const bool can_redo) {
+    project_context_.sky_atmosphere=settings;project_context_.sky_atmosphere_revision=revision;
+    project_context_.sky_atmosphere_can_undo=can_undo;project_context_.sky_atmosphere_can_redo=can_redo;
+    const SkyAtmosphereAuthoringSnapshot snapshot{revision,std::move(settings),can_undo,can_redo};
+    if(sky_atmosphere_panel_)sky_atmosphere_panel_->set_snapshot(snapshot);
+    else sky_atmosphere_panel_.emplace(snapshot);
+}
 void EditorUi::set_project_ui_document(std::string document_json,const std::uint64_t revision,
                                        std::string fingerprint,const bool can_undo,const bool can_redo) {
     project_context_.project_ui_document_json=std::move(document_json);
@@ -627,6 +637,9 @@ std::optional<ProjectSettingsInputMapPanelRequest> EditorUi::consume_project_inp
 }
 std::optional<HybridPixelProfilePanelRequest> EditorUi::consume_hybrid_pixel_profile_request() {
     return hybrid_pixel_profile_panel_?hybrid_pixel_profile_panel_->consume_request():std::nullopt;
+}
+std::optional<SkyAtmosphereAuthoringRequest> EditorUi::consume_sky_atmosphere_request() {
+    return sky_atmosphere_panel_?sky_atmosphere_panel_->consume_request():std::nullopt;
 }
 std::optional<ProjectUiAuthoringPanelRequest> EditorUi::consume_project_ui_request() {
     return project_ui_panel_?project_ui_panel_->consume_request():std::nullopt;
@@ -714,6 +727,9 @@ void EditorUi::set_project_context(EditorProjectContext context) {
         project_context_.input_revision,project_context_.input_actions});
     hybrid_pixel_profile_panel_.emplace(HybridPixelProfileSnapshot{
         project_context_.hybrid_pixel_profile_revision,project_context_.hybrid_pixel_profile});
+    sky_atmosphere_panel_.emplace(SkyAtmosphereAuthoringSnapshot{
+        project_context_.sky_atmosphere_revision,project_context_.sky_atmosphere,
+        project_context_.sky_atmosphere_can_undo,project_context_.sky_atmosphere_can_redo});
     if(!project_context_.project_ui_document_json.empty())project_ui_panel_.emplace(ProjectUiAuthoringSnapshot{
         project_context_.project_ui_document_json,project_context_.project_ui_revision,
         project_context_.project_ui_fingerprint,project_context_.project_ui_can_undo,
@@ -1633,6 +1649,14 @@ std::string EditorUi::semantic_snapshot_json() const {
         if(profile_panel.is_object()) {
             profile_panel["open"]=project_settings_open_;
             snapshot["projectSettingsHybridPixelProfile"]=std::move(profile_panel);
+        }
+    }
+    if(sky_atmosphere_panel_) {
+        auto atmosphere_panel=nlohmann::json::parse(
+            sky_atmosphere_panel_->semantic_state_json(),nullptr,false);
+        if(atmosphere_panel.is_object()) {
+            atmosphere_panel["open"]=project_settings_open_;
+            snapshot["projectSettingsSkyAtmosphere"]=std::move(atmosphere_panel);
         }
     }
     if(project_ui_panel_) {

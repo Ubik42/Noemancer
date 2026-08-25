@@ -25,6 +25,7 @@ add_library(noemancer_editor STATIC
     project_settings_input_map_panel.cpp
     project_ui_authoring_panel.cpp
     recent_workspace_store.cpp
+    sky_atmosphere_authoring/panel.cpp
     startup_hub.cpp
 )
 
