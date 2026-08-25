@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-25",
   "status": "active-development",
-  "currentSlice": "render.shadow-scalability-vsm-decision",
-  "currentStep": "measure-existing-shadow-pressure-and-author-vsm-adoption-decision",
+  "currentSlice": "render.native-rhi-raytracing-foundation",
+  "currentStep": "author-native-d3d12-vulkan-raytracing-capability-and-ownership-contract",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "render.shadow-scalability-vsm-decision",
     "render.native-rhi-raytracing-foundation",
     "render.rtgi-production-path",
     "editor.high-dpi-responsive-chrome",
@@ -57,7 +56,8 @@
     "render.screen-space-hiz-history-and-temporal-denoising",
     "render.ssr-production-path",
     "render.ssgi-production-path",
-    "render.bindless-gpu-scene-and-occlusion-decision"
+    "render.bindless-gpu-scene-and-occlusion-decision",
+    "render.shadow-scalability-vsm-decision"
   ],
   "closedExperiments": [
     {
@@ -96,7 +96,8 @@
     "deep-networking",
     "navigation",
     "cross-platform-optimization",
-    "semantic-2d-character-production"
+    "semantic-2d-character-production",
+    "render.virtual-shadow-pages-production"
   ],
   "verification": {
     "innerLoop": "bounded-edit-lane-compile-when-uncertainty-demands",

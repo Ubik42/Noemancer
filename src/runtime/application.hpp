@@ -79,6 +79,8 @@ struct RunOptions {
     // regular bootstrap/editor scene must remain unchanged when this is off.
     bool gpu_occlusion_stress{};
     std::uint32_t gpu_occlusion_stress_instances{256};
+    bool shadow_scalability_stress{};
+    std::uint32_t shadow_scalability_stress_instances{128};
     std::uint32_t render_stress_offscreen_percent{};
     std::string ui_locale{"en-US"};
     float ui_scale{1.0F};
@@ -192,6 +194,7 @@ private:
     // Empty for ordinary projects/scenes so production state cannot confuse
     // an editor scene with an acceptance workload.
     std::string gpu_occlusion_stress_contract_json_;
+    std::string shadow_scalability_stress_contract_json_;
     std::string player_profile_document_json_;
     std::optional<HybridPixelProfile> hybrid_pixel_profile_;
     SkyAtmosphereSettings sky_atmosphere_base_{make_sky_atmosphere_settings(SkyAtmosphereQuality::high)};

@@ -25,6 +25,7 @@
 #include "engine/project_ui_authoring.hpp"
 #include "engine/project_workspace.hpp"
 #include "engine/scene_document.hpp"
+#include "engine/shadow_scalability_stress_scene.hpp"
 #include "engine/retained_ui_runtime.hpp"
 #include "engine/semantic_ui.hpp"
 #include "engine/sprite_atlas_artifact.hpp"
@@ -610,6 +611,19 @@ Application::Application(RunOptions options)
                 options_.gpu_visibility_readback);
             gpu_occlusion_stress_contract_json_=generated.contract.dump();
             scene=generated.document;
+        } else if(options_.shadow_scalability_stress) {
+            ShadowScalabilityStressSceneConfig config;
+            config.caster_count=options_.shadow_scalability_stress_instances;
+            const auto generated=build_shadow_scalability_stress_scene(config);
+            if(!generated||!generated.document||!generated.contract) {
+                startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.runtime-startup/0.1"},
+                    {"success",false},{"code",generated.code},{"detail",generated.detail}}.dump();
+                scene=make_bootstrap_scene_document();
+            } else {
+                shadow_scalability_stress_contract_json_=
+                    write_shadow_scalability_stress_scene_contract_json(*generated.contract);
+                scene=*generated.document;
+            }
         } else if(options_.render_stress_instances > 0)
             scene=make_render_stress_scene_document(options_.render_stress_instances,options_.render_stress_offscreen_percent);
         else scene=make_bootstrap_scene_document();
@@ -2340,6 +2354,8 @@ int Application::run_interactive() {
     scene_renderer->set_temporal_debug_mode(options_.temporal_debug_mode);
     if(!options_.reference_scene_id.empty())
         scene_renderer->set_capture_contract_json(commercial_raster_reference_contract_json());
+    else if(options_.shadow_scalability_stress&&!shadow_scalability_stress_contract_json_.empty())
+        scene_renderer->set_capture_contract_json(shadow_scalability_stress_contract_json_);
     editor_ui_.set_render_surface(
         reinterpret_cast<std::uintptr_t>(scene_renderer->color_texture()),
         scene_renderer->width(),
@@ -2815,7 +2831,7 @@ int Application::run_interactive() {
             applied_sky_atmosphere_revision=sky_atmosphere_revision_;
         }
         std::uint32_t requested_width=editor_ui_.requested_scene_width(),requested_height=editor_ui_.requested_scene_height();
-        if(performance_run||runtime_surface_mode||!options_.capture_frame_path.empty()||!options_.reference_scene_id.empty()) {int width{},height{};SDL_GetWindowSizeInPixels(window,&width,&height);
+        if(performance_run||runtime_surface_mode||!options_.capture_frame_path.empty()||!options_.reference_scene_id.empty()||options_.shadow_scalability_stress) {int width{},height{};SDL_GetWindowSizeInPixels(window,&width,&height);
             requested_width=static_cast<std::uint32_t>(std::max(1,width));requested_height=static_cast<std::uint32_t>(std::max(1,height));}
         if (!scene_renderer->resize(requested_width,requested_height)) {
             logger_.error("render.scene_resize", scene_renderer->last_error());
@@ -3097,7 +3113,7 @@ int Application::run_interactive() {
             auto& render_source=active_world();
             const bool hybrid_pixel_scene_camera=hybrid_pixel_profile_&&hybrid_pixel_profile_->enabled;
             const auto editor_camera=(runtime_surface_mode||!options_.capture_frame_path.empty()||
-                !options_.reference_scene_id.empty()||hybrid_pixel_scene_camera)
+                !options_.reference_scene_id.empty()||options_.shadow_scalability_stress||hybrid_pixel_scene_camera)
                 ?std::optional<RenderCameraSnapshot>{}:editor_ui_.render_camera_override();
             const auto render_view_width = hybrid_pixel_scene_camera
                 ? hybrid_pixel_profile_->virtual_width : scene_renderer->width();

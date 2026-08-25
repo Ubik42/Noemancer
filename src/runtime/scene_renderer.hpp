@@ -475,6 +475,7 @@ private:
     std::size_t vfx_expected_additive_particles_{};
     std::size_t vfx_expected_alpha_particles_{};
     std::size_t shadow_casters_{0};
+    std::size_t shadow_primitives_{};
     std::size_t skinned_render_instances_{};
     std::size_t skinned_draw_items_{};
     std::size_t skinning_joint_matrices_{};

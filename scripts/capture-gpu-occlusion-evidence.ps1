@@ -20,7 +20,7 @@ if ([string]::IsNullOrWhiteSpace($Runtime)) {
     $Runtime = Join-Path $PSScriptRoot '..\build\windows-msvc-debug\src\runtime\Release\noemancer.exe'
 }
 
-$ExpectedRendererSchema = 'noemancer.renderer-status.v29'
+$ExpectedRendererSchema = 'noemancer.renderer-status.v30'
 $ExpectedGraphId = 'render.graph.forward.v17'
 $ExpectedGraphSchema = 'noemancer.render-graph.v11'
 $ExpectedReadbackAbi = 'noemancer.gpu-visibility-readback/0.3'
@@ -449,7 +449,7 @@ try {
                 $readback = Get-RequiredProperty -Object $gpuDriven -Name 'readback' -Context 'GPU-driven submission'
                 $result.graph = $graph; $result.occlusion = $occlusion; $result.readback = $readback
                 $result.shaderArtifacts = Get-ShaderArtifacts -RuntimePath $runtimePath -Backend $backend
-                Add-BackendCheck $backend 'renderer-schema' ($result.rendererSchemaVersion -eq $ExpectedRendererSchema) 'Renderer status must use v29.' $result.rendererSchemaVersion $ExpectedRendererSchema
+                Add-BackendCheck $backend 'renderer-schema' ($result.rendererSchemaVersion -eq $ExpectedRendererSchema) 'Renderer status must use v30.' $result.rendererSchemaVersion $ExpectedRendererSchema
                 Add-BackendCheck $backend 'backend' ((Get-Property $device 'backend') -eq $backend) 'Renderer device backend must match the requested backend.' (Get-Property $device 'backend') $backend
                 Add-BackendCheck $backend 'surface' ((Get-PathProperty $renderer 'surface.width') -eq $Width -and (Get-PathProperty $renderer 'surface.height') -eq $Height) 'Renderer surface must be 1920x1080.' ([ordered]@{ width = (Get-PathProperty $renderer 'surface.width'); height = (Get-PathProperty $renderer 'surface.height') }) ([ordered]@{ width = $Width; height = $Height })
                 Add-BackendCheck $backend 'graph' ((Get-Property $graph 'graphId') -eq $ExpectedGraphId -and (Get-Property $graph 'schemaVersion') -eq $ExpectedGraphSchema -and (Get-Property $graph 'valid') -eq $true -and @((Get-Property $graph 'errors')).Count -eq 0) 'Render Graph must be valid v17 with no errors.' ([ordered]@{ graphId = (Get-Property $graph 'graphId'); schemaVersion = (Get-Property $graph 'schemaVersion'); valid = (Get-Property $graph 'valid'); errors = @((Get-Property $graph 'errors')).Count }) ([ordered]@{ graphId = $ExpectedGraphId; schemaVersion = $ExpectedGraphSchema; valid = $true; errors = 0 })

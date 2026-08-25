@@ -10,6 +10,7 @@
 #include "engine/ktx2_cook_adapter.hpp"
 #include "engine/linear_dirty_ranges.hpp"
 #include "engine/mesh_runtime_artifact.hpp"
+#include "engine/shadow_scalability_policy.hpp"
 #include "engine/sprite_asset.hpp"
 #include "engine/sprite_atlas_artifact.hpp"
 #include "engine/temporal_aa.hpp"
@@ -3744,6 +3745,10 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         }
     }
     shadow_casters_=shadow_entities;
+    shadow_primitives_=std::accumulate(objects.begin(),objects.end(),std::size_t{},
+        [](const std::size_t total,const DrawItem& item) {
+            return total+(item.casts_shadows?static_cast<std::size_t>(item.index_count/3U):0U);
+        })+2U*std::ranges::count_if(sprites,[](const SpriteDrawItem& sprite){return sprite.casts_shadows;});
     skinned_draw_items_=std::ranges::count_if(objects,[](const DrawItem& item){return item.skinning_matrices!=nullptr;});
     shadow_caster_draws_=0; shadow_instances_submitted_=0; shadow_draw_calls_saved_=0;
     shadow_draws_per_cascade_.fill(0); shadow_instances_per_cascade_.fill(0);
@@ -5404,8 +5409,53 @@ std::string SceneRenderer::status_json() const {
             {"letterbox", {{"left", pixel_presentation_.letterbox.left}, {"top", pixel_presentation_.letterbox.top},
                 {"right", pixel_presentation_.letterbox.right}, {"bottom", pixel_presentation_.letterbox.bottom}}}};
     }
+    std::optional<double> latest_shadow_gpu_milliseconds;
+    if(const auto& latest=gpu_pass_timestamps_.latest_frame();latest&&latest->state=="available") {
+        for(const auto& pass:latest->passes)if(pass.pass_id=="render.pass.shadow-depth"&&pass.milliseconds) {
+            latest_shadow_gpu_milliseconds=pass.milliseconds;break;
+        }
+    }
+    ShadowScalabilityInput shadow_scalability_input;
+    shadow_scalability_input.workload=ShadowScalabilityWorkload{
+        .directional_enabled=true,.cascade_count=shadow_cascade_count,.cascade_resolution=shadow_size,
+        .local_enabled=true,.local_layer_count=local_shadow_layer_count,.local_resolution=local_shadow_resolution_,
+        .requested_local_lights=static_cast<std::uint32_t>(local_shadow_requested_lights_),
+        .selected_local_lights=static_cast<std::uint32_t>(local_shadow_selected_lights_),
+        .dropped_local_lights=static_cast<std::uint32_t>(local_shadow_dropped_lights_),
+        .estimated_atlas_bytes=shadow_texture_bytes_+local_shadow_texture_bytes_};
+    shadow_scalability_input.cache=ShadowScalabilityCacheObservation{
+        .available=true,
+        .directional_cascades_available=static_cast<std::uint32_t>(directional_shadow_cascades_rendered_+directional_shadow_cascades_cached_),
+        .directional_cascades_cached=static_cast<std::uint32_t>(directional_shadow_cascades_cached_),
+        .directional_cache_hits=directional_shadow_cache_hits_,.directional_cache_misses=directional_shadow_cache_misses_,
+        .local_faces_available=static_cast<std::uint32_t>(local_shadow_faces_rendered_+local_shadow_faces_cached_),
+        .local_faces_cached=static_cast<std::uint32_t>(local_shadow_faces_cached_),
+        .local_cache_hits=local_shadow_cache_hits_,.local_cache_misses=local_shadow_cache_misses_};
+    shadow_scalability_input.geometry=ShadowScalabilityGeometryObservation{
+        .available=shadow_casters_>0U&&shadow_primitives_>0U,
+        .caster_count=shadow_casters_,.primitive_count=shadow_primitives_,
+        .draw_count=shadow_caster_draws_+local_shadow_draw_calls_+
+            directional_shadow_avoided_draws_+local_shadow_avoided_draws_,
+        .instances_submitted=shadow_instances_submitted_+local_shadow_instances_submitted_+
+            directional_shadow_avoided_instances_+local_shadow_avoided_instances_,
+        .draw_calls_saved=shadow_draw_calls_saved_+local_shadow_draw_calls_saved_};
+    shadow_scalability_input.timing=ShadowScalabilityTimingObservation{
+        .available=latest_shadow_gpu_milliseconds.has_value(),
+        .shadow_pass_milliseconds=latest_shadow_gpu_milliseconds.value_or(0.0),
+        .directional_pass_milliseconds=0.0,.local_pass_milliseconds=0.0,
+        .frame_budget_milliseconds=1000.0/60.0};
+    shadow_scalability_input.invalidation=ShadowScalabilityInvalidationObservation{
+        .available=frame_index_>0U,
+        .invalidations_last_window=directional_shadow_cache_misses_+local_shadow_cache_misses_,
+        .observation_frames=frame_index_};
+    shadow_scalability_input.atlas_budget_bytes=128ULL*1024ULL*1024ULL;
+    const auto shadow_scalability_plan=evaluate_shadow_scalability(shadow_scalability_input);
+    auto shadow_scalability_evidence=nlohmann::json::parse(
+        shadow_scalability_policy_canonical_evidence(shadow_scalability_plan));
+    shadow_scalability_evidence["fingerprint"]=shadow_scalability_policy_fingerprint(shadow_scalability_plan);
+
     std::ostringstream out;
-    out << "{\"schemaVersion\":\"noemancer.renderer-status.v29\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
+    out << "{\"schemaVersion\":\"noemancer.renderer-status.v30\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
         << ",\"pipeline\":\"forward-lit\",\"builtInPrimitives\":{\"sphere\":{\"topology\":\"uv-sphere\",\"segments\":"
         << builtin_sphere_segments << ",\"rings\":" << builtin_sphere_rings << ",\"triangles\":"
         << builtin_sphere_index_count/3U << "}},\"surface\":{\"width\":" << width_
@@ -5497,6 +5547,7 @@ std::string SceneRenderer::status_json() const {
         << ",\"cachePolicy\":\"per-layer-stable-light-face/matrix-visible-caster-transform-cutout-skin-fingerprint\""
         << ",\"invalidation\":[\"target-recreation\",\"quality-change\",\"light-face-change\",\"visible-caster-change\"]"
         << ",\"format\":\"D32_FLOAT\"},"
+        << "\"shadowScalability\":" << shadow_scalability_evidence.dump() << ','
         << "\"textureResidency\":{\"schemaVersion\":\"noemancer.texture-residency/0.3\",\"ktxTextures\":" << ktx_textures_uploaded_
         << ",\"nativeCompressedTextures\":" << ktx_native_compressed_textures_
         << ",\"rgba8FallbackTextures\":" << ktx_rgba8_fallback_textures_

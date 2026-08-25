@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ExpectedRendererSchemaVersion = 'noemancer.renderer-status.v29'
+$ExpectedRendererSchemaVersion = 'noemancer.renderer-status.v30'
 $ExpectedReadbackAbi = 'noemancer.gpu-visibility-readback/0.3'
 $ExpectedQualitySchemaVersion = 'noemancer.render-quality.v1'
 $Width = 1920

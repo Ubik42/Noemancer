@@ -87,8 +87,8 @@ void test_renderer_and_graph_versions(const std::filesystem::path& root) {
     const auto graph_factory = block_after(graph, "CompiledRenderGraph make_forward_render_graph()",
         "forward render graph factory");
 
-    require(renderer.find("noemancer.renderer-status.v29") != std::string::npos,
-        "Renderer status contract must remain v29.");
+    require(renderer.find("noemancer.renderer-status.v30") != std::string::npos,
+        "Renderer status contract must remain v30.");
     require(graph_factory.find("render.graph.forward.v17") != std::string::npos,
         "Forward render graph identity must remain v17.");
     require_all(graph_factory, {

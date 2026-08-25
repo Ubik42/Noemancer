@@ -229,6 +229,27 @@ target_link_libraries(noemancer_gpu_occlusion_runtime_contract_tests PRIVATE
 add_test(NAME noemancer.gpu_occlusion_runtime_contract
     COMMAND noemancer_gpu_occlusion_runtime_contract_tests "${PROJECT_SOURCE_DIR}")
 
+add_executable(noemancer_shadow_scalability_policy_tests
+    shadow_scalability_policy_tests.cpp)
+target_link_libraries(noemancer_shadow_scalability_policy_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.shadow_scalability_policy
+    COMMAND noemancer_shadow_scalability_policy_tests)
+
+add_executable(noemancer_shadow_page_contract_tests
+    shadow_page_contract_tests.cpp)
+target_link_libraries(noemancer_shadow_page_contract_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.shadow_page_contract
+    COMMAND noemancer_shadow_page_contract_tests)
+
+add_executable(noemancer_shadow_scalability_stress_scene_tests
+    shadow_scalability_stress_scene_tests.cpp)
+target_link_libraries(noemancer_shadow_scalability_stress_scene_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.shadow_scalability_stress_scene
+    COMMAND noemancer_shadow_scalability_stress_scene_tests)
+
 add_executable(noemancer_image_decoder_tests image_decoder_tests.cpp)
 target_link_libraries(noemancer_image_decoder_tests PRIVATE noemancer::engine)
 add_test(NAME noemancer.image_decoder COMMAND noemancer_image_decoder_tests)

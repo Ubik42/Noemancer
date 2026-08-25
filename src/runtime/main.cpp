@@ -74,6 +74,7 @@ void print_usage() {
         << "                 [--reference-scene commercial-raster-v1]\n"
         << "                 [--render-stress-instances N]\n"
         << "                 [--gpu-occlusion-stress] [--gpu-occlusion-stress-instances N]\n"
+        << "                 [--shadow-scalability-stress] [--shadow-scalability-stress-instances N]\n"
         << "                 [--animation-physics-stress]\n"
         << "                 [--vfx-respawn-interval N]\n"
         << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--enable-gpu-occlusion] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr] [--disable-ssgi]\n"
@@ -516,6 +517,14 @@ int main(int argc, char** argv) {
                 std::cerr<<"GPU occlusion stress instance count must be in [32, 4096]\n";return 2;
             }
             options.gpu_occlusion_stress=true;
+        } else if(argument=="--shadow-scalability-stress") {
+            options.shadow_scalability_stress=true;
+        } else if(argument=="--shadow-scalability-stress-instances"&&index<argc) {
+            if(!parse_frames(argv[index++],options.shadow_scalability_stress_instances)||
+               options.shadow_scalability_stress_instances<32U||options.shadow_scalability_stress_instances>4096U) {
+                std::cerr<<"Shadow scalability stress instance count must be in [32, 4096]\n";return 2;
+            }
+            options.shadow_scalability_stress=true;
         } else if (argument == "--animation-physics-stress") {
             options.animation_physics_stress = true;
         } else if (argument == "--vfx-respawn-interval" && index < argc) {
@@ -672,9 +681,9 @@ int main(int argc, char** argv) {
     }
     const auto generated_workload_count=(options.reference_scene_id.empty()?0U:1U)+
         (options.render_stress_instances>0?1U:0U)+(options.animation_physics_stress?1U:0U)+
-        (options.gpu_occlusion_stress?1U:0U);
+        (options.gpu_occlusion_stress?1U:0U)+(options.shadow_scalability_stress?1U:0U);
     if(generated_workload_count>1U||
-       (options.animation_physics_stress||options.gpu_occlusion_stress)&&
+       (options.animation_physics_stress||options.gpu_occlusion_stress||options.shadow_scalability_stress)&&
            (!options.project_path.empty()||options.player_mode)) {
         std::cerr<<"Generated reference/stress workloads cannot be combined with a project or Player profile\n";return 2;
     }
