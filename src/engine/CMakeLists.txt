@@ -64,6 +64,7 @@ add_library(noemancer_engine STATIC
     tilemap_asset.cpp
     temporal_aa.cpp
     temporal_history.cpp
+    screen_space_reflections.cpp
     texture_streaming_demand.cpp
     texture_streaming_policy.cpp
     text_layout.cpp

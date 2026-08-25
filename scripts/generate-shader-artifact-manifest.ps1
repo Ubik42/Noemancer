@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 
 $SourceContractSchema = 'noemancer.shader-artifact-source-contract/0.1'
 $ManifestSchema = 'noemancer.shader-artifact-manifest/0.1'
-$ExpectedShaderCount = 40
+$ExpectedShaderCount = 43
 $ResourceNames = @(
     'samplers',
     'uniformBuffers',

@@ -1927,6 +1927,13 @@ int Application::run_interactive() {
     std::uint64_t applied_sky_atmosphere_revision=sky_atmosphere_revision_;
     scene_renderer->set_gpu_driven_enabled(!options_.disable_gpu_driven);
     scene_renderer->set_ambient_occlusion_enabled(!options_.disable_ambient_occlusion);
+    scene_renderer->set_auto_exposure_enabled(!options_.disable_auto_exposure);
+    if(!scene_renderer->set_ssr_options(!options_.disable_ssr,options_.ssr_quality,options_.ssr_debug_mode)) {
+        logger_.error("render.ssr_options",scene_renderer->last_error());
+        scene_renderer.reset();ImGui_ImplSDLGPU3_Shutdown();ImGui_ImplSDL3_Shutdown();ImGui::DestroyContext();
+        SDL_ReleaseWindowFromGPUDevice(device,window);SDL_DestroyGPUDevice(device);SDL_DestroyWindow(window);SDL_Quit();
+        return 16;
+    }
     // The versioned commercial-raster fixture owns a controlled dark
     // background for its Bloom and color-response ROIs. Dynamic atmosphere
     // has a separate visual/per-pass evidence lane; mixing both would make

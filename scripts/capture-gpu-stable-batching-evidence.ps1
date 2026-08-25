@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 # Keep the status contract in one place.  If the renderer schema moves, this
 # table and StableBatchingPath are the only script-level names that need to be
 # adjusted; the evidence format below remains stable.
-$ExpectedRendererSchemaVersion = 'noemancer.renderer-status.v26'
+$ExpectedRendererSchemaVersion = 'noemancer.renderer-status.v27'
 $StableBatchingFields = [ordered]@{
     SchemaVersion = 'schemaVersion'
     Enabled = 'enabled'

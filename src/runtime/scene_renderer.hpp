@@ -13,6 +13,7 @@
 #include "engine/sky_atmosphere.hpp"
 #include "engine/stable_range_allocator.hpp"
 #include "engine/temporal_history.hpp"
+#include "engine/screen_space_reflections.hpp"
 #include "engine/texture_streaming_demand.hpp"
 #include "engine/vfx_gpu_residency.hpp"
 #include "runtime/runtime_texture_upload.hpp"
@@ -57,6 +58,8 @@ public:
     void commit_texture_streaming_frame();
     void rollback_texture_streaming_frame();
     void set_temporal_debug_mode(const std::string& mode);
+    [[nodiscard]] bool set_ssr_options(bool enabled, const std::string& quality,
+                                       const std::string& debug_mode);
     void set_gpu_driven_enabled(bool enabled);
     void set_gpu_pass_timing_enabled(bool enabled) noexcept { gpu_pass_timestamps_.set_enabled(enabled); }
     [[nodiscard]] bool gpu_pass_timing_submission_pending() const noexcept {
@@ -67,6 +70,7 @@ public:
     void poll_gpu_pass_timings() { gpu_pass_timestamps_.poll(); }
     [[nodiscard]] std::string gpu_pass_timing_evidence_json() const { return gpu_pass_timestamps_.evidence_json(); }
     void set_ambient_occlusion_enabled(bool enabled) noexcept { ambient_occlusion_enabled_ = enabled; }
+    void set_auto_exposure_enabled(bool enabled) noexcept { auto_exposure_enabled_ = enabled; }
     void set_sky_atmosphere(SkyAtmosphereSettings settings);
     [[nodiscard]] bool enqueue_gpu_visibility_readback(SDL_GPUCommandBuffer* command_buffer);
     void attach_gpu_visibility_readback_fence(SDL_GPUFence* fence);
@@ -211,6 +215,9 @@ private:
     SDL_GPUGraphicsPipeline* gtao_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* ao_denoise_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* ao_composite_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* ssr_trace_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* ssr_temporal_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* ssr_composite_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* auto_exposure_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* tone_map_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* sky_atmosphere_pipeline_{nullptr};
@@ -295,6 +302,12 @@ private:
     SDL_GPUTexture* aerial_hdr_texture_{nullptr};
     SDL_GPUTexture* ao_composited_hdr_texture_{nullptr};
     SDL_GPUTexture* indirect_lighting_texture_{nullptr};
+    SDL_GPUTexture* specular_indirect_texture_{nullptr};
+    SDL_GPUTexture* reflection_properties_texture_{nullptr};
+    SDL_GPUTexture* ssr_raw_texture_{nullptr};
+    SDL_GPUTexture* ssr_resolved_texture_{nullptr};
+    std::array<SDL_GPUTexture*,2> ssr_history_textures_{};
+    SDL_GPUTexture* reflected_hdr_texture_{nullptr};
     SDL_GPUTexture* tone_mapped_texture_{nullptr};
     SDL_GPUTexture* object_id_texture_{nullptr};
     SDL_GPUTexture* normal_texture_{nullptr};
@@ -353,6 +366,13 @@ private:
     HybridPixelRenderProjection hybrid_pixel_projection_;
     std::uint32_t temporal_debug_mode_{};
     std::string temporal_debug_mode_name_{"final"};
+    bool ssr_enabled_{true};
+    std::string ssr_quality_{"high"};
+    std::uint32_t ssr_debug_mode_{};
+    std::string ssr_debug_mode_name_{"final"};
+    ScreenSpaceReflectionsConfig ssr_config_{screen_space_reflections_quality_defaults(
+        ScreenSpaceReflectionsQuality::high)};
+    ScreenSpaceReflectionsPlan ssr_plan_{};
     std::size_t visible_renderables_{0};
     std::size_t visible_draws_{0};
     std::size_t camera_culled_draws_{0};
@@ -569,6 +589,7 @@ private:
     float white_point_{1.0F};
     std::uint32_t exposure_history_index_{};
     bool exposure_history_valid_{};
+    bool auto_exposure_enabled_{true};
     float auto_exposure_min_{0.25F};
     float auto_exposure_max_{4.0F};
     float auto_exposure_key_{0.18F};
@@ -598,6 +619,9 @@ private:
     double gtao_record_microseconds_{};
     double ao_denoise_record_microseconds_{};
     double ao_composite_record_microseconds_{};
+    double ssr_trace_record_microseconds_{};
+    double ssr_temporal_record_microseconds_{};
+    double ssr_composite_record_microseconds_{};
     double auto_exposure_record_microseconds_{};
     double tone_map_record_microseconds_{};
     double fxaa_record_microseconds_{};
@@ -631,6 +655,8 @@ private:
     std::uint64_t taa_history_resets_{};
     bool temporal_history_valid_{};
     TemporalHistoryAuthority temporal_history_authority_;
+    std::uint32_t ssr_history_index_{};
+    bool ssr_history_valid_{};
     std::uint64_t temporal_camera_cut_epoch_{};
     std::uint32_t temporal_jitter_sample_{};
     std::array<float,2> temporal_jitter_pixels_{};

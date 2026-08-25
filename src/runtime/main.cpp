@@ -69,11 +69,12 @@ void print_usage() {
         << "                 [--texture-streaming-budget-kib N] [--texture-streaming-resident-budget-kib N]\n"
         << "                 [--texture-streaming-workload noemancer.texture-streaming.pressure/0.1]\n"
         << "                 [--temporal-debug final|motion|reactive|disocclusion|history-weight|history-clamp|linear-depth|normal]\n"
+        << "                 [--ssr-quality low|medium|high] [--ssr-debug final|confidence|hit-distance|roughness|miss|normal]\n"
         << "                 [--reference-scene commercial-raster-v1]\n"
         << "                 [--render-stress-instances N]\n"
         << "                 [--animation-physics-stress]\n"
         << "                 [--vfx-respawn-interval N]\n"
-        << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--disable-ambient-occlusion]\n"
+        << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr]\n"
         << "                 [--gpu-visibility-readback] [--render-stress-offscreen-percent N]\n"
         << "                 [--ui-locale LOCALE] [--ui-scale SCALE]\n"
         << "                 [--project PATH]\n"
@@ -469,6 +470,18 @@ int main(int argc, char** argv) {
                 return 2;
             }
             options.temporal_debug_mode=mode;
+        } else if(argument=="--ssr-quality"&&index<argc) {
+            options.ssr_quality=argv[index++];
+            if(options.ssr_quality!="low"&&options.ssr_quality!="medium"&&options.ssr_quality!="high") {
+                std::cerr<<"SSR quality must be low, medium, or high\n";return 2;
+            }
+        } else if(argument=="--ssr-debug"&&index<argc) {
+            options.ssr_debug_mode=argv[index++];
+            if(options.ssr_debug_mode!="final"&&options.ssr_debug_mode!="confidence"&&
+               options.ssr_debug_mode!="hit-distance"&&options.ssr_debug_mode!="roughness"&&
+               options.ssr_debug_mode!="miss"&&options.ssr_debug_mode!="normal") {
+                std::cerr<<"Unknown SSR debug mode\n";return 2;
+            }
         } else if (argument == "--reference-scene" && index < argc) {
             options.reference_scene_id=argv[index++];
             if(options.reference_scene_id!="commercial-raster-v1") {
@@ -502,6 +515,10 @@ int main(int argc, char** argv) {
             options.disable_gpu_driven=true;
         } else if(argument=="--disable-ambient-occlusion") {
             options.disable_ambient_occlusion=true;
+        } else if(argument=="--disable-auto-exposure") {
+            options.disable_auto_exposure=true;
+        } else if(argument=="--disable-ssr") {
+            options.disable_ssr=true;
         } else if(argument=="--gpu-visibility-readback") {
             options.gpu_visibility_readback=true;
         } else if(argument=="--render-stress-offscreen-percent"&&index<argc) {

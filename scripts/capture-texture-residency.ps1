@@ -44,7 +44,7 @@ function Invoke-ResidencyStage {
     $renderer = $event.message | ConvertFrom-Json
     $residency = $renderer.textureResidency
     $spriteResources = @($renderer.textureResources.resources | Where-Object owner -eq 'scene.sprite')
-    if ($renderer.schemaVersion -ne 'noemancer.renderer-status.v26' -or
+    if ($renderer.schemaVersion -ne 'noemancer.renderer-status.v27' -or
         $renderer.textureResources.schemaVersion -ne 'noemancer.texture-resource-table/0.1' -or
         $renderer.textureResources.pendingTransitions -ne 0 -or
         $residency.schemaVersion -ne 'noemancer.texture-residency/0.3' -or
@@ -104,7 +104,7 @@ function Invoke-PressureStage {
     $renderer = $event.message | ConvertFrom-Json
     $residency = $renderer.textureResidency
     $spriteResources = @($renderer.textureResources.resources | Where-Object owner -eq 'scene.sprite')
-    if ($renderer.schemaVersion -ne 'noemancer.renderer-status.v26' -or
+    if ($renderer.schemaVersion -ne 'noemancer.renderer-status.v27' -or
         $renderer.textureResources.schemaVersion -ne 'noemancer.texture-resource-table/0.1' -or
         $renderer.textureResources.pendingTransitions -ne 0 -or
         $residency.schemaVersion -ne 'noemancer.texture-residency/0.3' -or

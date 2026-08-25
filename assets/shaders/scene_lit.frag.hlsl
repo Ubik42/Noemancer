@@ -71,6 +71,8 @@ struct FragmentOutput
     float2 motion : SV_Target3;
     float reactive : SV_Target4;
     float4 indirectLighting : SV_Target5;
+    float4 specularIndirect : SV_Target6;
+    float4 reflectionProperties : SV_Target7;
 };
 
 static const float PI = 3.14159265359f;
@@ -217,7 +219,6 @@ FragmentOutput main(FragmentInput input)
     tangentNormal.xy *= input.emissiveNormal.w;
     const float3 normal = normalize(tangent * tangentNormal.x + bitangent * tangentNormal.y + geometricNormal * tangentNormal.z);
     output.objectId = input.instanceObjectId;
-    output.worldNormal = float4(normal, 1.0f);
     output.motion = input.motion;
     const float4 surfaceColor = input.color * baseColorTexture.Sample(materialSampler, input.texcoord);
     if (input.occlusionAlphaFlags.z > 0.5f && input.occlusionAlphaFlags.z < 1.5f)
@@ -225,6 +226,7 @@ FragmentOutput main(FragmentInput input)
     const float4 metallicRoughness = metallicRoughnessTexture.Sample(metallicRoughnessSampler, input.texcoord);
     const float metallic = saturate(input.material.x * metallicRoughness.b);
     const float roughness = clamp(input.material.y * metallicRoughness.g, 0.045f, 1.0f);
+    output.worldNormal = float4(normal, roughness);
     const float ambientOcclusion = lerp(1.0f, occlusionTexture.Sample(occlusionSampler, input.texcoord).r, saturate(input.occlusionAlphaFlags.x));
     const float3 emissive = emissiveTexture.Sample(emissiveSampler, input.texcoord).rgb * input.emissiveNormal.rgb;
     const float emissiveLuma = dot(emissive, float3(0.2126f, 0.7152f, 0.0722f));
@@ -233,6 +235,8 @@ FragmentOutput main(FragmentInput input)
     {
         output.color = float4(surfaceColor.rgb + emissive, surfaceColor.a);
         output.indirectLighting = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        output.specularIndirect = 0.0f.xxxx;
+        output.reflectionProperties = float4(0.0f, 0.0f, 0.0f, 1.0f);
         return output;
     }
     const float3 toView = normalize(cameraPosition.xyz - input.worldPosition);
@@ -294,6 +298,8 @@ FragmentOutput main(FragmentInput input)
         * ambientAndBias.x * 4.0f * ambientOcclusion;
     const float3 indirectIbl = diffuseIbl + specularIbl;
     output.indirectLighting = float4(indirectIbl, 1.0f);
+    output.specularIndirect = float4(specularIbl, 1.0f);
+    output.reflectionProperties = float4(f0, roughness);
     output.color = float4(indirectIbl + direct + emissive, surfaceColor.a);
     return output;
 }

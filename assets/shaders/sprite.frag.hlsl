@@ -69,6 +69,8 @@ struct FragmentOutput
     float2 motion : SV_Target3;
     float reactive : SV_Target4;
     float4 indirectLighting : SV_Target5;
+    float4 specularIndirect : SV_Target6;
+    float4 reflectionProperties : SV_Target7;
     float depth : SV_Depth;
 };
 
@@ -237,7 +239,6 @@ FragmentOutput main(FragmentInput input)
 
     FragmentOutput output;
     output.objectId = input.objectId;
-    output.worldNormal = float4(normal, 1.0f);
     output.motion = input.motion;
     output.reactive = max(input.alphaMode == 2 ? 1.0f : 0.0f,
         saturate(max(emissive.r, max(emissive.g, emissive.b))));
@@ -246,13 +247,17 @@ FragmentOutput main(FragmentInput input)
 
     if (input.surfaceParameters.z <= 0.5f)
     {
+        output.worldNormal = float4(normal, 1.0f);
         output.color = float4(bounded_color(safeSampled.rgb + emissive), safeSampled.a);
         output.indirectLighting = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        output.specularIndirect = 0.0f.xxxx;
+        output.reflectionProperties = float4(0.0f, 0.0f, 0.0f, 1.0f);
         return output;
     }
 
     const float metallic = saturate(input.surfaceParameters.x);
     const float roughness = clamp(input.surfaceParameters.y, 0.045f, 1.0f);
+    output.worldNormal = float4(normal, roughness);
     const float3 surfaceColor = safeSampled.rgb;
     const float3 toView = safe_normalize(cameraPosition.xyz - input.worldPosition,
         geometricNormal);
@@ -337,6 +342,11 @@ FragmentOutput main(FragmentInput input)
     const float3 indirect = bounded_color(surfaceColor * ambientDiffuseWeight *
         max(ambientAndBias.x, 0.0f) * 4.0f);
     output.indirectLighting = float4(indirect, 1.0f);
+    // Sprite lighting currently has no bound prefiltered environment map, so
+    // no IBL specular term is subtracted by the SSR composite.  The F0 and
+    // roughness contract still lets a valid screen-space hit contribute.
+    output.specularIndirect = 0.0f.xxxx;
+    output.reflectionProperties = float4(f0, roughness);
     output.color = float4(bounded_color(indirect + direct + emissive), safeSampled.a);
     return output;
 }

@@ -58,6 +58,8 @@ struct RunOptions {
     std::uint32_t texture_streaming_resident_budget_kib{262144};
     std::string texture_streaming_workload;
     std::string temporal_debug_mode{"final"};
+    std::string ssr_quality{"high"};
+    std::string ssr_debug_mode{"final"};
     std::string reference_scene_id;
     std::uint32_t render_stress_instances{0};
     bool animation_physics_stress{};
@@ -66,6 +68,8 @@ struct RunOptions {
     bool gpu_debug{};
     bool disable_gpu_driven{};
     bool disable_ambient_occlusion{};
+    bool disable_auto_exposure{};
+    bool disable_ssr{};
     bool gpu_visibility_readback{};
     std::uint32_t render_stress_offscreen_percent{};
     std::string ui_locale{"en-US"};

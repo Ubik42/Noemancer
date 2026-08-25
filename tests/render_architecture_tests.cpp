@@ -31,7 +31,8 @@ int main() {
         "render.pass.shadow-depth", "render.pass.gpu-visibility", "render.pass.sky-atmosphere", "render.pass.opaque-lit",
         "render.pass.depth-pyramid-seed", "render.pass.depth-pyramid-reduce", "render.pass.aerial-perspective",
         "render.pass.ambient-occlusion", "render.pass.ambient-occlusion-denoise-horizontal",
-        "render.pass.ambient-occlusion-denoise-vertical", "render.pass.ambient-occlusion-composite", "render.pass.transparent-lit",
+        "render.pass.ambient-occlusion-denoise-vertical", "render.pass.ambient-occlusion-composite",
+        "render.pass.ssr-hierarchical-trace", "render.pass.ssr-temporal-resolve", "render.pass.ssr-composite", "render.pass.transparent-lit",
         "render.pass.temporal-resolve", "render.pass.auto-exposure", "render.pass.bloom-downsample-half",
         "render.pass.bloom-downsample-quarter", "render.pass.bloom-downsample-eighth",
         "render.pass.bloom-downsample-sixteenth", "render.pass.bloom-upsample-eighth",
@@ -71,6 +72,12 @@ int main() {
          graph_json.find("render.resource.temporal-depth-history") == std::string::npos ||
          graph_json.find("render.resource.previous-normal-history") == std::string::npos ||
          graph_json.find("render.resource.scene-depth-pyramid") == std::string::npos ||
+         graph_json.find("render.resource.scene-reflection-history") == std::string::npos ||
+         graph_json.find("render.resource.surface-reflection-properties") == std::string::npos ||
+         graph_json.find("render.resource.scene-specular-indirect") == std::string::npos ||
+         graph_json.find("render.pipeline.ssr-hiz-trace") == std::string::npos ||
+         graph_json.find("render.pipeline.ssr-temporal-resolve") == std::string::npos ||
+         graph_json.find("render.pipeline.ssr-energy-conserving-composite") == std::string::npos ||
         graph_json.find("render.resource.reactive-mask") == std::string::npos ||
         graph_json.find("render.resource.gpu-indirect-commands") == std::string::npos ||
         graph_json.find("render.pipeline.compute-frustum-compact") == std::string::npos ||
@@ -126,14 +133,16 @@ int main() {
         !sky_pass->reads.empty() ||
         sky_pass->writes!=std::vector<std::string>{"render.resource.scene-hdr", "render.resource.atmosphere-camera-volume"} ||
         sky_pass->depends_on!=std::vector<std::string>{"render.pass.gpu-visibility"} ||
-         graph.graph_id!="render.graph.forward.v14" ||
+         graph.graph_id!="render.graph.forward.v15" ||
         aerial_pass==graph.passes.end() || aerial_pass->pipeline_id!="render.pipeline.aerial-perspective" ||
         aerial_pass->reads!=std::vector<std::string>{"render.resource.scene-hdr", "render.resource.scene-depth", "render.resource.atmosphere-camera-volume"} ||
         aerial_pass->writes!=std::vector<std::string>{"render.resource.scene-hdr-aerial"} ||
          aerial_pass->depends_on!=std::vector<std::string>{"render.pass.opaque-lit", "render.pass.depth-pyramid-reduce"} ||
         opaque_pass==graph.passes.end() ||
         std::ranges::count(opaque_pass->reads,"render.resource.gpu-scene-instances")!=1 ||
-        std::ranges::count(opaque_pass->reads,"render.resource.scene-hdr")!=1 ||
+         std::ranges::count(opaque_pass->reads,"render.resource.scene-hdr")!=1 ||
+         std::ranges::count(opaque_pass->writes,"render.resource.scene-specular-indirect")!=1 ||
+         std::ranges::count(opaque_pass->writes,"render.resource.surface-reflection-properties")!=1 ||
         opaque_pass->depends_on != std::vector<std::string>{"render.pass.gpu-visibility", "render.pass.sky-atmosphere"} ||
         gpu_instances_plan==graph.resource_plans.end() || gpu_instances_plan->first_use_pass!=1U ||
         gpu_instances_plan->last_use_pass!=3U || !gpu_instances_plan->writers.empty() ||
@@ -193,6 +202,9 @@ int main() {
     const auto temporal=find_pass("render.pass.temporal-resolve");
     const auto depth_seed=find_pass("render.pass.depth-pyramid-seed");
     const auto depth_reduce=find_pass("render.pass.depth-pyramid-reduce");
+    const auto ssr_trace=find_pass("render.pass.ssr-hierarchical-trace");
+    const auto ssr_temporal=find_pass("render.pass.ssr-temporal-resolve");
+    const auto ssr_composite=find_pass("render.pass.ssr-composite");
     if(depth_seed==graph.passes.end() || depth_seed->pipeline_id!="render.pipeline.depth-pyramid-seed" ||
        depth_seed->reads!=std::vector<std::string>{"render.resource.scene-depth"} ||
        depth_seed->writes!=std::vector<std::string>{"render.resource.scene-depth-pyramid"} ||
@@ -212,13 +224,25 @@ int main() {
        ao_vertical->reads!=std::vector<std::string>{"render.resource.ambient-occlusion-temp","render.resource.scene-depth","render.resource.world-normal"} ||
        ao_vertical->writes!=std::vector<std::string>{"render.resource.ambient-occlusion-filtered"} ||
        ao_composite==graph.passes.end() ||
-       ao_composite->reads!=std::vector<std::string>{"render.resource.scene-hdr-aerial","render.resource.scene-indirect","render.resource.ambient-occlusion-filtered"} ||
-       ao_composite->writes!=std::vector<std::string>{"render.resource.scene-hdr-ao"} ||
-       transparent==graph.passes.end() ||
-       std::ranges::count(transparent->reads,"render.resource.scene-hdr-ao")!=1 ||
-       std::ranges::count(transparent->writes,"render.resource.scene-hdr-ao")!=1 ||
-       temporal==graph.passes.end() || temporal->pipeline_id!="render.pipeline.shared-temporal-denoise" ||
-       temporal->reads!=std::vector<std::string>{"render.resource.scene-hdr-ao", "render.resource.motion-vectors", "render.resource.scene-depth", "render.resource.scene-depth-pyramid", "render.resource.world-normal", "render.resource.temporal-history", "render.resource.temporal-depth-history", "render.resource.previous-normal-history", "render.resource.reactive-mask"} ||
+        ao_composite->reads!=std::vector<std::string>{"render.resource.scene-hdr-aerial","render.resource.scene-indirect","render.resource.ambient-occlusion-filtered"} ||
+        ao_composite->writes!=std::vector<std::string>{"render.resource.scene-hdr-ao"} ||
+        ssr_trace==graph.passes.end() || ssr_trace->pipeline_id!="render.pipeline.ssr-hiz-trace" ||
+        ssr_trace->reads!=std::vector<std::string>{"render.resource.scene-hdr-ao","render.resource.scene-depth","render.resource.scene-depth-pyramid","render.resource.world-normal","render.resource.surface-reflection-properties"} ||
+        ssr_trace->writes!=std::vector<std::string>{"render.resource.scene-reflection-raw"} ||
+        ssr_trace->depends_on!=std::vector<std::string>{"render.pass.ambient-occlusion-composite","render.pass.depth-pyramid-reduce"} ||
+        ssr_temporal==graph.passes.end() || ssr_temporal->pipeline_id!="render.pipeline.ssr-temporal-resolve" ||
+        ssr_temporal->reads!=std::vector<std::string>{"render.resource.scene-reflection-raw","render.resource.motion-vectors","render.resource.scene-depth","render.resource.world-normal","render.resource.scene-reflection-history","render.resource.temporal-depth-history","render.resource.previous-normal-history","render.resource.reactive-mask"} ||
+        ssr_temporal->writes!=std::vector<std::string>{"render.resource.scene-reflection-resolved","render.resource.scene-reflection-history"} ||
+        ssr_temporal->depends_on!=std::vector<std::string>{"render.pass.ssr-hierarchical-trace"} ||
+        ssr_composite==graph.passes.end() || ssr_composite->pipeline_id!="render.pipeline.ssr-energy-conserving-composite" ||
+        ssr_composite->reads!=std::vector<std::string>{"render.resource.scene-hdr-ao","render.resource.scene-specular-indirect","render.resource.ambient-occlusion-filtered","render.resource.scene-reflection-resolved","render.resource.surface-reflection-properties"} ||
+        ssr_composite->writes!=std::vector<std::string>{"render.resource.scene-hdr-reflected"} ||
+        ssr_composite->depends_on!=std::vector<std::string>{"render.pass.ssr-temporal-resolve","render.pass.ambient-occlusion-composite"} ||
+        transparent==graph.passes.end() ||
+        std::ranges::count(transparent->reads,"render.resource.scene-hdr-reflected")!=1 ||
+        std::ranges::count(transparent->writes,"render.resource.scene-hdr-reflected")!=1 ||
+        temporal==graph.passes.end() || temporal->pipeline_id!="render.pipeline.shared-temporal-denoise" ||
+        temporal->reads!=std::vector<std::string>{"render.resource.scene-hdr-reflected", "render.resource.motion-vectors", "render.resource.scene-depth", "render.resource.scene-depth-pyramid", "render.resource.world-normal", "render.resource.temporal-history", "render.resource.temporal-depth-history", "render.resource.previous-normal-history", "render.resource.reactive-mask"} ||
        temporal->writes!=std::vector<std::string>{"render.resource.scene-resolved", "render.resource.temporal-history", "render.resource.temporal-depth-history", "render.resource.previous-normal-history"} ||
        temporal->depends_on!=std::vector<std::string>{"render.pass.transparent-lit", "render.pass.depth-pyramid-reduce"}) {
         std::cerr << "Screen-space DAG does not preserve depth reduction, temporal history, and AO composition\n";
@@ -271,11 +295,11 @@ int main() {
         aerial_hdr_plan->writers!=std::vector<std::string>{"render.pass.aerial-perspective"} ||
         aerial_hdr_plan->readers!=std::vector<std::string>{"render.pass.ambient-occlusion-composite"} ||
         !aerial_hdr_plan->transient || !aerial_hdr_plan->alias_candidate ||
-         bloom_sixteenth_plan==graph.resource_plans.end() || bloom_sixteenth_plan->first_use_pass!=17U ||
-         bloom_sixteenth_plan->last_use_pass!=18U || bloom_sixteenth_plan->writers!=std::vector<std::string>{"render.pass.bloom-downsample-sixteenth"} ||
+         bloom_sixteenth_plan==graph.resource_plans.end() || bloom_sixteenth_plan->first_use_pass!=20U ||
+         bloom_sixteenth_plan->last_use_pass!=21U || bloom_sixteenth_plan->writers!=std::vector<std::string>{"render.pass.bloom-downsample-sixteenth"} ||
         bloom_sixteenth_plan->readers!=std::vector<std::string>{"render.pass.bloom-upsample-eighth"} ||
-         bloom_half_plan==graph.resource_plans.end() || bloom_half_plan->first_use_pass!=20U ||
-         bloom_half_plan->last_use_pass!=21U ||
+         bloom_half_plan==graph.resource_plans.end() || bloom_half_plan->first_use_pass!=23U ||
+         bloom_half_plan->last_use_pass!=24U ||
         bloom_half_plan->writers!=std::vector<std::string>{"render.pass.bloom-upsample-half"} ||
         bloom_half_plan->readers!=std::vector<std::string>{"render.pass.tone-map"}) {
         std::cerr << "Bloom resource lifetime plans do not match the multi-scale DAG\n";
@@ -302,6 +326,9 @@ int main() {
     const auto depth_pyramid_resource=std::ranges::find_if(graph.resources,[](const noemancer::RenderResourceDefinition& resource){
         return resource.id=="render.resource.scene-depth-pyramid";
     });
+    const auto ssr_history_resource=std::ranges::find_if(graph.resources,[](const noemancer::RenderResourceDefinition& resource){
+        return resource.id=="render.resource.scene-reflection-history";
+    });
     if(previous_normal_history_resource==graph.resources.end() || previous_normal_history_resource->format!="RGBA16_FLOAT" ||
        previous_normal_history_resource->dimension!="2d" || previous_normal_history_resource->layers!=1U ||
        previous_normal_history_resource->transient || !previous_normal_history_resource->external ||
@@ -309,20 +336,28 @@ int main() {
        depth_pyramid_resource==graph.resources.end() || depth_pyramid_resource->format!="RG32_FLOAT" ||
        depth_pyramid_resource->dimension!="2d" || depth_pyramid_resource->layers!=1U ||
        !depth_pyramid_resource->transient || depth_pyramid_resource->external ||
-       depth_pyramid_resource->resolution_space!="render") {
+       depth_pyramid_resource->resolution_space!="render" ||
+       ssr_history_resource==graph.resources.end() || ssr_history_resource->format!="RGBA16_FLOAT" ||
+       ssr_history_resource->transient || !ssr_history_resource->external ||
+       ssr_history_resource->resolution_space!="render") {
         std::cerr << "Shared screen-space history resources do not describe the expected persistent/ephemeral lifetimes\n";
         return 23;
     }
     const auto previous_normal_plan=find_plan("render.resource.previous-normal-history");
     const auto depth_pyramid_plan=find_plan("render.resource.scene-depth-pyramid");
+    const auto ssr_history_plan=find_plan("render.resource.scene-reflection-history");
     if(previous_normal_plan==graph.resource_plans.end() ||
        previous_normal_plan->writers!=std::vector<std::string>{"render.pass.temporal-resolve"} ||
-       previous_normal_plan->readers!=std::vector<std::string>{"render.pass.temporal-resolve"} ||
+       previous_normal_plan->readers!=std::vector<std::string>{"render.pass.ssr-temporal-resolve","render.pass.temporal-resolve"} ||
        previous_normal_plan->transient || previous_normal_plan->alias_candidate ||
        depth_pyramid_plan==graph.resource_plans.end() ||
        depth_pyramid_plan->writers!=std::vector<std::string>{"render.pass.depth-pyramid-seed", "render.pass.depth-pyramid-reduce"} ||
-       depth_pyramid_plan->readers!=std::vector<std::string>{"render.pass.depth-pyramid-reduce", "render.pass.temporal-resolve"} ||
-       !depth_pyramid_plan->transient || !depth_pyramid_plan->alias_candidate) {
+       depth_pyramid_plan->readers!=std::vector<std::string>{"render.pass.depth-pyramid-reduce", "render.pass.ssr-hierarchical-trace", "render.pass.temporal-resolve"} ||
+       !depth_pyramid_plan->transient || !depth_pyramid_plan->alias_candidate ||
+       ssr_history_plan==graph.resource_plans.end() ||
+       ssr_history_plan->writers!=std::vector<std::string>{"render.pass.ssr-temporal-resolve"} ||
+       ssr_history_plan->readers!=std::vector<std::string>{"render.pass.ssr-temporal-resolve"} ||
+       ssr_history_plan->transient || ssr_history_plan->alias_candidate) {
         std::cerr << "Shared screen-space resource plans do not preserve history ownership or HiZ reduction order\n";
         return 24;
     }

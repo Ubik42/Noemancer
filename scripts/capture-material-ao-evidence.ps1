@@ -49,7 +49,7 @@ function Assert-Sidecar {
         (Get-JsonField -Object $Sidecar -Path 'referenceContract.id') -cne 'noemancer.commercial-raster-reference/1.8') {
         throw "$Label sidecar has the wrong reference contract id."
     }
-    if ((Get-JsonField -Object $Sidecar -Path 'renderer.schemaVersion') -cne 'noemancer.renderer-status.v26' -or
+    if ((Get-JsonField -Object $Sidecar -Path 'renderer.schemaVersion') -cne 'noemancer.renderer-status.v27' -or
         (Get-JsonField -Object $Sidecar -Path 'renderer.graph.schemaVersion') -cne 'noemancer.render-graph.v11' -or
         (Get-JsonField -Object $Sidecar -Path 'renderer.colorPipeline.ambientOcclusion.technique') -cne 'eight-direction-horizon/separable-bilateral/indirect-only') {
         throw "$Label sidecar did not satisfy the renderer/AO version contract."
@@ -118,7 +118,7 @@ $disabledSidecar = Get-Content -LiteralPath $disabledSidecarPath -Raw | ConvertF
 foreach ($sidecar in @($enabledSidecar,$disabledSidecar)) {
     if (-not $sidecar.pass -or -not $sidecar.dimensionsMatch -or
         $sidecar.referenceContract.id -ne 'noemancer.commercial-raster-reference/1.8' -or
-        $sidecar.renderer.schemaVersion -ne 'noemancer.renderer-status.v26' -or
+        $sidecar.renderer.schemaVersion -ne 'noemancer.renderer-status.v27' -or
         $sidecar.renderer.graph.schemaVersion -ne 'noemancer.render-graph.v11' -or
         $sidecar.renderer.colorPipeline.ambientOcclusion.technique -ne 'eight-direction-horizon/separable-bilateral/indirect-only') {
         throw 'Material/AO capture did not satisfy the current renderer/reference contract.'

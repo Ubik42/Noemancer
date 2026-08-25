@@ -388,6 +388,31 @@ struct alignas(16) DepthPyramidReduceSettings final {std::array<std::uint32_t,4>
 static_assert(sizeof(DepthPyramidSeedSettings)==16&&sizeof(DepthPyramidReduceSettings)==16,
     "Depth-pyramid settings must match compute shader b0");
 
+struct alignas(16) SsrTraceSettings final {
+    Mat4 inverse_view_projection;
+    Mat4 view_projection;
+    std::array<float,4> camera_position{};
+    std::array<float,4> camera_forward{};
+    std::array<float,4> resolution{};
+    std::array<float,4> depth_and_distance{};
+    std::array<float,4> quality{};
+    std::array<float,4> debug{};
+    std::array<float,4> ray_policy{};
+    std::array<float,4> edge_policy{};
+};
+static_assert(sizeof(SsrTraceSettings)==256,"SsrTraceSettings must match ssr_hiz_trace.frag.hlsl b0");
+
+struct alignas(16) SsrTemporalSettings final {
+    std::array<float,4> resolution_and_history{};
+    std::array<float,4> rejection{};
+    std::array<float,4> output{};
+    std::array<float,4> normal_rejection{};
+};
+static_assert(sizeof(SsrTemporalSettings)==64,"SsrTemporalSettings must match ssr_temporal_resolve.frag.hlsl b0");
+
+struct alignas(16) SsrCompositeSettings final {std::array<float,4> composite{};};
+static_assert(sizeof(SsrCompositeSettings)==16,"SsrCompositeSettings must match ssr_composite.frag.hlsl b0");
+
 struct alignas(16) VfxCameraData {
     Mat4 view_projection;
     std::array<float,4> camera_right;
@@ -1955,9 +1980,12 @@ bool SceneRenderer::create_pipelines() {
     SDL_GPUShader* fxaa_fragment = load_shader(device_, "fxaa.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     SDL_GPUShader* taa_vertex = load_shader(device_, "taa.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* taa_fragment = load_shader(device_, "temporal_denoise.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 8, 1);
+    SDL_GPUShader* ssr_trace_fragment=load_shader(device_,"ssr_hiz_trace.frag",SDL_GPU_SHADERSTAGE_FRAGMENT,5,1);
+    SDL_GPUShader* ssr_temporal_fragment=load_shader(device_,"ssr_temporal_resolve.frag",SDL_GPU_SHADERSTAGE_FRAGMENT,8,1);
+    SDL_GPUShader* ssr_composite_fragment=load_shader(device_,"ssr_composite.frag",SDL_GPU_SHADERSTAGE_FRAGMENT,5,1);
     SDL_GPUShader* vfx_vertex = load_shader(device_, "vfx_billboard.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 2);
     SDL_GPUShader* vfx_fragment = load_shader(device_, "vfx_billboard.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
-    if (!lit_vertex || !lit_fragment || !sprite_vertex || !sprite_fragment || !sprite_shadow_vertex || !shadow_vertex || !shadow_fragment || !tone_vertex || !tone_fragment || !sky_vertex || !sky_fragment || !sky_analytic_fragment || !aerial_fragment || !gtao_fragment || !ao_denoise_fragment || !ao_composite_fragment || !auto_exposure_fragment || !bloom_downsample_fragment || !bloom_upsample_fragment || !fxaa_vertex || !fxaa_fragment || !taa_vertex || !taa_fragment || !vfx_vertex || !vfx_fragment) {
+    if (!lit_vertex || !lit_fragment || !sprite_vertex || !sprite_fragment || !sprite_shadow_vertex || !shadow_vertex || !shadow_fragment || !tone_vertex || !tone_fragment || !sky_vertex || !sky_fragment || !sky_analytic_fragment || !aerial_fragment || !gtao_fragment || !ao_denoise_fragment || !ao_composite_fragment || !auto_exposure_fragment || !bloom_downsample_fragment || !bloom_upsample_fragment || !fxaa_vertex || !fxaa_fragment || !taa_vertex || !taa_fragment || !ssr_trace_fragment || !ssr_temporal_fragment || !ssr_composite_fragment || !vfx_vertex || !vfx_fragment) {
         last_error_ = "Unable to load compiled shaders for GPU backend " + gpu_backend_ + " using " + shader_artifact_format_;
         if(!shader_artifact_failure.empty())last_error_+="; "+shader_artifact_failure;
         if (lit_vertex) SDL_ReleaseGPUShader(device_, lit_vertex);
@@ -1984,6 +2012,9 @@ bool SceneRenderer::create_pipelines() {
         if (fxaa_fragment) SDL_ReleaseGPUShader(device_, fxaa_fragment);
         if (taa_vertex) SDL_ReleaseGPUShader(device_,taa_vertex);
         if (taa_fragment) SDL_ReleaseGPUShader(device_,taa_fragment);
+        if(ssr_trace_fragment)SDL_ReleaseGPUShader(device_,ssr_trace_fragment);
+        if(ssr_temporal_fragment)SDL_ReleaseGPUShader(device_,ssr_temporal_fragment);
+        if(ssr_composite_fragment)SDL_ReleaseGPUShader(device_,ssr_composite_fragment);
         if (vfx_vertex) SDL_ReleaseGPUShader(device_,vfx_vertex);
         if (vfx_fragment) SDL_ReleaseGPUShader(device_,vfx_fragment);
         return false;
@@ -1997,13 +2028,15 @@ bool SceneRenderer::create_pipelines() {
         {4,0,SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,48},
         {5,0,SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,64}
     }};
-    std::array<SDL_GPUColorTargetDescription,6> color_descriptions{};
+    std::array<SDL_GPUColorTargetDescription,8> color_descriptions{};
     color_descriptions[0].format = normal_format;
     color_descriptions[1].format = object_id_format;
     color_descriptions[2].format = normal_format;
     color_descriptions[3].format = motion_format;
     color_descriptions[4].format = reactive_mask_format;
     color_descriptions[5].format = normal_format;
+    color_descriptions[6].format = normal_format;
+    color_descriptions[7].format = normal_format;
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader=lit_vertex; info.fragment_shader=lit_fragment;
     info.vertex_input_state={&buffer_description,1,attributes.data(),static_cast<Uint32>(attributes.size())};
@@ -2045,9 +2078,10 @@ bool SceneRenderer::create_pipelines() {
     sprite_info.rasterizer_state.enable_depth_clip=true;
     sprite_info.depth_stencil_state.compare_op=SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
     sprite_info.depth_stencil_state.enable_depth_test=true;sprite_info.depth_stencil_state.enable_depth_write=true;
-    std::array<SDL_GPUColorTargetDescription,6> sprite_targets{};
+    std::array<SDL_GPUColorTargetDescription,8> sprite_targets{};
     sprite_targets[0].format=normal_format;sprite_targets[1].format=object_id_format;sprite_targets[2].format=normal_format;
     sprite_targets[3].format=motion_format;sprite_targets[4].format=reactive_mask_format;sprite_targets[5].format=normal_format;
+    sprite_targets[6].format=normal_format;sprite_targets[7].format=normal_format;
     sprite_info.target_info={sprite_targets.data(),static_cast<Uint32>(sprite_targets.size()),depth_format,true,0,0,0};
     sprite_cutout_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&sprite_info);
     if(!sprite_cutout_pipeline_&&last_error_.empty())last_error_="Unable to create Sprite cutout pipeline: "+std::string(SDL_GetError());
@@ -2145,6 +2179,18 @@ bool SceneRenderer::create_pipelines() {
     tone_info.vertex_shader=taa_vertex; tone_info.fragment_shader=taa_fragment;
     tone_info.target_info={taa_targets.data(),static_cast<Uint32>(taa_targets.size()),SDL_GPU_TEXTUREFORMAT_INVALID,false,0,0,0};
     taa_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
+    SDL_GPUColorTargetDescription ssr_target{};ssr_target.format=normal_format;
+    tone_info.vertex_shader=taa_vertex;tone_info.fragment_shader=ssr_trace_fragment;
+    tone_info.target_info={&ssr_target,1,SDL_GPU_TEXTUREFORMAT_INVALID,false,0,0,0};
+    ssr_trace_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
+    std::array<SDL_GPUColorTargetDescription,2> ssr_temporal_targets{};
+    for(auto& target:ssr_temporal_targets)target.format=normal_format;
+    tone_info.fragment_shader=ssr_temporal_fragment;
+    tone_info.target_info={ssr_temporal_targets.data(),static_cast<Uint32>(ssr_temporal_targets.size()),SDL_GPU_TEXTUREFORMAT_INVALID,false,0,0,0};
+    ssr_temporal_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
+    tone_info.fragment_shader=ssr_composite_fragment;
+    tone_info.target_info={&ssr_target,1,SDL_GPU_TEXTUREFORMAT_INVALID,false,0,0,0};
+    ssr_composite_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
     SDL_ReleaseGPUShader(device_,lit_vertex);if(gpu_driven_lit_vertex)SDL_ReleaseGPUShader(device_,gpu_driven_lit_vertex);SDL_ReleaseGPUShader(device_,lit_fragment);
     SDL_ReleaseGPUShader(device_,sprite_vertex);SDL_ReleaseGPUShader(device_,sprite_fragment);SDL_ReleaseGPUShader(device_,sprite_shadow_vertex);
     SDL_ReleaseGPUShader(device_, shadow_vertex); SDL_ReleaseGPUShader(device_, shadow_fragment);
@@ -2155,11 +2201,14 @@ bool SceneRenderer::create_pipelines() {
     SDL_ReleaseGPUShader(device_,bloom_downsample_fragment);SDL_ReleaseGPUShader(device_,bloom_upsample_fragment);
     SDL_ReleaseGPUShader(device_, fxaa_vertex); SDL_ReleaseGPUShader(device_, fxaa_fragment);
     SDL_ReleaseGPUShader(device_,taa_vertex); SDL_ReleaseGPUShader(device_,taa_fragment);
+    SDL_ReleaseGPUShader(device_,ssr_trace_fragment);SDL_ReleaseGPUShader(device_,ssr_temporal_fragment);
+    SDL_ReleaseGPUShader(device_,ssr_composite_fragment);
     SDL_ReleaseGPUShader(device_,vfx_vertex); SDL_ReleaseGPUShader(device_,vfx_fragment);
     return lit_pipeline_ && lit_double_sided_pipeline_ && transparent_pipeline_ && transparent_double_sided_pipeline_ &&
         sprite_cutout_pipeline_ && sprite_alpha_pipeline_ && sprite_shadow_pipeline_ &&
         shadow_pipeline_ && shadow_double_sided_pipeline_ && bloom_downsample_pipeline_ && bloom_upsample_pipeline_ && gtao_pipeline_ && ao_denoise_pipeline_ && ao_composite_pipeline_ &&
         auto_exposure_pipeline_ && tone_map_pipeline_ && sky_atmosphere_pipeline_ && sky_atmosphere_analytic_pipeline_ && aerial_perspective_pipeline_ && fxaa_pipeline_ && taa_pipeline_ &&
+        ssr_trace_pipeline_ && ssr_temporal_pipeline_ && ssr_composite_pipeline_ &&
         vfx_alpha_draw_pipeline_ && vfx_additive_draw_pipeline_;
 }
 
@@ -2224,6 +2273,13 @@ bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_
     aerial_hdr_texture_=SDL_CreateGPUTexture(device_,&info);
     ao_composited_hdr_texture_=SDL_CreateGPUTexture(device_,&info);
     indirect_lighting_texture_=SDL_CreateGPUTexture(device_,&info);
+    specular_indirect_texture_=SDL_CreateGPUTexture(device_,&info);
+    reflection_properties_texture_=SDL_CreateGPUTexture(device_,&info);
+    ssr_raw_texture_=SDL_CreateGPUTexture(device_,&info);
+    ssr_resolved_texture_=SDL_CreateGPUTexture(device_,&info);
+    ssr_history_textures_[0]=SDL_CreateGPUTexture(device_,&info);
+    ssr_history_textures_[1]=SDL_CreateGPUTexture(device_,&info);
+    reflected_hdr_texture_=SDL_CreateGPUTexture(device_,&info);
     info.format=object_id_format; info.usage=SDL_GPU_TEXTUREUSAGE_COLOR_TARGET; object_id_texture_=SDL_CreateGPUTexture(device_, &info);
     info.format=normal_format; info.usage=SDL_GPU_TEXTUREUSAGE_COLOR_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER; normal_texture_=SDL_CreateGPUTexture(device_, &info);
     info.format=motion_format; info.usage=SDL_GPU_TEXTUREUSAGE_COLOR_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER; motion_texture_=SDL_CreateGPUTexture(device_,&info);
@@ -2246,7 +2302,10 @@ bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_
     shadow_texture_=SDL_CreateGPUTexture(device_, &info);
     info.layer_count_or_depth=local_shadow_layer_count;info.width=local_shadow_resolution_;info.height=local_shadow_resolution_;
     local_shadow_texture_=SDL_CreateGPUTexture(device_,&info);
-    if (!color_texture_ || !hdr_texture_ || !aerial_hdr_texture_ || !ao_composited_hdr_texture_ || !indirect_lighting_texture_ || !tone_mapped_texture_ || !object_id_texture_ || !normal_texture_ || !motion_texture_ || !reactive_mask_texture_ ||
+    if (!color_texture_ || !hdr_texture_ || !aerial_hdr_texture_ || !ao_composited_hdr_texture_ || !indirect_lighting_texture_ ||
+        !specular_indirect_texture_ || !reflection_properties_texture_ || !ssr_raw_texture_ || !ssr_resolved_texture_ ||
+        !ssr_history_textures_[0] || !ssr_history_textures_[1] || !reflected_hdr_texture_ ||
+        !tone_mapped_texture_ || !object_id_texture_ || !normal_texture_ || !motion_texture_ || !reactive_mask_texture_ ||
         !taa_resolved_texture_ || std::ranges::any_of(bloom_downsample_textures_,[](const auto* texture){return texture==nullptr;}) ||
         std::ranges::any_of(bloom_upsample_textures_,[](const auto* texture){return texture==nullptr;}) ||
         !ambient_occlusion_texture_ || !ambient_occlusion_temp_texture_ || !ambient_occlusion_filtered_texture_ ||
@@ -2254,19 +2313,23 @@ bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_
         !taa_history_depth_textures_[0] || !taa_history_depth_textures_[1] ||
         !temporal_history_normal_textures_[0]||!temporal_history_normal_textures_[1]||
         !depth_texture_||!depth_pyramid_texture_||!shadow_texture_||!local_shadow_texture_)return false;
-    const std::array<SDL_GPUTexture*,27> named_textures{color_texture_,tone_mapped_texture_,taa_resolved_texture_,
+    const std::array<SDL_GPUTexture*,34> named_textures{color_texture_,tone_mapped_texture_,taa_resolved_texture_,
         taa_history_textures_[0],taa_history_textures_[1],bloom_downsample_textures_[0],bloom_downsample_textures_[1],
         bloom_downsample_textures_[2],bloom_downsample_textures_[3],bloom_upsample_textures_[0],
         bloom_upsample_textures_[1],bloom_upsample_textures_[2],exposure_history_textures_[0],
         exposure_history_textures_[1],taa_history_depth_textures_[0],taa_history_depth_textures_[1],
         ambient_occlusion_texture_,ambient_occlusion_temp_texture_,ambient_occlusion_filtered_texture_,hdr_texture_,
-        aerial_hdr_texture_,ao_composited_hdr_texture_,indirect_lighting_texture_,object_id_texture_,normal_texture_,motion_texture_,reactive_mask_texture_};
-    const std::array<const char*,27> texture_names{"render.scene-color","render.tone-mapped","render.taa-resolved",
+        aerial_hdr_texture_,ao_composited_hdr_texture_,indirect_lighting_texture_,specular_indirect_texture_,
+        reflection_properties_texture_,ssr_raw_texture_,ssr_resolved_texture_,ssr_history_textures_[0],
+        ssr_history_textures_[1],reflected_hdr_texture_,object_id_texture_,normal_texture_,motion_texture_,reactive_mask_texture_};
+    const std::array<const char*,34> texture_names{"render.scene-color","render.tone-mapped","render.taa-resolved",
         "render.taa-history-a","render.taa-history-b","render.bloom-half-down","render.bloom-quarter-down",
         "render.bloom-eighth-down","render.bloom-sixteenth-down","render.bloom-eighth-up","render.bloom-quarter-up",
         "render.bloom-half","render.exposure-history-a","render.exposure-history-b","render.taa-depth-history-a",
         "render.taa-depth-history-b","render.ambient-occlusion","render.ambient-occlusion-temp",
-        "render.ambient-occlusion-filtered","render.scene-hdr","render.scene-hdr-aerial","render.scene-hdr-ao","render.scene-indirect","render.object-id",
+        "render.ambient-occlusion-filtered","render.scene-hdr","render.scene-hdr-aerial","render.scene-hdr-ao","render.scene-indirect",
+        "render.scene-specular-indirect","render.surface-reflection-properties","render.ssr-raw","render.ssr-resolved",
+        "render.ssr-history-a","render.ssr-history-b","render.scene-hdr-reflected","render.object-id",
         "render.world-normal","render.motion-vectors","render.reactive-mask"};
     for (std::size_t index=0;index<named_textures.size();++index)
         SDL_SetGPUTextureName(device_,named_textures[index],texture_names[index]);
@@ -2280,8 +2343,9 @@ bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_
     directional_shadow_cascade_cache_valid_.fill(false);
     local_shadow_face_cache_valid_.fill(false);
     temporal_history_valid_=false;
+    ssr_history_valid_=false;
     taa_history_resets_=temporal_history_authority_.state(TemporalHistoryConsumer::taa).reset_count;
-    taa_history_index_=0; exposure_history_valid_=false; exposure_history_index_=0;
+    taa_history_index_=0;ssr_history_index_=0; exposure_history_valid_=false; exposure_history_index_=0;
     width_=width; height_=height; allocated_render_scale_=render_scale_;
     return true;
 }
@@ -2565,6 +2629,29 @@ void SceneRenderer::set_temporal_debug_mode(const std::string& mode) {
     if(temporal_debug_mode_==0U)temporal_debug_mode_name_="final";
 }
 
+bool SceneRenderer::set_ssr_options(const bool enabled, const std::string& quality,
+                                    const std::string& debug_mode) {
+    if(quality!="low"&&quality!="medium"&&quality!="high") {
+        last_error_="render.ssr.quality.invalid: expected low, medium, or high";
+        return false;
+    }
+    if(debug_mode!="final"&&debug_mode!="confidence"&&debug_mode!="hit-distance"&&
+       debug_mode!="roughness"&&debug_mode!="miss"&&debug_mode!="normal") {
+        last_error_="render.ssr.debug.invalid: unsupported debug view";
+        return false;
+    }
+    ssr_enabled_=enabled;ssr_quality_=quality;ssr_debug_mode_name_=debug_mode;
+    ssr_debug_mode_=debug_mode=="confidence"?1U:(debug_mode=="hit-distance"?2U:
+        (debug_mode=="roughness"?3U:(debug_mode=="miss"?4U:(debug_mode=="normal"?5U:0U))));
+    const auto quality_value=screen_space_reflections_quality_from_string(enabled?quality:"off");
+    if(!quality_value) {
+        last_error_="render.ssr.quality.invalid: could not build engine SSR policy";
+        return false;
+    }
+    ssr_config_=screen_space_reflections_quality_defaults(*quality_value);
+    return true;
+}
+
 void SceneRenderer::set_capture_contract_json(std::string contract_json) {
     capture_contract_json_=std::move(contract_json);
 }
@@ -2730,6 +2817,27 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         return;
     }
     temporal_history_valid_=temporal_history_plan.use_previous;
+    ssr_plan_=build_screen_space_reflections_plan(ssr_config_,hybrid_pixel_active(),{
+        depth_pyramid_texture_&&depth_pyramid_seed_pipeline_&&depth_pyramid_reduce_pipeline_,
+        ao_composited_hdr_texture_!=nullptr,
+        reflection_properties_texture_!=nullptr&&specular_indirect_texture_!=nullptr});
+    if(!ssr_plan_.valid) {
+        last_error_=ssr_plan_.code+": "+ssr_plan_.detail;
+        return;
+    }
+    const TemporalHistoryRequest ssr_history_request{
+        TemporalHistoryConsumer::ssr,
+        {{render_width_,render_height_},"rgba16f",frame_index_,
+            active_camera_id_.empty()?"camera.unowned":active_camera_id_,temporal_projection_identity.str(),
+            hybrid_pixel_profile_?"hybrid:"+hybrid_pixel_profile_->profile_id:"raster",
+            screen_space_reflections_fingerprint(ssr_plan_)},
+        ssr_plan_.enabled&&ssr_plan_.temporal_history_required,std::nullopt};
+    const auto ssr_history_plan=temporal_history_authority_.plan(ssr_history_request);
+    if(!ssr_history_plan.valid) {
+        last_error_=ssr_history_plan.code+": "+ssr_history_plan.detail;
+        return;
+    }
+    ssr_history_valid_=ssr_history_plan.use_previous;
     CascadedShadowConfig shadow_config;
     shadow_config.resolution=shadow_size;
     shadow_config.maximum_distance=std::min(80.0F,camera_far);
@@ -3506,9 +3614,18 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         }
     };
     bloom_record_microseconds_=0.0;ao_denoise_record_microseconds_=0.0;
+    ssr_trace_record_microseconds_=ssr_temporal_record_microseconds_=ssr_composite_record_microseconds_=0.0;
     const auto temporal_begin=temporal_history_authority_.begin(temporal_history_plan);
     if(!temporal_begin.success) {
         last_error_=temporal_begin.code+": "+temporal_begin.detail;
+        return;
+    }
+    const auto ssr_begin=temporal_history_authority_.begin(ssr_history_plan);
+    if(!ssr_begin.success) {
+        (void)temporal_history_authority_.commit({TemporalHistoryConsumer::taa,
+            temporal_begin.transaction_id,temporal_begin.base_revision,false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid)});
+        last_error_=ssr_begin.code+": "+ssr_begin.detail;
         return;
     }
     bool temporal_history_committed=false;
@@ -3525,6 +3642,15 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         temporal_history_valid_=commit.current_valid;
         taa_history_resets_=temporal_history_authority_.state(TemporalHistoryConsumer::taa).reset_count;
         return true;
+    };
+    bool ssr_history_committed=false;
+    const auto commit_ssr_history=[&](const bool produced_history,
+        const TemporalHistoryResetMask output_reset_reasons=0U) {
+        if(ssr_history_committed)return true;
+        const auto commit=temporal_history_authority_.commit({TemporalHistoryConsumer::ssr,
+            ssr_begin.transaction_id,ssr_begin.base_revision,produced_history,output_reset_reasons});
+        if(!commit.success) {last_error_=commit.code+": "+commit.detail;return false;}
+        ssr_history_committed=true;ssr_history_valid_=commit.current_valid;return true;
     };
     (void)gpu_pass_timestamps_.begin_frame(command,frame_index_,render_graph_.execution_order);
     for (const auto& pass_id : render_graph_.execution_order) {
@@ -3585,6 +3711,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         shadow_target.stencil_load_op=SDL_GPU_LOADOP_DONT_CARE; shadow_target.stencil_store_op=SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,nullptr,0,&shadow_target);
         if(!pass){last_error_=SDL_GetError();(void)commit_temporal_history(false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));(void)commit_ssr_history(false,
             temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;}
         std::vector<bool> submitted(objects.size(),false);
         for (std::size_t object_index=0;object_index<objects.size();++object_index) {
@@ -3677,6 +3804,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         shadow_target.stencil_load_op=SDL_GPU_LOADOP_DONT_CARE;shadow_target.stencil_store_op=SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,nullptr,0,&shadow_target);
         if(!pass){last_error_=SDL_GetError();(void)commit_temporal_history(false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));(void)commit_ssr_history(false,
             temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;}
         ++local_shadow_faces_rendered_;
         std::vector<bool> submitted(objects.size(),false);
@@ -3761,13 +3889,15 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     } else if(!atmosphere_active)sky_last_path_="disabled-clear";
     if(pass)SDL_EndGPURenderPass(pass);
     } else if (pass_id == "render.pass.opaque-lit") {
-    std::array<SDL_GPUColorTargetInfo,6> color_targets{};
+    std::array<SDL_GPUColorTargetInfo,8> color_targets{};
     color_targets[0].texture=hdr_texture_; color_targets[0].clear_color={0.018F,0.028F,0.052F,1};
     color_targets[1].texture=object_id_texture_; color_targets[1].clear_color={0,0,0,0};
     color_targets[2].texture=normal_texture_; color_targets[2].clear_color={0,0,0,0};
     color_targets[3].texture=motion_texture_; color_targets[3].clear_color={0,0,0,0};
     color_targets[4].texture=reactive_mask_texture_; color_targets[4].clear_color={0,0,0,0};
     color_targets[5].texture=indirect_lighting_texture_; color_targets[5].clear_color={0,0,0,0};
+    color_targets[6].texture=specular_indirect_texture_; color_targets[6].clear_color={0,0,0,0};
+    color_targets[7].texture=reflection_properties_texture_; color_targets[7].clear_color={0,0,0,1};
     for (auto& target : color_targets) { target.load_op=SDL_GPU_LOADOP_CLEAR; target.store_op=SDL_GPU_STOREOP_STORE; }
     color_targets[0].load_op=SDL_GPU_LOADOP_LOAD;
     SDL_GPUDepthStencilTargetInfo depth_target{}; depth_target.texture=depth_texture_; depth_target.clear_depth=1.0F;
@@ -3859,6 +3989,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     if(!pass) {
         last_error_=SDL_GetError();(void)commit_temporal_history(false,
             temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        (void)commit_ssr_history(false,temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
         SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
     }
     SDL_BindGPUComputePipeline(pass,depth_pyramid_seed_pipeline_);
@@ -3878,6 +4009,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         if(!pass) {
             last_error_=SDL_GetError();(void)commit_temporal_history(false,
                 temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+            (void)commit_ssr_history(false,temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
             SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
         }
         SDL_BindGPUComputePipeline(pass,depth_pyramid_reduce_pipeline_);
@@ -3958,11 +4090,96 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     SDL_BindGPUFragmentSamplers(pass,0,bindings.data(),static_cast<Uint32>(bindings.size()));
     SDL_DrawGPUPrimitives(pass,3,1,0,0);
     SDL_EndGPURenderPass(pass);
+    } else if(pass_id=="render.pass.ssr-hierarchical-trace") {
+    SDL_GPUColorTargetInfo target{};target.texture=ssr_raw_texture_;target.clear_color={0,0,0,0};
+    target.load_op=SDL_GPU_LOADOP_CLEAR;target.store_op=SDL_GPU_STOREOP_STORE;
+    auto* pass=SDL_BeginGPURenderPass(command,&target,1U,nullptr);
+    if(!pass) {
+        last_error_=SDL_GetError();(void)commit_temporal_history(false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        (void)commit_ssr_history(false,temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
+    }
+    SDL_BindGPUGraphicsPipeline(pass,ssr_trace_pipeline_);
+    const std::array<SDL_GPUTextureSamplerBinding,5> bindings{{
+        {ao_composited_hdr_texture_,tone_map_sampler_},{depth_texture_,shadow_sampler_},
+        {depth_pyramid_texture_,tone_map_sampler_},{normal_texture_,tone_map_sampler_},
+        {reflection_properties_texture_,tone_map_sampler_}}};
+    SDL_BindGPUFragmentSamplers(pass,0,bindings.data(),static_cast<Uint32>(bindings.size()));
+    const auto& config=ssr_plan_.config;
+    const SsrTraceSettings settings{
+        inverse_or_identity(unjittered_view_projection),unjittered_view_projection,
+        {camera_position.x,camera_position.y,camera_position.z,1.0F},
+        {camera_forward.x,camera_forward.y,camera_forward.z,0.0F},
+        {static_cast<float>(render_width_),static_cast<float>(render_height_),
+            1.0F/static_cast<float>(render_width_),1.0F/static_cast<float>(render_height_)},
+        {camera_near,camera_far,config.ray_march.thickness,config.ray_march.max_distance},
+        {static_cast<float>(config.ray_march.max_steps),
+            static_cast<float>(std::min(config.ray_march.max_mip,depth_pyramid_mip_count_-1U)),
+            config.material.roughness_cutoff,ssr_plan_.enabled?1.0F:0.0F},
+        {static_cast<float>(ssr_debug_mode_),static_cast<float>(frame_index_&0x00ffffffU),0.0F,0.0F},
+        {static_cast<float>(config.ray_march.start_mip),static_cast<float>(config.ray_march.binary_search_steps),
+            config.ray_march.initial_step_pixels,config.ray_march.mip_bias},
+        {config.edge_fade.start,config.edge_fade.end,config.composition.confidence_threshold,0.0F}};
+    SDL_PushGPUFragmentUniformData(command,0,&settings,sizeof(settings));
+    SDL_DrawGPUPrimitives(pass,3,1,0,0);SDL_EndGPURenderPass(pass);
+    } else if(pass_id=="render.pass.ssr-temporal-resolve") {
+    const std::uint32_t history_read=ssr_history_index_,history_write=1U-history_read;
+    std::array<SDL_GPUColorTargetInfo,2> targets{};
+    targets[0].texture=ssr_resolved_texture_;targets[1].texture=ssr_history_textures_[history_write];
+    for(auto& target:targets){target.clear_color={0,0,0,0};target.load_op=SDL_GPU_LOADOP_CLEAR;target.store_op=SDL_GPU_STOREOP_STORE;}
+    auto* pass=SDL_BeginGPURenderPass(command,targets.data(),static_cast<Uint32>(targets.size()),nullptr);
+    if(!pass) {
+        last_error_=SDL_GetError();(void)commit_temporal_history(false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        (void)commit_ssr_history(false,temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
+    }
+    SDL_BindGPUGraphicsPipeline(pass,ssr_temporal_pipeline_);
+    const std::array<SDL_GPUTextureSamplerBinding,8> bindings{{
+        {ssr_raw_texture_,tone_map_sampler_},{ssr_history_textures_[history_read],tone_map_sampler_},
+        {depth_texture_,shadow_sampler_},{taa_history_depth_textures_[taa_history_index_],shadow_sampler_},
+        {motion_texture_,tone_map_sampler_},{reactive_mask_texture_,tone_map_sampler_},
+        {normal_texture_,tone_map_sampler_},{temporal_history_normal_textures_[taa_history_index_],tone_map_sampler_}}};
+    SDL_BindGPUFragmentSamplers(pass,0,bindings.data(),static_cast<Uint32>(bindings.size()));
+    const SsrTemporalSettings settings{
+        {1.0F/static_cast<float>(render_width_),1.0F/static_cast<float>(render_height_),
+            ssr_plan_.config.composition.history_weight,ssr_begin.use_previous?1.0F:0.0F},
+        {camera_near,camera_far,0.02F,1.0F},
+        {64.0F,0.0F,ssr_plan_.enabled&&ssr_plan_.temporal_history_required?1.0F:0.0F,0.0F},
+        {0.85F,0.0F,0.0F,0.0F}};
+    SDL_PushGPUFragmentUniformData(command,0,&settings,sizeof(settings));
+    SDL_DrawGPUPrimitives(pass,3,1,0,0);SDL_EndGPURenderPass(pass);
+    ssr_history_index_=history_write;
+    if(!commit_ssr_history(ssr_plan_.enabled)) {
+        SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
+    }
+    } else if(pass_id=="render.pass.ssr-composite") {
+    SDL_GPUColorTargetInfo target{};target.texture=reflected_hdr_texture_;target.clear_color={0,0,0,1};
+    target.load_op=SDL_GPU_LOADOP_CLEAR;target.store_op=SDL_GPU_STOREOP_STORE;
+    auto* pass=SDL_BeginGPURenderPass(command,&target,1U,nullptr);
+    if(!pass) {
+        last_error_=SDL_GetError();(void)commit_temporal_history(false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
+    }
+    SDL_BindGPUGraphicsPipeline(pass,ssr_composite_pipeline_);
+    const std::array<SDL_GPUTextureSamplerBinding,5> bindings{{
+        {ao_composited_hdr_texture_,tone_map_sampler_},{ssr_resolved_texture_,tone_map_sampler_},
+        {reflection_properties_texture_,tone_map_sampler_},{specular_indirect_texture_,tone_map_sampler_},
+        {ambient_occlusion_filtered_texture_,tone_map_sampler_}}};
+    SDL_BindGPUFragmentSamplers(pass,0,bindings.data(),static_cast<Uint32>(bindings.size()));
+    const SsrCompositeSettings settings{{ssr_plan_.enabled?1.0F:0.0F,1.0F,
+        static_cast<float>(ssr_debug_mode_),ssr_plan_.config.material.roughness_cutoff}};
+    SDL_PushGPUFragmentUniformData(command,0,&settings,sizeof(settings));
+    SDL_DrawGPUPrimitives(pass,3,1,0,0);SDL_EndGPURenderPass(pass);
     } else if (pass_id == "render.pass.transparent-lit") {
-    std::array<SDL_GPUColorTargetInfo,6> color_targets{};
-    color_targets[0].texture=ao_composited_hdr_texture_; color_targets[1].texture=object_id_texture_; color_targets[2].texture=normal_texture_;
+    std::array<SDL_GPUColorTargetInfo,8> color_targets{};
+    color_targets[0].texture=reflected_hdr_texture_; color_targets[1].texture=object_id_texture_; color_targets[2].texture=normal_texture_;
     color_targets[3].texture=motion_texture_; color_targets[4].texture=reactive_mask_texture_;
     color_targets[5].texture=indirect_lighting_texture_;
+    color_targets[6].texture=specular_indirect_texture_;
+    color_targets[7].texture=reflection_properties_texture_;
     for (auto& target:color_targets) { target.load_op=SDL_GPU_LOADOP_LOAD; target.store_op=SDL_GPU_STOREOP_STORE; }
     SDL_GPUDepthStencilTargetInfo depth_target{}; depth_target.texture=depth_texture_; depth_target.clear_depth=1.0F;
     depth_target.load_op=SDL_GPU_LOADOP_LOAD; depth_target.store_op=SDL_GPU_STOREOP_STORE;
@@ -4031,12 +4248,13 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     if(!pass) {
         last_error_=SDL_GetError();
         (void)commit_temporal_history(false,temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        (void)commit_ssr_history(false,temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
         SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);
         return;
     }
     SDL_BindGPUGraphicsPipeline(pass,taa_pipeline_);
     const std::array<SDL_GPUTextureSamplerBinding,8> bindings{{
-        {ao_composited_hdr_texture_,tone_map_sampler_},{motion_texture_,tone_map_sampler_},{depth_texture_,shadow_sampler_},
+        {reflected_hdr_texture_,tone_map_sampler_},{motion_texture_,tone_map_sampler_},{depth_texture_,shadow_sampler_},
         {normal_texture_,tone_map_sampler_},{taa_history_textures_[history_read],tone_map_sampler_},
         {taa_history_depth_textures_[history_read],shadow_sampler_},{temporal_history_normal_textures_[history_read],tone_map_sampler_},
         {reactive_mask_texture_,tone_map_sampler_}
@@ -4072,13 +4290,14 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     const auto pixel_post=hybrid_pixel_profile_
         ?derive_hybrid_pixel_post_process_strategy(*hybrid_pixel_profile_)
         :HybridPixelPostProcessStrategy{};
-    const bool stable_pixel_exposure=hybrid_pixel_active()&&pixel_post.valid;
+    const bool stable_pixel_exposure=(hybrid_pixel_active()&&pixel_post.valid)||!auto_exposure_enabled_;
+    const bool forced_unity_exposure=!auto_exposure_enabled_;
     const AutoExposureSettings settings{
-        stable_pixel_exposure?pixel_post.auto_exposure.minimum_exposure:auto_exposure_min_,
-        stable_pixel_exposure?pixel_post.auto_exposure.maximum_exposure:auto_exposure_max_,
-        stable_pixel_exposure?pixel_post.auto_exposure.key_value:auto_exposure_key_,1.0F/60.0F,
-        stable_pixel_exposure?pixel_post.auto_exposure.speed_up:auto_exposure_speed_up_,
-        stable_pixel_exposure?pixel_post.auto_exposure.speed_down:auto_exposure_speed_down_,
+        forced_unity_exposure?1.0F:(stable_pixel_exposure?pixel_post.auto_exposure.minimum_exposure:auto_exposure_min_),
+        forced_unity_exposure?1.0F:(stable_pixel_exposure?pixel_post.auto_exposure.maximum_exposure:auto_exposure_max_),
+        forced_unity_exposure?1.0F:(stable_pixel_exposure?pixel_post.auto_exposure.key_value:auto_exposure_key_),1.0F/60.0F,
+        forced_unity_exposure?0.0F:(stable_pixel_exposure?pixel_post.auto_exposure.speed_up:auto_exposure_speed_up_),
+        forced_unity_exposure?0.0F:(stable_pixel_exposure?pixel_post.auto_exposure.speed_down:auto_exposure_speed_down_),
         !stable_pixel_exposure&&exposure_history_valid_?1.0F:0.0F,0.0F};
     SDL_PushGPUFragmentUniformData(command,0,&settings,sizeof(settings));
     SDL_DrawGPUPrimitives(pass,3,1,0,0);
@@ -4191,6 +4410,9 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     else if (pass_id=="render.pass.ambient-occlusion") gtao_record_microseconds_=record_duration;
     else if(pass_id.starts_with("render.pass.ambient-occlusion-denoise-"))ao_denoise_record_microseconds_+=record_duration;
     else if (pass_id=="render.pass.ambient-occlusion-composite") ao_composite_record_microseconds_=record_duration;
+    else if(pass_id=="render.pass.ssr-hierarchical-trace")ssr_trace_record_microseconds_=record_duration;
+    else if(pass_id=="render.pass.ssr-temporal-resolve")ssr_temporal_record_microseconds_=record_duration;
+    else if(pass_id=="render.pass.ssr-composite")ssr_composite_record_microseconds_=record_duration;
     else if (pass_id=="render.pass.transparent-lit") transparent_record_microseconds_=record_duration;
     else if (pass_id=="render.pass.temporal-resolve") taa_record_microseconds_=record_duration;
     else if (pass_id=="render.pass.auto-exposure") auto_exposure_record_microseconds_=record_duration;
@@ -4199,6 +4421,8 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     else if (pass_id=="render.pass.fxaa") fxaa_record_microseconds_=record_duration;
     }
     if(!temporal_history_committed && !commit_temporal_history(false,
+        temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid)))return;
+    if(!ssr_history_committed && !commit_ssr_history(false,
         temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid)))return;
     gpu_pass_timestamps_.end_frame(command);
     previous_view_projection_=view_projection.value;
@@ -4566,6 +4790,54 @@ std::string SceneRenderer::status_json() const {
     const auto& shader_contract=runtime_shader_artifacts();
     const auto gpu_timestamp_evidence=nlohmann::json::parse(gpu_pass_timestamps_.status_json());
     const auto temporal_history_evidence=nlohmann::json::parse(temporal_history_authority_.canonical_evidence());
+    auto ssr_history_evidence=nlohmann::json::object();
+    ssr_history_evidence["schema"]=temporal_history_schema;
+    for(const auto& consumer:temporal_history_evidence.value("consumers",nlohmann::json::array())) {
+        if(consumer.value("consumer",std::string{})=="ssr") {
+            for(auto it=consumer.begin();it!=consumer.end();++it)ssr_history_evidence[it.key()]=it.value();
+            break;
+        }
+    }
+    const auto reported_ssr_plan=ssr_plan_.valid?ssr_plan_:build_screen_space_reflections_plan(
+        ssr_config_,hybrid_pixel_active(),{depth_pyramid_texture_!=nullptr,ao_composited_hdr_texture_!=nullptr,
+            reflection_properties_texture_!=nullptr&&specular_indirect_texture_!=nullptr});
+    const auto ssr_contract_evidence=nlohmann::json::parse(
+        screen_space_reflections_canonical_evidence(reported_ssr_plan));
+    const nlohmann::json ssr_evidence{
+        {"schema",std::string(screen_space_reflections_schema)},
+        {"enabled",reported_ssr_plan.enabled},
+        {"code",reported_ssr_plan.code},
+        {"settings",{{"quality",screen_space_reflections_quality_name(reported_ssr_plan.quality)},
+            {"maxSteps",reported_ssr_plan.config.ray_march.max_steps},
+            {"startMip",reported_ssr_plan.config.ray_march.start_mip},
+            {"maxMip",std::min(reported_ssr_plan.config.ray_march.max_mip,
+                depth_pyramid_mip_count_?depth_pyramid_mip_count_-1U:0U)},
+            {"binarySearchSteps",reported_ssr_plan.config.ray_march.binary_search_steps},
+            {"initialStepPixels",reported_ssr_plan.config.ray_march.initial_step_pixels},
+            {"maxRayDistance",reported_ssr_plan.config.ray_march.max_distance},
+            {"thickness",reported_ssr_plan.config.ray_march.thickness},
+            {"roughnessCutoff",reported_ssr_plan.config.material.roughness_cutoff},
+            {"edgeFadeStart",reported_ssr_plan.config.edge_fade.start},
+            {"edgeFadeEnd",reported_ssr_plan.config.edge_fade.end},
+            {"historyWeight",reported_ssr_plan.config.composition.history_weight}}},
+        {"hiZ",{{"reused",true},{"resourceId","render.resource.scene-depth-pyramid"},
+            {"encoding","linear-view-depth-min-max"},{"mipCount",depth_pyramid_mip_count_}}},
+        {"historyAuthority",ssr_history_evidence},
+        {"materialValidity",{{"contract",std::string(screen_space_reflections_material_contract)},
+            {"roughnessSource","render.resource.surface-reflection-properties.a"},
+            {"normalSource","render.resource.world-normal.xyz"},
+            {"invalidMaterialPolicy","retain-ibl-specular"}}},
+        {"composition",{{"strategy",std::string(screen_space_reflections_composition_strategy)},
+            {"specularFallbackSource","render.resource.scene-specular-indirect"},
+            {"ambientVisibilitySource","render.resource.ambient-occlusion-filtered"}}},
+        {"fallback",{{"policy",std::string(screen_space_reflections_fallback_strategy)},
+            {"debugView","miss"},{"offscreen","retain-ibl-specular"}}},
+        {"debugView",ssr_debug_mode_name_},
+        {"debugViews",{"final","confidence","hit-distance","roughness","miss","normal"}},
+        {"passes",{"render.pass.ssr-hierarchical-trace","render.pass.ssr-temporal-resolve","render.pass.ssr-composite"}},
+        {"workingSetBytes",static_cast<std::uint64_t>(render_width_)*render_height_*56ULL},
+        {"contract",ssr_contract_evidence},
+        {"fingerprint",screen_space_reflections_fingerprint(reported_ssr_plan)}};
     const nlohmann::json device_evidence{
         {"backend",gpu_backend_}, {"adapter",gpu_device_name_}, {"driverName",gpu_driver_name_},
         {"driverVersion",gpu_driver_version_}, {"driverInfo",gpu_driver_info_},
@@ -4622,7 +4894,7 @@ std::string SceneRenderer::status_json() const {
         {"postProcess", {
             {"renderExtent", hybrid_pixel_active() ? "virtual" : "post"},
             {"temporalHistory", hybrid_pixel_active() ? "disabled" : "enabled"},
-            {"autoExposure", hybrid_pixel_active() ? "locked-unity" : "adaptive"},
+            {"autoExposure", (!auto_exposure_enabled_ || hybrid_pixel_active()) ? "locked-unity" : "adaptive"},
             {"bloom", hybrid_pixel_active() ? "fixed-grid-dual-filter" : "dual-filter"},
             {"ambientOcclusion", hybrid_pixel_active() ? "virtual-grid-spatial" : "render-grid-spatial"},
             {"presentation", hybrid_pixel_active() ? "nearest-integer" : "native"}}}};
@@ -4658,7 +4930,7 @@ std::string SceneRenderer::status_json() const {
                 {"right", pixel_presentation_.letterbox.right}, {"bottom", pixel_presentation_.letterbox.bottom}}}};
     }
     std::ostringstream out;
-    out << "{\"schemaVersion\":\"noemancer.renderer-status.v26\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
+    out << "{\"schemaVersion\":\"noemancer.renderer-status.v27\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
         << ",\"pipeline\":\"forward-lit\",\"builtInPrimitives\":{\"sphere\":{\"topology\":\"uv-sphere\",\"segments\":"
         << builtin_sphere_segments << ",\"rings\":" << builtin_sphere_rings << ",\"triangles\":"
         << builtin_sphere_index_count/3U << "}},\"surface\":{\"width\":" << width_
@@ -4671,11 +4943,11 @@ std::string SceneRenderer::status_json() const {
         << (gpu_pass_timestamps_.supported()?"true":"false") << ",\"gpuTimestamp\":" << gpu_timestamp_evidence.dump()
         << ",\"gpuTimestampReason\":\"" << (gpu_pass_timestamps_.supported()?"ok":gpu_timestamp_evidence.value("reason",std::string{"unavailable"})) << "\""
         << ",\"debugCapture\":{\"commandGroups\":true,\"renderGraphPassLabels\":" << render_graph_.execution_order.size()
-        << ",\"namedRenderTextures\":31,\"namedVfxBuffers\":13}},\"renderWorld\":{\"extractionId\":\"" << extraction_id_
+        << ",\"namedRenderTextures\":38,\"namedVfxBuffers\":13}},\"renderWorld\":{\"extractionId\":\"" << extraction_id_
         << "\",\"worldRevision\":" << world_revision_ << ",\"frameIndex\":" << frame_index_ << "},\"graph\":" << render_graph_json(render_graph_) << ","
         << "\"vfxGpu\":{\"pipelineCreated\":" << (vfx_compute_pipeline_&&vfx_spawn_pipeline_&&vfx_group_pipeline_&&vfx_sort_alpha_pipeline_&&vfx_alpha_draw_pipeline_&&vfx_additive_draw_pipeline_?"true":"false") << ",\"resourcesAllocated\":" << (vfx_particle_buffer_&&vfx_alive_buffers_[0]&&vfx_alive_buffers_[1]&&vfx_dead_buffer_&&vfx_counter_buffers_[0]&&vfx_counter_buffers_[1]&&vfx_dead_counter_buffer_&&vfx_spawn_buffer_&&vfx_spawn_graph_buffer_&&vfx_additive_indices_buffer_&&vfx_alpha_indices_buffer_&&vfx_additive_counter_buffer_&&vfx_alpha_counter_buffer_?"true":"false") << ",\"kernels\":[\"vfx_sim.comp\",\"vfx_spawn.comp\",\"vfx_group.comp\",\"vfx_sort_alpha.comp\"],\"drawShader\":\"vfx_billboard\",\"threadGroupSize\":64,\"alphaSortThreadGroupSize\":256,\"capacity\":" << vfx_gpu_capacity << ",\"particleStrideBytes\":" << vfx_particle_stride << ",\"spawnIdentityStrideBytes\":" << vfx_spawn_identity_stride << ",\"spawnGraphStrideBytes\":" << vfx_spawn_graph_stride << ",\"workingSetBytes\":" << (vfx_gpu_capacity*(vfx_particle_stride+vfx_spawn_identity_stride+vfx_spawn_graph_stride+20U)+vfx_counter_bytes*5U) << ",\"dispatchGroups\":" << vfx_dispatch_groups_ << ",\"controlUploads\":" << vfx_state_uploads_ << ",\"spawnIdentitiesUploaded\":" << vfx_particles_uploaded_ << ",\"spawnGraphCommandsUploaded\":" << vfx_spawn_graph_commands_uploaded_ << ",\"aliveIndicesUploaded\":0,\"dynamicParticleStateUploaded\":false,\"cpuExpectedResidentParticles\":" << vfx_resident_particles_ << ",\"cpuExpectedBlendGroups\":{\"additive\":" << vfx_expected_additive_particles_ << ",\"alpha\":" << vfx_expected_alpha_particles_ << "},\"cpuIdsReclaimedThisFrame\":" << vfx_slots_reclaimed_ << ",\"cpuSpawnPayloadsDroppedThisFrame\":" << vfx_particles_dropped_ << ",\"uploadBytesTotal\":" << vfx_upload_bytes_ << ",\"inputMode\":\"gpu-alive-ping-pong/dead-list/particle-identity-plus-emitter-graph-parameters\",\"particleStatePersistence\":true,\"fullParticleStateUploadPerFrame\":false,\"curveEvaluation\":\"gpu-age/color-size-start-end\",\"gpuNativeSlotAllocation\":true,\"gpuNativeAliveDeadLifecycle\":true,\"gpuNativeBlendGrouping\":true,\"gpuNativeAlphaSort\":true,\"alphaSortPolicy\":\"back-to-front/stable-particle-id/multi-dispatch-bitonic/dynamic-power-of-two-span/max-8192\",\"alphaSortSynchronization\":\"compute-pass-boundary-per-compare-stage\",\"gpuNativeRandomGeneration\":true,\"randomAlgorithm\":\"stateless-u32-hash/seed-particle-index-channel\",\"spawnCatchUp\":\"fixed-60hz/max-512-steps\",\"simulationDispatchesRecorded\":" << vfx_compute_dispatches_ << ",\"spawnDispatchesRecorded\":" << vfx_spawn_dispatches_ << ",\"groupDispatchesRecorded\":" << vfx_group_dispatches_ << ",\"sortDispatchesRecorded\":" << vfx_sort_dispatches_ << ",\"indirectDrawsRecorded\":" << vfx_indirect_draws_ << ",\"simulationReadWriteStorageBuffers\":7,\"spawnReadWriteStorageBuffers\":7,\"groupReadWriteStorageBuffers\":7,\"sortReadWriteStorageBuffers\":3,\"vertexStorageBuffers\":2,\"dispatchActive\":" << (vfx_compute_dispatches_>0?"true":"false") << ",\"compactionActive\":true,\"outputConsumedByDraw\":" << (vfx_indirect_draws_>0?"true":"false") << ",\"drawMode\":\"gpu-blend-grouped/additive-then-alpha/dual-indirect-billboard\",\"abi\":\"structured-particle-gpu-lifecycle-indirect/0.7\"},"
         << "\"evidence\":{\"objectId\":\"render.resource.object-id\",\"depth\":\"render.resource.scene-depth\",\"normal\":\"render.resource.world-normal\",\"motion\":\"render.resource.motion-vectors\",\"reactiveMask\":\"render.resource.reactive-mask\",\"lastPixel\":" << last_pixel_evidence_json() << "},"
-        << "\"colorPipeline\":{\"workingSpace\":\"linear-rec709\",\"hdrFormat\":\"RGBA16_FLOAT\",\"toneMapper\":\"ACES-RRT-ODT-fit/matrix\",\"toneMapInput\":\"scene-linear-after-grading\",\"displayGamut\":\"rec709-bounded\",\"outputEncoding\":\"explicit-sRGB-transfer/RGBA8-UNORM\",\"exposureCompensation\":" << exposure_ << ",\"whitePoint\":" << white_point_ << ",\"autoExposure\":{\"enabled\":" << (hybrid_pixel_active()?"false":"true") << ",\"mode\":\"" << (hybrid_pixel_active()?"locked-unity":"8x8-log-average") << "\",\"historyFormat\":\"R16_FLOAT\",\"historyValid\":" << (exposure_history_valid_?"true":"false") << ",\"minimum\":" << (hybrid_pixel_active()?1.0F:auto_exposure_min_) << ",\"maximum\":" << (hybrid_pixel_active()?1.0F:auto_exposure_max_) << ",\"keyValue\":" << (hybrid_pixel_active()?1.0F:auto_exposure_key_) << ",\"speedUp\":" << (hybrid_pixel_active()?0.0F:auto_exposure_speed_up_) << ",\"speedDown\":" << (hybrid_pixel_active()?0.0F:auto_exposure_speed_down_) << "},\"ambientOcclusion\":{\"enabled\":" << (ambient_occlusion_enabled_?"true":"false") << ",\"technique\":\"eight-direction-horizon/separable-bilateral/indirect-only\",\"resolutionDomain\":\"" << (hybrid_pixel_active()?"virtual-grid":"render") << "\",\"resolutionScale\":0.5,\"format\":\"R8_UNORM\",\"denoisePasses\":2,\"radiusPixels\":" << gtao_radius_pixels_ << ",\"intensity\":" << gtao_intensity_ << ",\"bias\":" << gtao_bias_ << ",\"power\":" << gtao_power_ << ",\"depthSigma\":" << gtao_denoise_depth_sigma_ << ",\"normalPower\":" << gtao_denoise_normal_power_ << ",\"workingSetBytes\":" << (static_cast<std::uint64_t>(std::max(1U,render_width_/2U))*std::max(1U,render_height_/2U)*3ULL+static_cast<std::uint64_t>(render_width_)*render_height_*16ULL) << "},\"colorGrading\":{\"model\":\"lift-gamma-gain/saturation/contrast/temperature/tint\",\"order\":\"scene-linear-before-tone-map\",\"saturation\":" << color_saturation_ << ",\"contrast\":" << color_contrast_ << ",\"temperature\":" << color_temperature_ << ",\"tint\":" << color_tint_ << "},\"bloom\":{\"enabled\":true,\"technique\":\"four-level-dual-filter\",\"resolutionDomain\":\"" << (hybrid_pixel_active()?"virtual-grid":"post") << "\",\"levels\":4,\"smallestResolutionScale\":0.0625,\"format\":\"RGBA16_FLOAT\",\"threshold\":" << bloom_threshold_ << ",\"softKnee\":" << bloom_soft_knee_ << ",\"scatter\":" << bloom_scatter_ << ",\"strength\":" << bloom_strength_ << ",\"workingSetBytes\":" << bloom_working_set_bytes_ << "},\"antiAliasing\":\"" << (hybrid_pixel_active()?"spatial-pixel-stable":"TAA") << "\",\"compatibilityAntiAliasing\":\"FXAA\",\"materialMipmaps\":true,\"materialModel\":\"glTF-metallic-roughness/ggx-multiscatter\",\"alphaBlend\":\"sorted-back-to-front/straight-alpha\",\"materialChannels\":[\"baseColor-sRGB\",\"normal-linear\",\"metallicRoughness-linear\",\"occlusion-linear\",\"emissive-sRGB\"],\"ibl\":{\"model\":\"split-sum-ggx-multiscatter\",\"cookVersion\":\"split-sum-ggx/2\",\"sourceAssetId\":\"" << environment_source_id_ << "\",\"sourceFingerprint\":\"" << ibl_source_fingerprint_ << "\",\"sourceType\":\"" << (environment_source_width_?"radiance-hdr":"procedural-hdr") << "\",\"sourceWidth\":" << environment_source_width_ << ",\"sourceHeight\":" << environment_source_height_ << ",\"irradianceResolution\":16,\"prefilteredSpecularResolution\":64,\"prefilteredMipLevels\":7,\"brdfLutResolution\":128,\"format\":\"RGBA16F/RG16F\",\"cacheHit\":" << (ibl_cache_hit_?"true":"false") << ",\"cacheRebuilt\":" << (ibl_cache_rebuilt_?"true":"false") << ",\"cookMicroseconds\":" << ibl_cook_microseconds_ << ",\"artifactBytes\":" << ibl_artifact_bytes_ << ",\"artifactUri\":\"file://" << ibl_artifact_path_ << "\"}},"
+        << "\"colorPipeline\":{\"workingSpace\":\"linear-rec709\",\"hdrFormat\":\"RGBA16_FLOAT\",\"toneMapper\":\"ACES-RRT-ODT-fit/matrix\",\"toneMapInput\":\"scene-linear-after-grading\",\"displayGamut\":\"rec709-bounded\",\"outputEncoding\":\"explicit-sRGB-transfer/RGBA8-UNORM\",\"exposureCompensation\":" << exposure_ << ",\"whitePoint\":" << white_point_ << ",\"autoExposure\":{\"enabled\":" << (auto_exposure_enabled_&&!hybrid_pixel_active()?"true":"false") << ",\"mode\":\"" << (auto_exposure_enabled_&&!hybrid_pixel_active()?"8x8-log-average":"locked-unity") << "\",\"historyFormat\":\"R16_FLOAT\",\"historyValid\":" << (exposure_history_valid_?"true":"false") << ",\"minimum\":" << (!auto_exposure_enabled_||hybrid_pixel_active()?1.0F:auto_exposure_min_) << ",\"maximum\":" << (!auto_exposure_enabled_||hybrid_pixel_active()?1.0F:auto_exposure_max_) << ",\"keyValue\":" << (!auto_exposure_enabled_||hybrid_pixel_active()?1.0F:auto_exposure_key_) << ",\"speedUp\":" << (!auto_exposure_enabled_||hybrid_pixel_active()?0.0F:auto_exposure_speed_up_) << ",\"speedDown\":" << (!auto_exposure_enabled_||hybrid_pixel_active()?0.0F:auto_exposure_speed_down_) << "},\"ambientOcclusion\":{\"enabled\":" << (ambient_occlusion_enabled_?"true":"false") << ",\"technique\":\"eight-direction-horizon/separable-bilateral/indirect-only\",\"resolutionDomain\":\"" << (hybrid_pixel_active()?"virtual-grid":"render") << "\",\"resolutionScale\":0.5,\"format\":\"R8_UNORM\",\"denoisePasses\":2,\"radiusPixels\":" << gtao_radius_pixels_ << ",\"intensity\":" << gtao_intensity_ << ",\"bias\":" << gtao_bias_ << ",\"power\":" << gtao_power_ << ",\"depthSigma\":" << gtao_denoise_depth_sigma_ << ",\"normalPower\":" << gtao_denoise_normal_power_ << ",\"workingSetBytes\":" << (static_cast<std::uint64_t>(std::max(1U,render_width_/2U))*std::max(1U,render_height_/2U)*3ULL+static_cast<std::uint64_t>(render_width_)*render_height_*16ULL) << "},\"colorGrading\":{\"model\":\"lift-gamma-gain/saturation/contrast/temperature/tint\",\"order\":\"scene-linear-before-tone-map\",\"saturation\":" << color_saturation_ << ",\"contrast\":" << color_contrast_ << ",\"temperature\":" << color_temperature_ << ",\"tint\":" << color_tint_ << "},\"bloom\":{\"enabled\":true,\"technique\":\"four-level-dual-filter\",\"resolutionDomain\":\"" << (hybrid_pixel_active()?"virtual-grid":"post") << "\",\"levels\":4,\"smallestResolutionScale\":0.0625,\"format\":\"RGBA16_FLOAT\",\"threshold\":" << bloom_threshold_ << ",\"softKnee\":" << bloom_soft_knee_ << ",\"scatter\":" << bloom_scatter_ << ",\"strength\":" << bloom_strength_ << ",\"workingSetBytes\":" << bloom_working_set_bytes_ << "},\"antiAliasing\":\"" << (hybrid_pixel_active()?"spatial-pixel-stable":"TAA") << "\",\"compatibilityAntiAliasing\":\"FXAA\",\"materialMipmaps\":true,\"materialModel\":\"glTF-metallic-roughness/ggx-multiscatter\",\"alphaBlend\":\"sorted-back-to-front/straight-alpha\",\"materialChannels\":[\"baseColor-sRGB\",\"normal-linear\",\"metallicRoughness-linear\",\"occlusion-linear\",\"emissive-sRGB\"],\"ibl\":{\"model\":\"split-sum-ggx-multiscatter\",\"cookVersion\":\"split-sum-ggx/2\",\"sourceAssetId\":\"" << environment_source_id_ << "\",\"sourceFingerprint\":\"" << ibl_source_fingerprint_ << "\",\"sourceType\":\"" << (environment_source_width_?"radiance-hdr":"procedural-hdr") << "\",\"sourceWidth\":" << environment_source_width_ << ",\"sourceHeight\":" << environment_source_height_ << ",\"irradianceResolution\":16,\"prefilteredSpecularResolution\":64,\"prefilteredMipLevels\":7,\"brdfLutResolution\":128,\"format\":\"RGBA16F/RG16F\",\"cacheHit\":" << (ibl_cache_hit_?"true":"false") << ",\"cacheRebuilt\":" << (ibl_cache_rebuilt_?"true":"false") << ",\"cookMicroseconds\":" << ibl_cook_microseconds_ << ",\"artifactBytes\":" << ibl_artifact_bytes_ << ",\"artifactUri\":\"file://" << ibl_artifact_path_ << "\"}},"
         << "\"skyAtmosphere\":{\"pipelineCreated\":" << (sky_atmosphere_pipeline_&&sky_atmosphere_analytic_pipeline_&&aerial_perspective_pipeline_?"true":"false")
         << ",\"lutPipelinesCreated\":" << (sky_transmittance_pipeline_&&sky_multi_scattering_pipeline_&&sky_view_pipeline_&&sky_camera_volume_pipeline_?"true":"false")
         << ",\"path\":\"" << sky_last_path_
@@ -4698,9 +4970,10 @@ std::string SceneRenderer::status_json() const {
         << ",\"format\":\"RG32_FLOAT\",\"encoding\":\"linear-view-depth-min-max\",\"baseExtent\":[" << render_width_ << ',' << render_height_
         << "],\"mipCount\":" << depth_pyramid_mip_count_ << ",\"workingSetBytes\":" << depth_pyramid_working_set_bytes_
         << ",\"seedDispatches\":" << depth_pyramid_seed_dispatches_ << ",\"reduceDispatches\":" << depth_pyramid_reduce_dispatches_
-        << ",\"oddExtentPolicy\":\"ceil-half-clamped-2x2\",\"consumers\":[\"GTAO-ordering\",\"temporal-denoise-ordering\",\"SSR-ready\",\"SSGI-ready\"]}"
+        << ",\"oddExtentPolicy\":\"ceil-half-clamped-2x2\",\"consumers\":[\"GTAO-ordering\",\"temporal-denoise-ordering\",\"SSR-production\",\"SSGI-ready\"]}"
         << ",\"historyAuthority\":" << temporal_history_evidence.dump()
         << ",\"fallback\":\"history-rejected-current-frame-spatial-resolve\"},"
+        << "\"screenSpaceReflections\":" << ssr_evidence.dump() << ','
         << "\"temporal\":{\"mode\":\"" << (hybrid_pixel_active()?"spatial-pixel-stable":"shared-temporal-denoise")
         << "\",\"debugView\":\"" << temporal_debug_mode_name_ << "\",\"debugViews\":[\"final\",\"motion\",\"reactive\",\"disocclusion\",\"history-weight\",\"history-clamp\",\"linear-depth\",\"normal\"],\"upscalingActive\":"
         << (!hybrid_pixel_active()&&render_scale_<0.999F?"true":"false")
@@ -4712,7 +4985,7 @@ std::string SceneRenderer::status_json() const {
         << ",\"jitterSequence\":\"" << (hybrid_pixel_active()?"disabled":"Halton(2,3)/8") << "\",\"jitterSample\":" << temporal_jitter_sample_
         << ",\"jitterPixels\":[" << temporal_jitter_pixels_[0] << ',' << temporal_jitter_pixels_[1] << "],\"jitterNdc\":[" << temporal_jitter_ndc_[0] << ',' << temporal_jitter_ndc_[1]
         << "],\"depthRejection\":{\"relativeThreshold\":0.02,\"minimumWorldThreshold\":0.1},\"historyRejection\":[\"viewport\",\"sky-depth\",\"previous-depth-disocclusion\",\"reactive-mask\",\"luminance-disagreement\",\"motion-magnitude\",\"neighborhood-clamp\"]},"
-        << "\"cpuRecordMicroseconds\":{\"render.pass.shadow-depth\":" << shadow_record_microseconds_ << ",\"render.pass.gpu-visibility\":" << gpu_visibility_record_microseconds_ << ",\"render.pass.sky-atmosphere\":" << sky_atmosphere_record_microseconds_ << ",\"render.pass.opaque-lit\":" << opaque_record_microseconds_ << ",\"render.pass.aerial-perspective\":" << aerial_perspective_record_microseconds_ << ",\"render.pass.ambient-occlusion\":" << gtao_record_microseconds_ << ",\"render.pass.ambient-occlusion-denoise\":" << ao_denoise_record_microseconds_ << ",\"render.pass.ambient-occlusion-composite\":" << ao_composite_record_microseconds_ << ",\"render.pass.transparent-lit\":" << transparent_record_microseconds_ << ",\"render.pass.temporal-resolve\":" << taa_record_microseconds_ << ",\"render.pass.auto-exposure\":" << auto_exposure_record_microseconds_ << ",\"render.pass.bloom-pyramid\":" << bloom_record_microseconds_ << ",\"render.pass.tone-map\":" << tone_map_record_microseconds_ << "},"
+        << "\"cpuRecordMicroseconds\":{\"render.pass.shadow-depth\":" << shadow_record_microseconds_ << ",\"render.pass.gpu-visibility\":" << gpu_visibility_record_microseconds_ << ",\"render.pass.sky-atmosphere\":" << sky_atmosphere_record_microseconds_ << ",\"render.pass.opaque-lit\":" << opaque_record_microseconds_ << ",\"render.pass.aerial-perspective\":" << aerial_perspective_record_microseconds_ << ",\"render.pass.ambient-occlusion\":" << gtao_record_microseconds_ << ",\"render.pass.ambient-occlusion-denoise\":" << ao_denoise_record_microseconds_ << ",\"render.pass.ambient-occlusion-composite\":" << ao_composite_record_microseconds_ << ",\"render.pass.ssr-hierarchical-trace\":" << ssr_trace_record_microseconds_ << ",\"render.pass.ssr-temporal-resolve\":" << ssr_temporal_record_microseconds_ << ",\"render.pass.ssr-composite\":" << ssr_composite_record_microseconds_ << ",\"render.pass.transparent-lit\":" << transparent_record_microseconds_ << ",\"render.pass.temporal-resolve\":" << taa_record_microseconds_ << ",\"render.pass.auto-exposure\":" << auto_exposure_record_microseconds_ << ",\"render.pass.bloom-pyramid\":" << bloom_record_microseconds_ << ",\"render.pass.tone-map\":" << tone_map_record_microseconds_ << "},"
         << "\"shadow\":{\"technique\":\"directional-CSM-PCF-3x3\",\"cascadeCount\":4,\"resolutionPerCascade\":2048,\"format\":\"D32_FLOAT\",\"textureBytes\":" << shadow_texture_bytes_
         << ",\"splitLambda\":0.65,\"blendFraction\":0.10,\"maximumDistance\":" << shadow_splits_[3]
         << ",\"splitDistances\":[" << shadow_splits_[0] << ',' << shadow_splits_[1] << ',' << shadow_splits_[2] << ',' << shadow_splits_[3]
@@ -4913,11 +5186,22 @@ void SceneRenderer::release_targets() {
             temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid)});
         if(reset.success)taa_history_resets_=temporal_history_authority_.state(TemporalHistoryConsumer::taa).reset_count;
     }
+    const auto ssr_state=temporal_history_authority_.state(TemporalHistoryConsumer::ssr);
+    if(ssr_state.current_valid) {
+        (void)temporal_history_authority_.reset({TemporalHistoryConsumer::ssr,ssr_state.revision,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid)});
+    }
     if (color_texture_) SDL_ReleaseGPUTexture(device_,color_texture_);
     if (hdr_texture_) SDL_ReleaseGPUTexture(device_,hdr_texture_);
     if(aerial_hdr_texture_)SDL_ReleaseGPUTexture(device_,aerial_hdr_texture_);
     if(ao_composited_hdr_texture_)SDL_ReleaseGPUTexture(device_,ao_composited_hdr_texture_);
     if(indirect_lighting_texture_)SDL_ReleaseGPUTexture(device_,indirect_lighting_texture_);
+    if(specular_indirect_texture_)SDL_ReleaseGPUTexture(device_,specular_indirect_texture_);
+    if(reflection_properties_texture_)SDL_ReleaseGPUTexture(device_,reflection_properties_texture_);
+    if(ssr_raw_texture_)SDL_ReleaseGPUTexture(device_,ssr_raw_texture_);
+    if(ssr_resolved_texture_)SDL_ReleaseGPUTexture(device_,ssr_resolved_texture_);
+    for(auto* history:ssr_history_textures_)if(history)SDL_ReleaseGPUTexture(device_,history);
+    if(reflected_hdr_texture_)SDL_ReleaseGPUTexture(device_,reflected_hdr_texture_);
     if (tone_mapped_texture_) SDL_ReleaseGPUTexture(device_,tone_mapped_texture_);
     if (object_id_texture_) SDL_ReleaseGPUTexture(device_,object_id_texture_);
     if (normal_texture_) SDL_ReleaseGPUTexture(device_,normal_texture_);
@@ -4938,6 +5222,8 @@ void SceneRenderer::release_targets() {
     if (shadow_texture_) SDL_ReleaseGPUTexture(device_,shadow_texture_);
     if (local_shadow_texture_) SDL_ReleaseGPUTexture(device_,local_shadow_texture_);
     color_texture_=nullptr;hdr_texture_=nullptr;aerial_hdr_texture_=nullptr;ao_composited_hdr_texture_=nullptr;indirect_lighting_texture_=nullptr;
+    specular_indirect_texture_=nullptr;reflection_properties_texture_=nullptr;ssr_raw_texture_=nullptr;
+    ssr_resolved_texture_=nullptr;ssr_history_textures_.fill(nullptr);reflected_hdr_texture_=nullptr;
     tone_mapped_texture_=nullptr;object_id_texture_=nullptr;normal_texture_=nullptr;
     motion_texture_=nullptr;reactive_mask_texture_=nullptr;taa_resolved_texture_=nullptr;ambient_occlusion_texture_=nullptr;
     ambient_occlusion_temp_texture_=nullptr;ambient_occlusion_filtered_texture_=nullptr;
@@ -4949,7 +5235,8 @@ void SceneRenderer::release_targets() {
     depth_pyramid_mip_count_=0U;depth_pyramid_working_set_bytes_=0U;
     width_=height_=render_width_=render_height_=post_width_=post_height_=0;
     pixel_presentation_={};
-    temporal_history_valid_=false; taa_history_index_=0; exposure_history_valid_=false; exposure_history_index_=0;
+    temporal_history_valid_=false;ssr_history_valid_=false;taa_history_index_=0;ssr_history_index_=0;
+    exposure_history_valid_=false; exposure_history_index_=0;
     previous_models_.clear(); previous_skinning_matrices_.clear();
     directional_shadow_cascade_cache_valid_.fill(false);
     local_shadow_face_cache_valid_.fill(false);
@@ -5070,6 +5357,9 @@ void SceneRenderer::release() {
     if(sky_lut_sampler_)SDL_ReleaseGPUSampler(device_,sky_lut_sampler_);
     if (fxaa_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,fxaa_pipeline_);
     if (taa_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,taa_pipeline_);
+    if(ssr_trace_pipeline_)SDL_ReleaseGPUGraphicsPipeline(device_,ssr_trace_pipeline_);
+    if(ssr_temporal_pipeline_)SDL_ReleaseGPUGraphicsPipeline(device_,ssr_temporal_pipeline_);
+    if(ssr_composite_pipeline_)SDL_ReleaseGPUGraphicsPipeline(device_,ssr_composite_pipeline_);
     if(depth_pyramid_seed_pipeline_)SDL_ReleaseGPUComputePipeline(device_,depth_pyramid_seed_pipeline_);
     if(depth_pyramid_reduce_pipeline_)SDL_ReleaseGPUComputePipeline(device_,depth_pyramid_reduce_pipeline_);
     if (vfx_alpha_draw_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,vfx_alpha_draw_pipeline_);
@@ -5115,6 +5405,7 @@ void SceneRenderer::release() {
     bloom_downsample_pipeline_=nullptr;bloom_upsample_pipeline_=nullptr;gtao_pipeline_=nullptr;ao_denoise_pipeline_=nullptr;
     ao_composite_pipeline_=nullptr;auto_exposure_pipeline_=nullptr;
     tone_map_pipeline_=nullptr;sky_atmosphere_pipeline_=nullptr;sky_atmosphere_analytic_pipeline_=nullptr;aerial_perspective_pipeline_=nullptr;fxaa_pipeline_=nullptr;taa_pipeline_=nullptr;
+    ssr_trace_pipeline_=nullptr;ssr_temporal_pipeline_=nullptr;ssr_composite_pipeline_=nullptr;
     depth_pyramid_seed_pipeline_=nullptr;depth_pyramid_reduce_pipeline_=nullptr;vfx_alpha_draw_pipeline_=nullptr;
     sky_transmittance_pipeline_=nullptr;sky_multi_scattering_pipeline_=nullptr;sky_view_pipeline_=nullptr;sky_camera_volume_pipeline_=nullptr;
     sky_transmittance_lut_=nullptr;sky_multi_scattering_lut_=nullptr;sky_view_lut_=nullptr;sky_camera_volume_lut_=nullptr;sky_lut_sampler_=nullptr;

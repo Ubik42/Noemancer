@@ -220,9 +220,9 @@ function Test-ScreenSpaceStatus {
     $history = Get-JsonProperty -Object $foundation -Path 'historyAuthority'
 
     Add-Check -Code "$Stage.renderer-schema" -Stage $Stage `
-        -Pass ((Get-JsonProperty -Object $renderer -Path 'schemaVersion') -eq 'noemancer.renderer-status.v26') `
-        -Message 'Renderer status must use noemancer.renderer-status.v26.' `
-        -Observed (Get-JsonProperty -Object $renderer -Path 'schemaVersion') -Expected 'noemancer.renderer-status.v26'
+        -Pass ((Get-JsonProperty -Object $renderer -Path 'schemaVersion') -eq 'noemancer.renderer-status.v27') `
+        -Message 'Renderer status must use noemancer.renderer-status.v27.' `
+        -Observed (Get-JsonProperty -Object $renderer -Path 'schemaVersion') -Expected 'noemancer.renderer-status.v27'
     Add-Check -Code "$Stage.backend" -Stage $Stage `
         -Pass ((Get-JsonProperty -Object $device -Path 'backend') -eq $Backend) `
         -Message "Renderer backend must be $Backend." `
@@ -245,9 +245,9 @@ function Test-ScreenSpaceStatus {
         -Message 'Render Graph serializer schema must remain noemancer.render-graph.v11.' `
         -Observed (Get-JsonProperty -Object $graph -Path 'schemaVersion') -Expected 'noemancer.render-graph.v11'
     Add-Check -Code "$Stage.graph-v14" -Stage $Stage `
-        -Pass ((Get-JsonProperty -Object $graph -Path 'graphId') -eq 'render.graph.forward.v14') `
-        -Message 'Render Graph identity must be render.graph.forward.v14.' `
-        -Observed (Get-JsonProperty -Object $graph -Path 'graphId') -Expected 'render.graph.forward.v14'
+        -Pass ((Get-JsonProperty -Object $graph -Path 'graphId') -eq 'render.graph.forward.v15') `
+        -Message 'Render Graph identity must be render.graph.forward.v15.' `
+        -Observed (Get-JsonProperty -Object $graph -Path 'graphId') -Expected 'render.graph.forward.v15'
     Add-Check -Code "$Stage.graph-valid" -Stage $Stage `
         -Pass ([bool](Get-JsonProperty -Object $graph -Path 'valid')) `
         -Message 'Render Graph must report valid=true.' `

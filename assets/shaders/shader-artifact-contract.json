@@ -311,6 +311,48 @@
       "threadGroup": null
     },
     {
+      "stem": "ssr_composite.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 5,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "ssr_hiz_trace.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 5,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "ssr_temporal_resolve.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 8,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
       "stem": "taa.frag",
       "stage": "fragment",
       "profile": "ps_6_0",

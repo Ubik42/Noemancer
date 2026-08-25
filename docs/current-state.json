@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-25",
   "status": "active-development",
-  "currentSlice": "render.ssr-production-path",
-  "currentStep": "adopt-hierarchical-ray-march-and-material-validity-contract",
+  "currentSlice": "render.ssgi-production-path",
+  "currentStep": "adopt-shared-hiz-spatial-resolve-and-bent-normal-contract",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "render.ssr-production-path",
     "render.ssgi-production-path",
     "render.bindless-gpu-scene-and-occlusion-decision",
     "render.shadow-scalability-vsm-decision",
@@ -58,7 +57,8 @@
     "render.dynamic-sky-atmosphere-three-lut-foundation",
     "render.dynamic-sky-atmosphere-camera-volume-aerial-authoring",
     "render.dynamic-sky-atmosphere",
-    "render.screen-space-hiz-history-and-temporal-denoising"
+    "render.screen-space-hiz-history-and-temporal-denoising",
+    "render.ssr-production-path"
   ],
   "closedExperiments": [
     {

@@ -170,8 +170,8 @@ function Test-AtmosphereStatus {
     $artifact = Get-JsonProperty -Object $device -Path 'artifactContract'
     $stageName = $Stage
 
-    Add-Check -Code "$Stage.renderer-schema" -Stage $stageName -Pass ((Get-JsonProperty $renderer 'schemaVersion') -eq 'noemancer.renderer-status.v26') `
-        -Message 'Renderer status schema must be noemancer.renderer-status.v26.' -Observed (Get-JsonProperty $renderer 'schemaVersion') -Expected 'noemancer.renderer-status.v26'
+    Add-Check -Code "$Stage.renderer-schema" -Stage $stageName -Pass ((Get-JsonProperty $renderer 'schemaVersion') -eq 'noemancer.renderer-status.v27') `
+        -Message 'Renderer status schema must be noemancer.renderer-status.v27.' -Observed (Get-JsonProperty $renderer 'schemaVersion') -Expected 'noemancer.renderer-status.v27'
     Add-Check -Code "$Stage.renderer-backend" -Stage $stageName -Pass ((Get-JsonProperty $device 'backend') -eq $GpuBackend) `
         -Message "Renderer backend must be $GpuBackend." -Observed (Get-JsonProperty $device 'backend') -Expected $GpuBackend
     Add-Check -Code "$Stage.shader-artifact" -Stage $stageName -Pass ((Get-JsonProperty $device 'shaderArtifact') -eq $ExpectedArtifact) `
@@ -180,8 +180,8 @@ function Test-AtmosphereStatus {
         -Message 'Shader artifact manifest must be verified with a stable SHA-256 identity.' -Observed $artifact -Expected 'code=ok, schema=noemancer.shader-artifact-manifest/0.1, manifestHash=sha256:64hex'
     Add-Check -Code "$Stage.graph-schema" -Stage $stageName -Pass ((Get-JsonProperty $graph 'schemaVersion') -eq 'noemancer.render-graph.v11') `
         -Message 'Render Graph schema must be noemancer.render-graph.v11.' -Observed (Get-JsonProperty $graph 'schemaVersion') -Expected 'noemancer.render-graph.v11'
-    Add-Check -Code "$Stage.graph-id" -Stage $stageName -Pass ((Get-JsonProperty $graph 'graphId') -eq 'render.graph.forward.v14') `
-        -Message 'Render Graph must be render.graph.forward.v14.' -Observed (Get-JsonProperty $graph 'graphId') -Expected 'render.graph.forward.v14'
+    Add-Check -Code "$Stage.graph-id" -Stage $stageName -Pass ((Get-JsonProperty $graph 'graphId') -eq 'render.graph.forward.v15') `
+        -Message 'Render Graph must be render.graph.forward.v15.' -Observed (Get-JsonProperty $graph 'graphId') -Expected 'render.graph.forward.v15'
     Add-Check -Code "$Stage.graph-valid" -Stage $stageName -Pass ([bool](Get-JsonProperty $graph 'valid')) `
         -Message 'Render Graph must report valid=true.' -Observed (Get-JsonProperty $graph 'valid') -Expected $true
 
