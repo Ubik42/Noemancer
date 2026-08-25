@@ -114,7 +114,8 @@ private:
     [[nodiscard]] bool dispatch_sky_atmosphere_luts(SDL_GPUCommandBuffer* command_buffer,
         const std::array<float,3>& camera_position,const std::array<float,3>& camera_right,
         const std::array<float,3>& camera_up,const std::array<float,3>& camera_forward,
-        float tan_half_fov_y,float aspect_ratio,float near_clip,float far_clip);
+        float tan_half_fov_y,float aspect_ratio,float near_clip,float far_clip,
+        bool orthographic_projection,float orthographic_height);
     [[nodiscard]] bool upload_vfx_compute_state(SDL_GPUCommandBuffer* command_buffer, const RenderWorldSnapshot& render_world);
     void dispatch_vfx_compute(SDL_GPUCommandBuffer* command_buffer);
     void dispatch_vfx_group_sort(SDL_GPUCommandBuffer* command_buffer, const std::array<float,3>& camera_position);
@@ -212,6 +213,7 @@ private:
     SDL_GPUGraphicsPipeline* auto_exposure_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* tone_map_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* sky_atmosphere_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* sky_atmosphere_analytic_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* aerial_perspective_pipeline_{nullptr};
     SDL_GPUComputePipeline* sky_transmittance_pipeline_{nullptr};
     SDL_GPUComputePipeline* sky_multi_scattering_pipeline_{nullptr};
@@ -222,14 +224,21 @@ private:
     SDL_GPUTexture* sky_view_lut_{nullptr};
     SDL_GPUTexture* sky_camera_volume_lut_{nullptr};
     SDL_GPUSampler* sky_lut_sampler_{nullptr};
+    std::string sky_medium_lut_identity_;
     std::string sky_lut_identity_;
     std::uint32_t sky_lut_width_{};
     std::uint32_t sky_lut_height_{};
     std::array<std::uint32_t,3> sky_camera_volume_extent_{};
     std::uint64_t sky_lut_regenerations_{};
+    std::uint64_t sky_medium_lut_regenerations_{};
+    std::uint64_t sky_view_lut_regenerations_{};
     std::uint64_t sky_camera_volume_regenerations_{};
     std::string sky_camera_volume_identity_;
     bool sky_lut_valid_{};
+    bool sky_medium_lut_valid_{};
+    bool sky_last_camera_orthographic_{};
+    std::string sky_last_path_{"uninitialized"};
+    std::string sky_lut_fallback_reason_;
     SDL_GPUGraphicsPipeline* fxaa_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* taa_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* vfx_alpha_draw_pipeline_{nullptr};

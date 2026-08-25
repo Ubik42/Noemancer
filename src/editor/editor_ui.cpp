@@ -619,6 +619,11 @@ void EditorUi::set_project_sky_atmosphere(std::optional<SkyAtmosphereSettings> s
     if(sky_atmosphere_panel_)sky_atmosphere_panel_->set_snapshot(snapshot);
     else sky_atmosphere_panel_.emplace(snapshot);
 }
+void EditorUi::set_project_sky_environment(std::optional<SkyEnvironmentSettings> settings,
+                                           const std::uint64_t revision) {
+    project_context_.sky_environment=std::move(settings);
+    project_context_.sky_environment_revision=revision;
+}
 void EditorUi::set_project_ui_document(std::string document_json,const std::uint64_t revision,
                                        std::string fingerprint,const bool can_undo,const bool can_redo) {
     project_context_.project_ui_document_json=std::move(document_json);
@@ -1657,6 +1662,16 @@ std::string EditorUi::semantic_snapshot_json() const {
         if(atmosphere_panel.is_object()) {
             atmosphere_panel["open"]=project_settings_open_;
             snapshot["projectSettingsSkyAtmosphere"]=std::move(atmosphere_panel);
+        }
+    }
+    if(project_context_.sky_environment) {
+        auto environment=nlohmann::json::parse(
+            sky_environment_canonical_evidence(*project_context_.sky_environment),nullptr,false);
+        if(environment.is_object()) {
+            environment["revision"]=project_context_.sky_environment_revision;
+            environment["authority"]="project.skyEnvironment";
+            environment["writableVia"]="project-manifest";
+            snapshot["projectSettingsSkyEnvironment"]=std::move(environment);
         }
     }
     if(project_ui_panel_) {

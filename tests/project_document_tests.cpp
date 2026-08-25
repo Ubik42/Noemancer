@@ -34,6 +34,9 @@ constexpr auto valid_hybrid_pixel_profile = R"({
 constexpr auto valid_sky_atmosphere =
     R"({"schema":"noemancer.sky-atmosphere/0.1","profileId":"sky.main","quality":"medium","physical":{"miePhaseG":0.72}})";
 
+constexpr auto valid_sky_environment =
+    R"({"schema":"noemancer.sky-environment/0.1","profileId":"environment.main","solar":{"timeOfDayHours":17.5,"dayOfYear":200,"latitudeDegrees":35,"northOffsetDegrees":15,"running":false,"timeScale":60},"weather":{"aerosolPreset":"hazy","aerosolDensity":0.65,"aerosolAbsorption":0.25,"sunIrradianceScale":1.1}})";
+
 } // namespace
 
 int main() {
@@ -132,7 +135,8 @@ int main() {
         std::ofstream manifest(root / "noemancer.project.json", std::ios::trunc);
         manifest << R"({"schema":"noemancer.project/0.2","projectId":"project.test","name":"Test Project","startupScene":"scenes/start.scene.json","assetRoots":["assets"],"hybridPixelProfile":)"
                  << valid_hybrid_pixel_profile << R"(,"skyAtmosphere":)"
-                 << valid_sky_atmosphere << '}';
+                 << valid_sky_atmosphere << R"(,"skyEnvironment":)"
+                 << valid_sky_environment << '}';
     }
     const auto loaded_v2 = noemancer::load_project(root);
     if (!loaded_v2 || loaded_v2.project->schema != "noemancer.project/0.2" ||
@@ -142,7 +146,10 @@ int main() {
         !loaded_v2.project->sky_atmosphere ||
         loaded_v2.project->sky_atmosphere->profile_id != "sky.main" ||
         loaded_v2.project->sky_atmosphere->quality != noemancer::SkyAtmosphereQuality::medium ||
-        loaded_v2.project->sky_atmosphere->mie_phase_g != 0.72F) {
+        loaded_v2.project->sky_atmosphere->mie_phase_g != 0.72F ||
+        !loaded_v2.project->sky_environment ||
+        loaded_v2.project->sky_environment->profile_id != "environment.main" ||
+        loaded_v2.project->sky_environment->weather.aerosol_preset != noemancer::SkyAerosolPreset::hazy) {
         std::cerr << noemancer::project_load_errors_json(loaded_v2) << '\n';
         std::filesystem::remove_all(root);
         return 4;
@@ -160,6 +167,20 @@ int main() {
         "/skyAtmosphere/quality")) {
         std::filesystem::remove_all(root);
         return 15;
+    }
+
+    {
+        std::ofstream manifest(root / "noemancer.project.json", std::ios::trunc);
+        manifest << R"({"schema":"noemancer.project/0.2","projectId":"project.test","name":"Test Project","startupScene":"scenes/start.scene.json","assetRoots":["assets"],"skyEnvironment":{"schema":"noemancer.sky-environment/0.1","profileId":"bad","solar":{"timeOfDayHours":24,"dayOfYear":1,"latitudeDegrees":0,"northOffsetDegrees":0,"running":false,"timeScale":1},"weather":{"aerosolPreset":"rain","aerosolDensity":0.5,"aerosolAbsorption":0.5,"sunIrradianceScale":1}}})";
+    }
+    const auto invalid_environment = noemancer::load_project(root);
+    if(invalid_environment || !has_error(invalid_environment,
+        "project.sky-environment.sky-environment.time-of-day-range",
+        "/skyEnvironment/solar/timeOfDayHours") || !has_error(invalid_environment,
+        "project.sky-environment.sky-environment.invalid-aerosol-preset",
+        "/skyEnvironment/weather/aerosolPreset")) {
+        std::filesystem::remove_all(root);
+        return 16;
     }
 
     {
@@ -204,13 +225,16 @@ int main() {
         std::ofstream manifest(root / "noemancer.project.json", std::ios::trunc);
         manifest << R"({"schema":"noemancer.project/0.1","projectId":"project.test","name":"Test Project","startupScene":"scenes/start.scene.json","assetRoots":["assets"],"hybridPixelProfile":)"
                  << valid_hybrid_pixel_profile << R"(,"skyAtmosphere":)"
-                 << valid_sky_atmosphere << '}';
+                 << valid_sky_atmosphere << R"(,"skyEnvironment":)"
+                 << valid_sky_environment << '}';
     }
     const auto legacy_profile = noemancer::load_project(root);
     if (legacy_profile || !has_error(legacy_profile,
         "project.hybrid-pixel-profile-schema", "/hybridPixelProfile") ||
         !has_error(legacy_profile,
-        "project.sky-atmosphere-schema", "/skyAtmosphere")) {
+        "project.sky-atmosphere-schema", "/skyAtmosphere") ||
+        !has_error(legacy_profile,
+        "project.sky-environment-schema", "/skyEnvironment")) {
         std::filesystem::remove_all(root);
         return 7;
     }

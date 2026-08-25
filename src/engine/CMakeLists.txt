@@ -50,6 +50,7 @@ add_library(noemancer_engine STATIC
     render_world.cpp
     retained_ui_runtime.cpp
     sky_atmosphere.cpp
+    sky_environment.cpp
     scene_document.cpp
     semantic_ui.cpp
     semantic_state.cpp

@@ -342,6 +342,28 @@ int main() {
         std::cerr << "A legacy Project schema bypassed the Hybrid Pixel package boundary.\n";
         return 37;
     }
+    auto sky_input=input;
+    sky_input.project.schema="noemancer.project/0.2";
+    sky_input.project.sky_atmosphere=make_sky_atmosphere_settings(SkyAtmosphereQuality::medium);
+    sky_input.project.sky_environment=make_sky_environment_settings(SkyAerosolPreset::hazy);
+    sky_input.project.sky_environment->solar.time_of_day_hours=17.5F;
+    const auto sky_plan=plan_package(sky_input);
+    const auto sky_profile=nlohmann::json::parse(sky_plan.game_profile_json);
+    if(!sky_plan.valid||!sky_profile.contains("skyAtmosphere")||
+       !sky_profile.contains("skyEnvironment")||
+       sky_profile.at("skyAtmosphere")!=nlohmann::json::parse(
+           SkyAtmosphereSettingsCodec::write_canonical_json(*sky_input.project.sky_atmosphere))||
+       sky_profile.at("skyEnvironment")!=nlohmann::json::parse(
+           SkyEnvironmentCodec::write_canonical_json(*sky_input.project.sky_environment))) {
+        std::cerr<<"Sky Atmosphere/Environment were not embedded as canonical Player contracts.\n";
+        return 38;
+    }
+    auto legacy_sky_input=sky_input;legacy_sky_input.project.schema="noemancer.project/0.1";
+    const auto legacy_sky_plan=plan_package(legacy_sky_input);
+    if(legacy_sky_plan.valid||!has_diagnostic(legacy_sky_plan,"package.sky-atmosphere-schema")||
+       !has_diagnostic(legacy_sky_plan,"package.sky-environment-schema")) {
+        std::cerr<<"Legacy Project schema bypassed the Sky package boundary.\n";return 39;
+    }
     const auto repeat = plan_package(input);
     if (package_plan_json(plan) != package_plan_json(repeat) ||
         plan.content_hash != repeat.content_hash || plan.plan_id != repeat.plan_id) {

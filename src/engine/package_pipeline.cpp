@@ -330,6 +330,24 @@ void validate_project(const PackageInput& input, PackagePlan& plan) {
             add_diagnostic(plan, "package.hybrid-pixel-profile-invalid", path, error.message);
         }
     }
+    if(project.sky_atmosphere) {
+        if(project.schema!=kProjectSchemaCurrent)add_diagnostic(plan,"package.sky-atmosphere-schema",
+            "/project/skyAtmosphere","Sky Atmosphere packaging requires noemancer.project/0.2.");
+        for(const auto& error:SkyAtmosphereSettingsCodec::validate(*project.sky_atmosphere)) {
+            const auto path=error.path=="/"?std::string{"/project/skyAtmosphere"}:
+                std::string{"/project/skyAtmosphere"}+error.path;
+            add_diagnostic(plan,"package.sky-atmosphere-invalid",path,error.message);
+        }
+    }
+    if(project.sky_environment) {
+        if(project.schema!=kProjectSchemaCurrent)add_diagnostic(plan,"package.sky-environment-schema",
+            "/project/skyEnvironment","Sky Environment packaging requires noemancer.project/0.2.");
+        for(const auto& error:SkyEnvironmentCodec::validate(*project.sky_environment)) {
+            const auto path=error.path=="/"?std::string{"/project/skyEnvironment"}:
+                std::string{"/project/skyEnvironment"}+error.path;
+            add_diagnostic(plan,"package.sky-environment-invalid",path,error.message);
+        }
+    }
 }
 
 void validate_game_profile(const PackageInput& input, PackagePlan& plan) {
@@ -438,6 +456,10 @@ std::string profile_json(const PackageInput& input) {
         output["hybridPixelProfile"] = Json::parse(
             HybridPixelProfileCodec::write_canonical_json(*project.hybrid_pixel_profile));
     }
+    if(project.sky_atmosphere)output["skyAtmosphere"]=Json::parse(
+        SkyAtmosphereSettingsCodec::write_canonical_json(*project.sky_atmosphere));
+    if(project.sky_environment)output["skyEnvironment"]=Json::parse(
+        SkyEnvironmentCodec::write_canonical_json(*project.sky_environment));
     return output.dump();
 }
 

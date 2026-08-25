@@ -32,6 +32,11 @@ cbuffer AerialPerspectiveSettings : register(b0, space3)
     float4 depthParameters;
     // xyz: volume dimensions, w: SkyAtmosphereDebugView numeric value.
     float4 volumeParameters;
+    // xyz: unit camera forward.
+    float4 cameraForward;
+    // x: projection kind (0 perspective, 1 orthographic), y: orthographic
+    // height, z: aspect ratio, w reserved.
+    float4 projectionParameters;
 };
 
 float safe_finite(float value)
@@ -62,7 +67,10 @@ float4 main(FragmentInput input) : SV_Target0
         ? world.w
         : (world.w < 0.0f ? -0.000001f : 0.000001f);
     world.xyz /= safeW;
-    const float distanceToCamera = length(world.xyz - cameraPosition.xyz);
+    const float3 cameraDelta = world.xyz - cameraPosition.xyz;
+    const float distanceToCamera = projectionParameters.x > 0.5f
+        ? max(dot(cameraDelta, normalize(cameraForward.xyz)), 0.0f)
+        : length(cameraDelta);
     const float nearDistance = max(depthParameters.x, 0.0f);
     const float farDistance = max(depthParameters.y, nearDistance + 0.0001f);
     const float exponent = max(depthParameters.z, 1.0f);

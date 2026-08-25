@@ -94,6 +94,10 @@ constexpr std::string_view profile_uri = "package://config/game-profile.json";
         return "packagedAssets must be an array when present.";
     if (profile.contains("hybridPixelProfile") && !profile.at("hybridPixelProfile").is_object())
         return "hybridPixelProfile must be an object when present.";
+    if(profile.contains("skyAtmosphere")&&!profile.at("skyAtmosphere").is_object())
+        return "skyAtmosphere must be an object when present.";
+    if(profile.contains("skyEnvironment")&&!profile.at("skyEnvironment").is_object())
+        return "skyEnvironment must be an object when present.";
     return {};
 }
 

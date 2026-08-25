@@ -9,6 +9,7 @@
 #include "editor/startup_hub.hpp"
 #include "engine/render_world.hpp"
 #include "engine/hybrid_pixel_profile.hpp"
+#include "engine/sky_environment.hpp"
 
 #include <cstdint>
 #include <array>
@@ -56,6 +57,8 @@ struct EditorProjectContext final {
     std::uint64_t sky_atmosphere_revision{1};
     bool sky_atmosphere_can_undo{};
     bool sky_atmosphere_can_redo{};
+    std::optional<SkyEnvironmentSettings> sky_environment;
+    std::uint64_t sky_environment_revision{1};
     std::string project_ui_document_json;
     std::uint64_t project_ui_revision{1};
     std::string project_ui_fingerprint;
@@ -177,6 +180,8 @@ public:
                                           std::uint64_t revision,bool can_undo,bool can_redo);
     void set_project_sky_atmosphere(std::optional<SkyAtmosphereSettings> settings,
                                     std::uint64_t revision,bool can_undo,bool can_redo);
+    void set_project_sky_environment(std::optional<SkyEnvironmentSettings> settings,
+                                     std::uint64_t revision);
     void set_project_ui_document(std::string document_json,std::uint64_t revision,
                                  std::string fingerprint,bool can_undo,bool can_redo);
     void set_project_settings_open(bool open) noexcept { project_settings_open_ = open; }

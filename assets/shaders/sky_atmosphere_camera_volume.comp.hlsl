@@ -44,9 +44,11 @@ cbuffer SkyAtmosphereCameraVolumeParameters : register(b0, space2)
     // xyz: unit vector from the planet toward the sun; w: angular radius.
     float4 sunDirection;
     float4 sunIrradiance;
-    // x/y: target dimensions, z: vertical tan-half-FOV, w: aspect ratio.
+    // x/y: target dimensions, z: vertical tan-half-FOV for perspective or
+    // orthographic height, w: aspect ratio.
     float4 targetParameters;
-    // x: near depth, y: far depth, z: depth distribution exponent, w reserved.
+    // x: near depth, y: far depth, z: depth distribution exponent,
+    // w: projection kind (0 perspective, 1 orthographic).
     float4 depthParameters;
     // Camera basis and position are in one camera-relative/rebased world.
     float4 cameraPosition;
@@ -213,11 +215,28 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         dispatchThreadId.z >= slices)
         return;
 
-    const float3 origin = finite_or_zero(cameraPosition.xyz);
-    const float3 rayDirection = make_view_direction(
-        (float2(dispatchThreadId.xy) + 0.5f) /
-            max(float2((float)width, (float)height), float2(1.0f, 1.0f)),
-        width, height);
+    const float2 screenUv = (float2(dispatchThreadId.xy) + 0.5f) /
+        max(float2((float)width, (float)height), float2(1.0f, 1.0f));
+    const bool orthographicProjection = depthParameters.w > 0.5f;
+    float3 origin = finite_or_zero(cameraPosition.xyz);
+    float3 rayDirection;
+    if (orthographicProjection)
+    {
+        const float2 ndc = float2(screenUv.x * 2.0f - 1.0f,
+            1.0f - screenUv.y * 2.0f);
+        const float orthographicHeight = max(finite_or_zero(targetParameters.z), 0.01f);
+        const float aspect = max(finite_or_zero(targetParameters.w),
+            (float)width / max((float)height, 1.0f));
+        const float3 right = safe_normalize(cameraRight.xyz, float3(1.0f, 0.0f, 0.0f));
+        const float3 up = safe_normalize(cameraUp.xyz, float3(0.0f, 1.0f, 0.0f));
+        rayDirection = safe_normalize(cameraForward.xyz, float3(0.0f, 0.0f, -1.0f));
+        origin += right * (ndc.x * orthographicHeight * aspect * 0.5f) +
+            up * (ndc.y * orthographicHeight * 0.5f);
+    }
+    else
+    {
+        rayDirection = make_view_direction(screenUv, width, height);
+    }
     const float radius = safe_radius(planetParameters.x);
     const float atmosphereRadius = radius +
         max(finite_or_zero(planetParameters.y), MIN_VALUE);

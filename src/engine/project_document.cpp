@@ -146,6 +146,14 @@ ProjectLoadResult parse_project_documents(
                 continue;
             }
         }
+        if (field == "skyEnvironment") {
+            if (is_project_v2) continue;
+            if (is_project_v1) {
+                add_error(result, "project.sky-environment-schema", "/skyEnvironment",
+                    "skyEnvironment requires noemancer.project/0.2 and cannot be silently accepted by a 0.1 manifest.");
+                continue;
+            }
+        }
         if (!known) {
             add_error(result, "project.unknown-field", "/" + field,
                 "Unknown project fields are rejected to prevent silent data loss.");
@@ -264,6 +272,21 @@ ProjectLoadResult parse_project_documents(
             }
         } else {
             project.sky_atmosphere = *parsed_atmosphere.document;
+        }
+    }
+    if (is_project_v2 && input.contains("skyEnvironment")) {
+        const auto parsed_environment = SkyEnvironmentCodec::parse_json(
+            input.at("skyEnvironment").dump());
+        if (!parsed_environment) {
+            for (const auto& environment_error : parsed_environment.errors) {
+                const auto environment_path = environment_error.path == "/" ?
+                    std::string("/skyEnvironment") :
+                    std::string("/skyEnvironment") + environment_error.path;
+                add_error(result, "project.sky-environment." + environment_error.code,
+                    environment_path, environment_error.message);
+            }
+        } else {
+            project.sky_environment = *parsed_environment.document;
         }
     }
     parse_input_actions(input,project,result);

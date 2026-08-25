@@ -4,6 +4,7 @@
 #include "engine/gameplay_runtime.hpp"
 #include "engine/hybrid_pixel_profile.hpp"
 #include "engine/sky_atmosphere.hpp"
+#include "engine/sky_environment.hpp"
 #include "engine/virtual_file_system.hpp"
 
 #include <filesystem>
@@ -35,6 +36,9 @@ struct ProjectDocument final {
     // stores the same codec-owned plain data consumed by Editor/Runtime/
     // Agent; derived LUT budgets and GPU resources stay outside ProjectDocument.
     std::optional<SkyAtmosphereSettings> sky_atmosphere;
+    // Optional deterministic solar clock and aerosol controller. It projects
+    // onto sky_atmosphere and never duplicates its planetary medium fields.
+    std::optional<SkyEnvironmentSettings> sky_environment;
 };
 
 struct ProjectLoadError final {

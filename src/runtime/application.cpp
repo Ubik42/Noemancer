@@ -291,6 +291,24 @@ std::filesystem::path default_user_data_root() {
     return std::filesystem::temp_directory_path()/"noemancer-user-data"/"projects";
 }
 
+std::optional<SkyAtmosphereSettings> sky_atmosphere_from_game_profile(
+    const nlohmann::json& profile,bool& valid) {
+    valid=true;if(!profile.contains("skyAtmosphere"))return std::nullopt;
+    if(profile.value("schema",std::string{})!="noemancer.game-profile/0.4"||
+       !profile.at("skyAtmosphere").is_object()) {valid=false;return std::nullopt;}
+    const auto parsed=SkyAtmosphereSettingsCodec::parse_json(profile.at("skyAtmosphere").dump());
+    if(!parsed){valid=false;return std::nullopt;}return *parsed.document;
+}
+
+std::optional<SkyEnvironmentSettings> sky_environment_from_game_profile(
+    const nlohmann::json& profile,bool& valid) {
+    valid=true;if(!profile.contains("skyEnvironment"))return std::nullopt;
+    if(profile.value("schema",std::string{})!="noemancer.game-profile/0.4"||
+       !profile.at("skyEnvironment").is_object()) {valid=false;return std::nullopt;}
+    const auto parsed=SkyEnvironmentCodec::parse_json(profile.at("skyEnvironment").dump());
+    if(!parsed){valid=false;return std::nullopt;}return *parsed.document;
+}
+
 bool persist_project_sky_atmosphere(const std::filesystem::path& manifest_path,
     const std::optional<SkyAtmosphereSettings>& settings,std::string& detail) {
     std::ifstream input(manifest_path,std::ios::binary);std::ostringstream contents;contents<<input.rdbuf();
@@ -363,6 +381,16 @@ Application::Application(RunOptions options)
             if(!hybrid_profile_valid)startup_error_json_=nlohmann::json{
                 {"schemaVersion","noemancer.player-load/0.1"},{"success",false},
                 {"code","player.hybrid-pixel-profile-invalid"}}.dump();
+            bool sky_atmosphere_valid{},sky_environment_valid{};
+            const auto packaged_atmosphere=sky_atmosphere_from_game_profile(profile,sky_atmosphere_valid);
+            sky_environment_=sky_environment_from_game_profile(profile,sky_environment_valid);
+            if(!sky_atmosphere_valid||!sky_environment_valid)startup_error_json_=nlohmann::json{
+                {"schemaVersion","noemancer.player-load/0.1"},{"success",false},
+                {"code",!sky_atmosphere_valid?"player.sky-atmosphere-invalid":"player.sky-environment-invalid"}}.dump();
+            sky_atmosphere_base_=packaged_atmosphere.value_or(
+                make_sky_atmosphere_settings(SkyAtmosphereQuality::high));
+            sky_atmosphere_=sky_environment_
+                ?project_sky_environment(*sky_environment_,sky_atmosphere_base_):sky_atmosphere_base_;
             if(const auto registry_relative=std::filesystem::path(profile.value("assetRegistry",std::string{})).lexically_normal();
                 !registry_relative.empty()&&!registry_relative.is_absolute()&&*registry_relative.begin()!=std::filesystem::path("..")) {
                 startup_telemetry_->begin_phase("asset.registry");
@@ -567,8 +595,12 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
             source.is_object()?source.value("revision",1ULL):1ULL);
     }
     hybrid_pixel_profile_=loaded.project->hybrid_pixel_profile;
-    sky_atmosphere_=loaded.project->sky_atmosphere.value_or(
+    sky_atmosphere_base_=loaded.project->sky_atmosphere.value_or(
         make_sky_atmosphere_settings(SkyAtmosphereQuality::high));
+    sky_environment_=loaded.project->sky_environment;
+    sky_atmosphere_=sky_environment_
+        ? project_sky_environment(*sky_environment_,sky_atmosphere_base_)
+        : sky_atmosphere_base_;
     project_sky_atmosphere_session_=std::make_unique<SkyAtmosphereAuthoringSession>(
         loaded.project->sky_atmosphere);
     ++sky_atmosphere_revision_;
@@ -612,6 +644,8 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
     context.sky_atmosphere_revision=project_sky_atmosphere_session_->revision();
     context.sky_atmosphere_can_undo=project_sky_atmosphere_session_->can_undo();
     context.sky_atmosphere_can_redo=project_sky_atmosphere_session_->can_redo();
+    context.sky_environment=sky_environment_;
+    context.sky_environment_revision=sky_environment_revision_;
     if(project_ui_session_) {
         context.project_ui_document_json=project_ui_session_->source_json();
         context.project_ui_revision=project_ui_session_->revision();
@@ -819,7 +853,10 @@ void Application::apply_sky_atmosphere_request(const SkyAtmosphereAuthoringReque
     receipt=invoke(false);
     if(!receipt) {editor_ui_.set_last_action_status(receipt.detail);
         logger_.error("project.sky-atmosphere",receipt.to_json());return;}
-    sky_atmosphere_=receipt.settings.value_or(make_sky_atmosphere_settings(SkyAtmosphereQuality::high));
+    sky_atmosphere_base_=receipt.settings.value_or(make_sky_atmosphere_settings(SkyAtmosphereQuality::high));
+    sky_atmosphere_=sky_environment_
+        ? project_sky_environment(*sky_environment_,sky_atmosphere_base_)
+        : sky_atmosphere_base_;
     ++sky_atmosphere_revision_;
     editor_ui_.set_project_sky_atmosphere(project_sky_atmosphere_session_->settings(),
         project_sky_atmosphere_session_->revision(),project_sky_atmosphere_session_->can_undo(),
@@ -2539,7 +2576,34 @@ int Application::run_interactive() {
             static_cast<void>(active_world().vfx_spawn_json("vfx.debug-impact",{2.5F,2.2F,1.0F},0x4e4f454dULL+frame));
         }
         // Automated visual evidence advances deterministic simulation time instead of wall-clock time.
-        tick_frame(has_gpu_probe ? 1.0 / 60.0 : frame_delta.count());
+        const double effective_delta_seconds=has_gpu_probe?1.0/60.0:frame_delta.count();
+        tick_frame(effective_delta_seconds);
+        if(sky_environment_&&sky_environment_->solar.running) {
+            // Solar motion changes the view/camera LUT identities.  Advance it
+            // at a stable presentation cadence instead of rebuilding those
+            // resources once per rendered frame; the accumulated explicit
+            // delta preserves deterministic clock semantics.
+            constexpr double sky_environment_update_interval_seconds=0.1;
+            sky_environment_advance_accumulator_seconds_+=std::clamp(effective_delta_seconds,0.0,
+                static_cast<double>(sky_environment_max_advance_delta_seconds));
+            if(sky_environment_advance_accumulator_seconds_>=sky_environment_update_interval_seconds) {
+                const auto accumulated_delta=std::exchange(sky_environment_advance_accumulator_seconds_,0.0);
+                const auto advance=advance_sky_environment(*sky_environment_,
+                    static_cast<float>(std::min(accumulated_delta,
+                        static_cast<double>(sky_environment_max_advance_delta_seconds))));
+                if(!advance)logger_.error("sky.environment",nlohmann::json{{"success",false},
+                    {"code",advance.code},{"detail",advance.detail}}.dump());
+                else if(advance.changed) {
+                    const auto projected=project_sky_environment(*sky_environment_,sky_atmosphere_base_);
+                    if(sky_atmosphere_history_reset_identity(projected)!=
+                       sky_atmosphere_history_reset_identity(sky_atmosphere_)) {
+                        sky_atmosphere_=projected;++sky_atmosphere_revision_;
+                    }
+                    ++sky_environment_revision_;
+                    editor_ui_.set_project_sky_environment(sky_environment_,sky_environment_revision_);
+                }
+            }
+        }
         performance_simulation=std::chrono::duration<double,std::milli>(
             std::chrono::steady_clock::now()-simulation_start).count();
         if(frame>0&&frame%6U==0U) {

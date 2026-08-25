@@ -178,7 +178,11 @@ private:
     std::string project_hud_document_json_;
     std::string player_profile_document_json_;
     std::optional<HybridPixelProfile> hybrid_pixel_profile_;
+    SkyAtmosphereSettings sky_atmosphere_base_{make_sky_atmosphere_settings(SkyAtmosphereQuality::high)};
     SkyAtmosphereSettings sky_atmosphere_{make_sky_atmosphere_settings(SkyAtmosphereQuality::high)};
+    std::optional<SkyEnvironmentSettings> sky_environment_;
+    double sky_environment_advance_accumulator_seconds_{};
+    std::uint64_t sky_environment_revision_{1U};
     std::uint64_t sky_atmosphere_revision_{1U};
     std::uint64_t hybrid_pixel_profile_revision_{1U};
     std::unique_ptr<GamePersistenceStore> persistence_store_;
