@@ -70,11 +70,12 @@ void print_usage() {
         << "                 [--texture-streaming-workload noemancer.texture-streaming.pressure/0.1]\n"
         << "                 [--temporal-debug final|motion|reactive|disocclusion|history-weight|history-clamp|linear-depth|normal]\n"
         << "                 [--ssr-quality low|medium|high] [--ssr-debug final|confidence|hit-distance|roughness|miss|normal]\n"
+        << "                 [--ssgi-quality low|medium|high] [--ssgi-debug final|confidence|visibility|bent-normal|miss]\n"
         << "                 [--reference-scene commercial-raster-v1]\n"
         << "                 [--render-stress-instances N]\n"
         << "                 [--animation-physics-stress]\n"
         << "                 [--vfx-respawn-interval N]\n"
-        << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr]\n"
+        << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr] [--disable-ssgi]\n"
         << "                 [--gpu-visibility-readback] [--render-stress-offscreen-percent N]\n"
         << "                 [--ui-locale LOCALE] [--ui-scale SCALE]\n"
         << "                 [--project PATH]\n"
@@ -482,6 +483,18 @@ int main(int argc, char** argv) {
                options.ssr_debug_mode!="miss"&&options.ssr_debug_mode!="normal") {
                 std::cerr<<"Unknown SSR debug mode\n";return 2;
             }
+        } else if(argument=="--ssgi-quality"&&index<argc) {
+            options.ssgi_quality=argv[index++];
+            if(options.ssgi_quality!="low"&&options.ssgi_quality!="medium"&&options.ssgi_quality!="high") {
+                std::cerr<<"SSGI quality must be low, medium, or high\n";return 2;
+            }
+        } else if(argument=="--ssgi-debug"&&index<argc) {
+            options.ssgi_debug_mode=argv[index++];
+            if(options.ssgi_debug_mode!="final"&&options.ssgi_debug_mode!="confidence"&&
+               options.ssgi_debug_mode!="visibility"&&options.ssgi_debug_mode!="bent-normal"&&
+               options.ssgi_debug_mode!="miss") {
+                std::cerr<<"Unknown SSGI debug mode\n";return 2;
+            }
         } else if (argument == "--reference-scene" && index < argc) {
             options.reference_scene_id=argv[index++];
             if(options.reference_scene_id!="commercial-raster-v1") {
@@ -519,6 +532,8 @@ int main(int argc, char** argv) {
             options.disable_auto_exposure=true;
         } else if(argument=="--disable-ssr") {
             options.disable_ssr=true;
+        } else if(argument=="--disable-ssgi") {
+            options.disable_ssgi=true;
         } else if(argument=="--gpu-visibility-readback") {
             options.gpu_visibility_readback=true;
         } else if(argument=="--render-stress-offscreen-percent"&&index<argc) {

@@ -236,7 +236,7 @@ FragmentOutput main(FragmentInput input)
         output.color = float4(surfaceColor.rgb + emissive, surfaceColor.a);
         output.indirectLighting = float4(0.0f, 0.0f, 0.0f, 0.0f);
         output.specularIndirect = 0.0f.xxxx;
-        output.reflectionProperties = float4(0.0f, 0.0f, 0.0f, 1.0f);
+        output.reflectionProperties = float4(surfaceColor.rgb, 1.0f);
         return output;
     }
     const float3 toView = normalize(cameraPosition.xyz - input.worldPosition);
@@ -299,7 +299,7 @@ FragmentOutput main(FragmentInput input)
     const float3 indirectIbl = diffuseIbl + specularIbl;
     output.indirectLighting = float4(indirectIbl, 1.0f);
     output.specularIndirect = float4(specularIbl, 1.0f);
-    output.reflectionProperties = float4(f0, roughness);
+    output.reflectionProperties = float4(surfaceColor.rgb, metallic);
     output.color = float4(indirectIbl + direct + emissive, surfaceColor.a);
     return output;
 }

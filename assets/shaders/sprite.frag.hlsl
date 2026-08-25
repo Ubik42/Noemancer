@@ -251,7 +251,7 @@ FragmentOutput main(FragmentInput input)
         output.color = float4(bounded_color(safeSampled.rgb + emissive), safeSampled.a);
         output.indirectLighting = float4(0.0f, 0.0f, 0.0f, 0.0f);
         output.specularIndirect = 0.0f.xxxx;
-        output.reflectionProperties = float4(0.0f, 0.0f, 0.0f, 1.0f);
+        output.reflectionProperties = float4(safeSampled.rgb, 1.0f);
         return output;
     }
 
@@ -346,7 +346,7 @@ FragmentOutput main(FragmentInput input)
     // no IBL specular term is subtracted by the SSR composite.  The F0 and
     // roughness contract still lets a valid screen-space hit contribute.
     output.specularIndirect = 0.0f.xxxx;
-    output.reflectionProperties = float4(f0, roughness);
+    output.reflectionProperties = float4(surfaceColor, metallic);
     output.color = float4(bounded_color(indirect + direct + emissive), safeSampled.a);
     return output;
 }

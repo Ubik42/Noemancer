@@ -210,6 +210,13 @@ add_executable(noemancer_screen_space_reflections_tests screen_space_reflections
 target_link_libraries(noemancer_screen_space_reflections_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.screen_space_reflections COMMAND noemancer_screen_space_reflections_tests)
 
+add_executable(noemancer_screen_space_global_illumination_tests
+    screen_space_global_illumination_tests.cpp)
+target_link_libraries(noemancer_screen_space_global_illumination_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.screen_space_global_illumination
+    COMMAND noemancer_screen_space_global_illumination_tests)
+
 add_executable(noemancer_image_decoder_tests image_decoder_tests.cpp)
 target_link_libraries(noemancer_image_decoder_tests PRIVATE noemancer::engine)
 add_test(NAME noemancer.image_decoder COMMAND noemancer_image_decoder_tests)

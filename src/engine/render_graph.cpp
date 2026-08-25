@@ -96,14 +96,14 @@ CompiledRenderGraph RenderGraphCompiler::compile(
 }
 
 CompiledRenderGraph make_forward_render_graph() {
-    // v15 keeps every existing resource/pass identity intact while making the
+    // v16 keeps every existing resource/pass identity intact while making the
     // screen-space inputs explicit.  The depth pyramid is one logical
     // RG32_FLOAT mip-chain resource: seed writes mip 0 and reduce fills the
     // remaining mips through an explicit read/modify/write edge.  Keeping the
     // chain behind one stable resource ID lets SSR, SSGI and future occlusion
     // consumers attach to the same graph contract instead of creating local
     // HiZ resources.
-    auto graph = RenderGraphCompiler::compile("render.graph.forward.v15",
+    auto graph = RenderGraphCompiler::compile("render.graph.forward.v16",
         {{"render.resource.shadow-depth", "D32_FLOAT", true, "2d-array", 4, false, "shadow"}, {"render.resource.scene-hdr", "RGBA16_FLOAT", true},
          {"render.resource.atmosphere-camera-volume", "RGBA16_FLOAT", false, "3d", 1, true, "camera-volume"},
          {"render.resource.scene-hdr-aerial", "RGBA16_FLOAT", true},
@@ -111,6 +111,15 @@ CompiledRenderGraph make_forward_render_graph() {
           {"render.resource.scene-specular-indirect", "RGBA16_FLOAT", true},
           {"render.resource.surface-reflection-properties", "RGBA16_FLOAT", true},
           {"render.resource.scene-hdr-ao", "RGBA16_FLOAT", true},
+          {"render.resource.scene-gi-raw", "RGBA16_FLOAT", true},
+          {"render.resource.scene-gi-raw-bent-normal", "RGBA16_FLOAT", true},
+          {"render.resource.scene-gi-spatial", "RGBA16_FLOAT", true},
+          {"render.resource.scene-gi-spatial-bent-normal", "RGBA16_FLOAT", true},
+          {"render.resource.scene-gi-bent-normal-visibility", "RGBA16_FLOAT", true},
+          {"render.resource.scene-gi-resolved", "RGBA16_FLOAT", true},
+          {"render.resource.scene-gi-history", "RGBA16_FLOAT", false, "2d", 1, true, "render"},
+          {"render.resource.scene-gi-bent-normal-history", "RGBA16_FLOAT", false, "2d", 1, true, "render"},
+          {"render.resource.scene-hdr-gi", "RGBA16_FLOAT", true},
           {"render.resource.scene-reflection-raw", "RGBA16_FLOAT", true},
           {"render.resource.scene-reflection-resolved", "RGBA16_FLOAT", true},
           {"render.resource.scene-reflection-history", "RGBA16_FLOAT", false, "2d", 1, true, "render"},
@@ -166,16 +175,28 @@ CompiledRenderGraph make_forward_render_graph() {
           {"render.resource.scene-hdr-aerial"}, {"render.pass.opaque-lit", "render.pass.depth-pyramid-reduce"}},
           {"render.pass.ambient-occlusion-composite", "render.pipeline.ao-indirect-composite",
            {"render.resource.scene-hdr-aerial", "render.resource.scene-indirect", "render.resource.ambient-occlusion-filtered"},
-           {"render.resource.scene-hdr-ao"}, {"render.pass.ambient-occlusion-denoise-vertical", "render.pass.aerial-perspective"}},
-          {"render.pass.ssr-hierarchical-trace", "render.pipeline.ssr-hiz-trace",
+          {"render.resource.scene-hdr-ao"}, {"render.pass.ambient-occlusion-denoise-vertical", "render.pass.aerial-perspective"}},
+          {"render.pass.ssgi-hierarchical-gather", "render.pipeline.ssgi-hiz-gather",
            {"render.resource.scene-hdr-ao", "render.resource.scene-depth", "render.resource.scene-depth-pyramid", "render.resource.world-normal", "render.resource.surface-reflection-properties"},
-           {"render.resource.scene-reflection-raw"}, {"render.pass.ambient-occlusion-composite", "render.pass.depth-pyramid-reduce"}},
+           {"render.resource.scene-gi-raw", "render.resource.scene-gi-raw-bent-normal"}, {"render.pass.ambient-occlusion-composite", "render.pass.depth-pyramid-reduce"}},
+          {"render.pass.ssgi-spatial-resolve", "render.pipeline.ssgi-spatial-resolve",
+           {"render.resource.scene-gi-raw", "render.resource.scene-gi-raw-bent-normal", "render.resource.scene-depth", "render.resource.world-normal", "render.resource.surface-reflection-properties"},
+           {"render.resource.scene-gi-spatial", "render.resource.scene-gi-spatial-bent-normal"}, {"render.pass.ssgi-hierarchical-gather"}},
+          {"render.pass.ssgi-temporal-resolve", "render.pipeline.ssgi-temporal-resolve",
+           {"render.resource.scene-gi-spatial", "render.resource.scene-gi-spatial-bent-normal", "render.resource.scene-gi-history", "render.resource.scene-gi-bent-normal-history", "render.resource.scene-depth", "render.resource.temporal-depth-history", "render.resource.motion-vectors", "render.resource.reactive-mask"},
+           {"render.resource.scene-gi-resolved", "render.resource.scene-gi-bent-normal-visibility", "render.resource.scene-gi-history", "render.resource.scene-gi-bent-normal-history"}, {"render.pass.ssgi-spatial-resolve"}},
+          {"render.pass.ssgi-composite", "render.pipeline.ssgi-diffuse-ibl-composite",
+           {"render.resource.scene-hdr-ao", "render.resource.scene-indirect", "render.resource.scene-specular-indirect", "render.resource.ambient-occlusion-filtered", "render.resource.scene-gi-resolved", "render.resource.scene-gi-bent-normal-visibility", "render.resource.surface-reflection-properties"},
+           {"render.resource.scene-hdr-gi"}, {"render.pass.ssgi-temporal-resolve", "render.pass.ambient-occlusion-composite"}},
+          {"render.pass.ssr-hierarchical-trace", "render.pipeline.ssr-hiz-trace",
+           {"render.resource.scene-hdr-gi", "render.resource.scene-depth", "render.resource.scene-depth-pyramid", "render.resource.world-normal", "render.resource.surface-reflection-properties"},
+           {"render.resource.scene-reflection-raw"}, {"render.pass.ssgi-composite", "render.pass.depth-pyramid-reduce"}},
           {"render.pass.ssr-temporal-resolve", "render.pipeline.ssr-temporal-resolve",
            {"render.resource.scene-reflection-raw", "render.resource.motion-vectors", "render.resource.scene-depth", "render.resource.world-normal", "render.resource.scene-reflection-history", "render.resource.temporal-depth-history", "render.resource.previous-normal-history", "render.resource.reactive-mask"},
            {"render.resource.scene-reflection-resolved", "render.resource.scene-reflection-history"}, {"render.pass.ssr-hierarchical-trace"}},
           {"render.pass.ssr-composite", "render.pipeline.ssr-energy-conserving-composite",
-           {"render.resource.scene-hdr-ao", "render.resource.scene-specular-indirect", "render.resource.ambient-occlusion-filtered", "render.resource.scene-reflection-resolved", "render.resource.surface-reflection-properties"},
-           {"render.resource.scene-hdr-reflected"}, {"render.pass.ssr-temporal-resolve", "render.pass.ambient-occlusion-composite"}},
+           {"render.resource.scene-hdr-gi", "render.resource.scene-specular-indirect", "render.resource.ambient-occlusion-filtered", "render.resource.scene-reflection-resolved", "render.resource.surface-reflection-properties"},
+           {"render.resource.scene-hdr-reflected"}, {"render.pass.ssr-temporal-resolve", "render.pass.ssgi-composite"}},
           {"render.pass.transparent-lit", "render.pipeline.pbr-forward-alpha", {"render.resource.shadow-depth", "render.resource.scene-hdr-reflected", "render.resource.scene-indirect", "render.resource.scene-depth", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"},
            {"render.resource.scene-hdr-reflected", "render.resource.scene-indirect", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"}, {"render.pass.ssr-composite", "render.pass.opaque-lit"}},
           {"render.pass.temporal-resolve", "render.pipeline.shared-temporal-denoise", {"render.resource.scene-hdr-reflected", "render.resource.motion-vectors", "render.resource.scene-depth", "render.resource.scene-depth-pyramid", "render.resource.world-normal", "render.resource.temporal-history", "render.resource.temporal-depth-history", "render.resource.previous-normal-history", "render.resource.reactive-mask"},

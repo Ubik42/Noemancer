@@ -19,7 +19,7 @@
 
 Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 Editor、游戏 Runtime、资产 Cook、独立 Player 打包、C# 项目脚本，以及由同一套引擎命令驱动的 CLI 和 MCP 接口。
 
-当前版本可以从 Project Hub 创建或打开工程，在 Editor 中编辑 Scene、组件、输入和项目 UI，进入隔离的 Play World 运行 C# 游戏逻辑，再把资产与运行时依赖打成可独立启动的 Windows Player。引擎仍处于 **pre-alpha**：公开 API 会变化，只完整验证了 Windows x64，也不把尚未完成的 SSR、SSGI、动态大气或硬件光追写成现有能力。
+当前版本可以从 Project Hub 创建或打开工程，在 Editor 中编辑 Scene、组件、输入和项目 UI，进入隔离的 Play World 运行 C# 游戏逻辑，再把资产与运行时依赖打成可独立启动的 Windows Player。引擎仍处于 **pre-alpha**：公开 API 会变化，只完整验证了 Windows x64；硬件光追、RTGI、VSM 与跨平台发行仍不能写成现有能力。
 
 ## 当前能力
 
@@ -43,10 +43,10 @@ Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 
 - SDL_GPU 后端，D3D12 与 Vulkan 使用同一套引擎资源和 Render Graph 合同。
 - Forward PBR、split-sum IBL、方向光四级 CSM、Point/Spot 局部阴影与稳定阴影缓存。
 - 静态不透明物体支持 GPU 视锥裁剪、compact visible-index stream、indexed indirect draw 和稳定批次复用；不满足条件的对象回退到直接提交路径。
-- TAA、GTAO 与双边降噪、四级 Bloom、曝光/调色、ACES Tone Mapping。
+- 四 LUT 动态天空与 Aerial Perspective、共享 HiZ、生产 SSR、生产 SSGI、独立时域 History、TAA、GTAO 与双边降噪、四级 Bloom、曝光/调色、ACES Tone Mapping。
 - Hybrid Pixel / HD2D Profile 支持虚拟分辨率、整数倍显示、像素对齐 Sprite/VFX、2D/3D 混合光照和受控后处理。
 
-当前默认 Raster 路径没有启用 SSR、SSGI、Ray Tracing、RTGI、VSM 或动态天空大气。它们列在开发计划中，只有接入真实 Render Graph、跨后端验证并取得性能证据后才会进入上面的能力清单。
+当前默认 Raster 路径已经启用动态天空、SSR 与 SSGI，并在 RenderLab 取得 D3D12/Vulkan 的固定画面和逐 Pass GPU 时间证据。Ray Tracing、RTGI 与 VSM 仍在开发计划中；未进入真实 Render Graph、跨后端验证和性能证据的能力不会列为已完成。
 
 ### 资产与发布
 

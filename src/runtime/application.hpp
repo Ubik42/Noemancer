@@ -60,6 +60,8 @@ struct RunOptions {
     std::string temporal_debug_mode{"final"};
     std::string ssr_quality{"high"};
     std::string ssr_debug_mode{"final"};
+    std::string ssgi_quality{"high"};
+    std::string ssgi_debug_mode{"final"};
     std::string reference_scene_id;
     std::uint32_t render_stress_instances{0};
     bool animation_physics_stress{};
@@ -70,6 +72,7 @@ struct RunOptions {
     bool disable_ambient_occlusion{};
     bool disable_auto_exposure{};
     bool disable_ssr{};
+    bool disable_ssgi{};
     bool gpu_visibility_readback{};
     std::uint32_t render_stress_offscreen_percent{};
     std::string ui_locale{"en-US"};

@@ -1934,6 +1934,12 @@ int Application::run_interactive() {
         SDL_ReleaseWindowFromGPUDevice(device,window);SDL_DestroyGPUDevice(device);SDL_DestroyWindow(window);SDL_Quit();
         return 16;
     }
+    if(!scene_renderer->set_ssgi_options(!options_.disable_ssgi,options_.ssgi_quality,options_.ssgi_debug_mode)) {
+        logger_.error("render.ssgi_options",scene_renderer->last_error());
+        scene_renderer.reset();ImGui_ImplSDLGPU3_Shutdown();ImGui_ImplSDL3_Shutdown();ImGui::DestroyContext();
+        SDL_ReleaseWindowFromGPUDevice(device,window);SDL_DestroyGPUDevice(device);SDL_DestroyWindow(window);SDL_Quit();
+        return 16;
+    }
     // The versioned commercial-raster fixture owns a controlled dark
     // background for its Bloom and color-response ROIs. Dynamic atmosphere
     // has a separate visual/per-pass evidence lane; mixing both would make

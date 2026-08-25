@@ -10,8 +10,8 @@
 //   t0/s0 = scene HDR (RGBA16F), sampled for hit radiance
 //   t1/s1 = device depth (D32/SFLOAT), current surface and hit validation
 //   t2/s2 = shared RG32F depth pyramid; .x=min and .y=max linear view depth
-//   t3/s3 = world normal (RGBA16F; xyz normal, a currently reserved)
-//   t4/s4 = surface reflection properties (RGBA16F; rgb F0, a roughness)
+//   t3/s3 = world normal (RGBA16F; xyz normal, a roughness)
+//   t4/s4 = surface reflection properties (RGBA16F; rgb base color, a metallic)
 //   b0    = SsrTraceSettings (256 bytes; see field comments below)
 //
 // The current pass writes one RGBA16F target: rgb is hit scene radiance and a
@@ -131,12 +131,15 @@ bool valid_pyramid_sample(float2 range)
     return all(isfinite(range)) && range.y >= range.x && range.y > 0.0f;
 }
 
-float roughness_validity(float4 properties, out float roughness, out float3 f0)
+float roughness_validity(float4 properties, float normalRoughness, out float roughness, out float3 f0)
 {
-    f0 = saturate(float3(finite_or(properties.x, 0.04f), finite_or(properties.y, 0.04f),
-        finite_or(properties.z, 0.04f)));
-    roughness = finite_or(properties.w, 1.0f);
-    const bool valid = isfinite(properties.w) && roughness >= 0.0f && roughness <= 1.0f;
+    const float3 baseColor = saturate(float3(finite_or(properties.x, 0.0f), finite_or(properties.y, 0.0f),
+        finite_or(properties.z, 0.0f)));
+    const float metallic = saturate(finite_or(properties.w, 1.0f));
+    f0 = lerp(0.04f.xxx, baseColor, metallic);
+    roughness = finite_or(normalRoughness, 1.0f);
+    const bool valid = isfinite(normalRoughness) && isfinite(properties.w) &&
+        roughness >= 0.0f && roughness <= 1.0f;
     roughness = saturate(roughness);
     return valid && roughness <= saturate(quality.z) && quality.w > 0.5f ? 1.0f : 0.0f;
 }
@@ -316,10 +319,11 @@ float4 main(FragmentInput input) : SV_Target0
     const float2 uv = saturate(input.texcoord);
     const float deviceDepth = sceneDepth.SampleLevel(depthSampler, uv, 0.0f);
     const float4 properties = reflectionProperties.SampleLevel(propertiesSampler, uv, 0.0f);
+    const float4 sampledNormalAndRoughness = worldNormal.SampleLevel(normalSampler, uv, 0.0f);
     float roughness;
     float3 f0;
-    const float validity = roughness_validity(properties, roughness, f0);
-    const float3 sampledNormal = worldNormal.SampleLevel(normalSampler, uv, 0.0f).xyz;
+    const float validity = roughness_validity(properties, sampledNormalAndRoughness.a, roughness, f0);
+    const float3 sampledNormal = sampledNormalAndRoughness.xyz;
     const float sampledNormalLength = dot(sampledNormal, sampledNormal);
     const float3 surface = reconstruct_world(uv, deviceDepth);
     float3 reconstructedNormal = cross(ddx(surface), ddy(surface));

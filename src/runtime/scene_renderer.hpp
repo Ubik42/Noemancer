@@ -14,6 +14,7 @@
 #include "engine/stable_range_allocator.hpp"
 #include "engine/temporal_history.hpp"
 #include "engine/screen_space_reflections.hpp"
+#include "engine/screen_space_global_illumination.hpp"
 #include "engine/texture_streaming_demand.hpp"
 #include "engine/vfx_gpu_residency.hpp"
 #include "runtime/runtime_texture_upload.hpp"
@@ -59,7 +60,9 @@ public:
     void rollback_texture_streaming_frame();
     void set_temporal_debug_mode(const std::string& mode);
     [[nodiscard]] bool set_ssr_options(bool enabled, const std::string& quality,
-                                       const std::string& debug_mode);
+        const std::string& debug_mode);
+    [[nodiscard]] bool set_ssgi_options(bool enabled, const std::string& quality,
+        const std::string& debug_mode);
     void set_gpu_driven_enabled(bool enabled);
     void set_gpu_pass_timing_enabled(bool enabled) noexcept { gpu_pass_timestamps_.set_enabled(enabled); }
     [[nodiscard]] bool gpu_pass_timing_submission_pending() const noexcept {
@@ -218,6 +221,10 @@ private:
     SDL_GPUGraphicsPipeline* ssr_trace_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* ssr_temporal_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* ssr_composite_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* ssgi_gather_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* ssgi_spatial_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* ssgi_temporal_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* ssgi_composite_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* auto_exposure_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* tone_map_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* sky_atmosphere_pipeline_{nullptr};
@@ -307,6 +314,15 @@ private:
     SDL_GPUTexture* ssr_raw_texture_{nullptr};
     SDL_GPUTexture* ssr_resolved_texture_{nullptr};
     std::array<SDL_GPUTexture*,2> ssr_history_textures_{};
+    SDL_GPUTexture* ssgi_raw_texture_{nullptr};
+    SDL_GPUTexture* ssgi_raw_bent_normal_texture_{nullptr};
+    SDL_GPUTexture* ssgi_spatial_texture_{nullptr};
+    SDL_GPUTexture* ssgi_spatial_bent_normal_texture_{nullptr};
+    SDL_GPUTexture* ssgi_bent_normal_texture_{nullptr};
+    SDL_GPUTexture* ssgi_resolved_texture_{nullptr};
+    std::array<SDL_GPUTexture*,2> ssgi_history_textures_{};
+    std::array<SDL_GPUTexture*,2> ssgi_bent_normal_history_textures_{};
+    SDL_GPUTexture* ssgi_composited_hdr_texture_{nullptr};
     SDL_GPUTexture* reflected_hdr_texture_{nullptr};
     SDL_GPUTexture* tone_mapped_texture_{nullptr};
     SDL_GPUTexture* object_id_texture_{nullptr};
@@ -370,6 +386,13 @@ private:
     std::string ssr_quality_{"high"};
     std::uint32_t ssr_debug_mode_{};
     std::string ssr_debug_mode_name_{"final"};
+    bool ssgi_enabled_{true};
+    std::string ssgi_quality_{"high"};
+    std::uint32_t ssgi_debug_mode_{};
+    std::string ssgi_debug_mode_name_{"final"};
+    ScreenSpaceGlobalIlluminationConfig ssgi_config_{screen_space_global_illumination_quality_defaults(
+        ScreenSpaceGlobalIlluminationQuality::high)};
+    ScreenSpaceGlobalIlluminationPlan ssgi_plan_{};
     ScreenSpaceReflectionsConfig ssr_config_{screen_space_reflections_quality_defaults(
         ScreenSpaceReflectionsQuality::high)};
     ScreenSpaceReflectionsPlan ssr_plan_{};
@@ -622,6 +645,10 @@ private:
     double ssr_trace_record_microseconds_{};
     double ssr_temporal_record_microseconds_{};
     double ssr_composite_record_microseconds_{};
+    double ssgi_gather_record_microseconds_{};
+    double ssgi_spatial_record_microseconds_{};
+    double ssgi_temporal_record_microseconds_{};
+    double ssgi_composite_record_microseconds_{};
     double auto_exposure_record_microseconds_{};
     double tone_map_record_microseconds_{};
     double fxaa_record_microseconds_{};
@@ -657,6 +684,8 @@ private:
     TemporalHistoryAuthority temporal_history_authority_;
     std::uint32_t ssr_history_index_{};
     bool ssr_history_valid_{};
+    std::uint32_t ssgi_history_index_{};
+    bool ssgi_history_valid_{};
     std::uint64_t temporal_camera_cut_epoch_{};
     std::uint32_t temporal_jitter_sample_{};
     std::array<float,2> temporal_jitter_pixels_{};
