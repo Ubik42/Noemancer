@@ -92,7 +92,9 @@ public:
     RetainedUiRuntime(RetainedUiRuntime&&) = delete;
     RetainedUiRuntime& operator=(RetainedUiRuntime&&) = delete;
 
-    [[nodiscard]] bool initialize(std::uint32_t width, std::uint32_t height, float density_scale = 1.0F);
+    [[nodiscard]] bool initialize(std::uint32_t width, std::uint32_t height);
+    [[nodiscard]] bool initialize(std::uint32_t width, std::uint32_t height, float density_scale);
+    [[nodiscard]] bool set_density_independent_pixel_ratio(float ratio);
     [[nodiscard]] bool load_document(std::string_view document_id, std::string_view rml);
     [[nodiscard]] bool reload_document(std::string_view document_id, std::string_view rml);
     [[nodiscard]] bool update();
@@ -114,7 +116,8 @@ public:
         std::span<const std::uint8_t> rgba8);
     [[nodiscard]] RetainedUiImageReceipt remove_image(std::string_view image_source);
 
-    [[nodiscard]] bool create_surface(std::string_view surface_id,std::uint32_t width,std::uint32_t height,float density_scale=1.0F);
+    [[nodiscard]] bool create_surface(std::string_view surface_id,std::uint32_t width,std::uint32_t height);
+    [[nodiscard]] bool create_surface(std::string_view surface_id,std::uint32_t width,std::uint32_t height,float density_scale);
     [[nodiscard]] bool destroy_surface(std::string_view surface_id);
     [[nodiscard]] bool load_surface_document(std::string_view surface_id,std::string_view document_id,std::string_view rml);
     [[nodiscard]] bool reload_surface_document(std::string_view surface_id,std::string_view document_id,std::string_view rml);

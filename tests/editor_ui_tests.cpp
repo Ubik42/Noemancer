@@ -52,6 +52,12 @@ int main() {
     const auto configure_result=world.scripting_project_configure_json(script_project.parent_path(),script_project);
     if(configure_result.find(R"("success":true)")==std::string::npos){std::cerr<<configure_result<<'\n';return 3;}
     noemancer::EditorUi editor(world, assets);
+    if(!editor.set_ui_locale("zh-CN")||editor.set_ui_locale("../host-locale")||
+       editor.retained_inspector_document_json().find(R"("locale":"zh-CN")")==std::string::npos||
+       editor.retained_inspector_document_json().find("检查器")==std::string::npos) {
+        std::cerr<<"Editor locale did not reach the retained Inspector or failed closed\n";return 58;
+    }
+    if(!editor.set_ui_locale("en-US"))return 59;
     if(editor.compile_scripts("Debug").find(R"("success":true)")==std::string::npos)return 4;
     if(const auto* real_debug_probe=std::getenv("NOEMANCER_REAL_NETCOREDBG_PROBE");real_debug_probe&&std::string_view(real_debug_probe)=="1") {
         const auto succeeded=[](const std::string_view receipt){return receipt.find(R"("success":true)")!=std::string_view::npos;};

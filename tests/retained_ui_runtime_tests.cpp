@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <limits>
 
 int main() {
     try {
@@ -46,7 +47,7 @@ int main() {
         preview.at("observation").at("viewport").at("densityScale") != 1.25F ||
         !preview.at("observation").at("text").at("defaultFontLoaded").get<bool>() ||
         preview.at("observation").at("nodeCount") != nlohmann::json::parse(semantic_document).at("nodes").size() ||
-        preview.at("observation").at("layoutDiagnostics").at("overflowCount") != 0 ||
+        preview.at("observation").at("layoutDiagnostics").at("actionableOverflowCount") != 0 ||
         preview.dump().find("engine.entity.material.roughness") == std::string::npos ||
         preview.at("renderPacket").at("residentGeometryCount").get<std::size_t>() == 0 ||
         preview.dump().size() >= 16 * 1024) {
@@ -63,6 +64,8 @@ int main() {
            !has_textured_draw||packet.indices.size()%3U!=0U) {
             std::cerr << "RmlUi did not expose a renderer-native typed draw packet\n"; return 7;
         }
+        const auto default_density_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.binary"));
+        if(default_density_observation.at("viewport").at("densityIndependentPixelRatio")!=1.0F)return 76;
         if(binary_runtime.pointer_move(40,70)||!binary_runtime.update()) return 8;
         const auto interaction=nlohmann::json::parse(binary_runtime.observation_json("ui.binary")).at("interaction");
         if(!interaction.at("pointerInteracting").get<bool>()||
@@ -442,7 +445,7 @@ int main() {
         themed["designTokens"]={{"surfaceColor","#201028ee"},{"groupColor","#30203a"},{"textColor","#fff4ff"},
                                 {"accentColor","#ff77dd"},{"surfaceWidthPx",420}};
         const auto themed_rml=noemancer::retained_ui_rml_from_semantic_document(themed.dump());
-        if (themed_rml.find("width:420px")==std::string::npos || themed_rml.find("#ff77dd")==std::string::npos ||
+        if (themed_rml.find("width:420dp")==std::string::npos || themed_rml.find("#ff77dd")==std::string::npos ||
             !binary_runtime.reload_document("ui.binary",themed_rml) || !binary_runtime.render()) return 10;
         if (!nlohmann::json::parse(binary_runtime.observation_json("ui.binary")).at("valid").get<bool>()) return 11;
         const auto arabic_rml=std::string(
@@ -495,11 +498,58 @@ int main() {
         if(binary_runtime.key(noemancer::RetainedUiKey::backspace,true)||!binary_runtime.update()) return 18;
         text_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.text"));
         if(text_observation.at("nodes").at(0).at("editableValue")!="\xE4\xBD\xA0") return 19;
+        const auto density_rml=std::string(
+            "<rml><head><style>body{margin:0;font-family:LatoLatin;}div{display:block;position:absolute;left:0;top:0;width:80dp;height:24dp;}</style></head>"
+            "<body><div id=\"ui-density-probe\" data-semantic-id=\"ui-density-probe\">DPI</div></body></rml>");
+        if(!binary_runtime.set_density_independent_pixel_ratio(1.0F)||
+           !binary_runtime.load_document("ui.density-primary",density_rml)||
+           !binary_runtime.create_surface("ui.density-surface",320U,200U)||
+           binary_runtime.create_surface("ui.invalid-density-surface",320U,200U,3.1F)||
+           !binary_runtime.load_surface_document("ui.density-surface","ui.density-secondary",density_rml))return 77;
+        const auto density_width=[](const nlohmann::json& observation) {
+            for(const auto& node:observation.at("nodes"))if(node.at("id")=="ui-density-probe")
+                return node.at("layout").at("width").get<float>();
+            return 0.0F;
+        };
+        const auto primary_density_before=nlohmann::json::parse(binary_runtime.observation_json("ui.density-primary"));
+        const auto surface_density_before=nlohmann::json::parse(
+            binary_runtime.surface_observation_json("ui.density-surface","ui.density-secondary"));
+        const auto primary_width_before=density_width(primary_density_before);
+        const auto surface_width_before=density_width(surface_density_before);
+        if(primary_density_before.at("viewport").at("densityIndependentPixelRatio")!=1.0F||
+           surface_density_before.at("viewport").at("densityIndependentPixelRatio")!=1.0F||
+           primary_width_before<=0.0F||surface_width_before<=0.0F||
+           !binary_runtime.set_density_independent_pixel_ratio(2.0F)||!binary_runtime.update()||
+           !binary_runtime.update_surface("ui.density-surface")) {
+            std::cerr<<"DPI setup failed: primary="<<primary_density_before.dump()<<" surface="
+                <<surface_density_before.dump()<<" error="<<binary_runtime.last_error()<<'\n';return 78;
+        }
+        const auto primary_density_after=nlohmann::json::parse(binary_runtime.observation_json("ui.density-primary"));
+        const auto surface_density_after=nlohmann::json::parse(
+            binary_runtime.surface_observation_json("ui.density-surface","ui.density-secondary"));
+        if(primary_density_after.at("viewport").at("densityIndependentPixelRatio")!=2.0F||
+           surface_density_after.at("viewport").at("densityIndependentPixelRatio")!=2.0F||
+           density_width(primary_density_after)<primary_width_before*1.9F||
+           density_width(surface_density_after)<surface_width_before*1.9F)return 79;
+        if(binary_runtime.set_density_independent_pixel_ratio(std::numeric_limits<float>::quiet_NaN())||
+           binary_runtime.set_density_independent_pixel_ratio(0.5F)||
+           binary_runtime.set_density_independent_pixel_ratio(3.1F))return 80;
+        const auto density_after_invalid=nlohmann::json::parse(binary_runtime.observation_json("ui.density-primary"));
+        if(density_after_invalid.at("viewport").at("densityIndependentPixelRatio")!=2.0F||
+           !binary_runtime.set_density_independent_pixel_ratio(1.0F)||
+           !binary_runtime.destroy_surface("ui.density-surface"))return 81;
     }
 
+    noemancer::RetainedUiRuntime invalid_density_runtime;
+    if(invalid_density_runtime.initialize(640,480,0.5F))return 82;
     noemancer::RetainedUiRuntime first;
     noemancer::RetainedUiRuntime second;
-    if (!first.initialize(640, 480) || second.initialize(640, 480) ||
+    if (!first.set_density_independent_pixel_ratio(1.5F)||!first.initialize(640, 480)||
+        !first.load_document("ui.preinitialized-density",
+            "<rml><body><div data-semantic-id=\"preinit-density\">DPI</div></body></rml>")||
+        nlohmann::json::parse(first.observation_json("ui.preinitialized-density"))
+            .at("viewport").at("densityIndependentPixelRatio")!=1.5F||
+        second.initialize(640, 480) ||
         second.last_error().find("process-global state") == std::string::npos) {
         std::cerr << "Process-global RmlUi ownership is not guarded\n";
         return 4;

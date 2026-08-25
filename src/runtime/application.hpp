@@ -68,6 +68,7 @@ struct RunOptions {
     bool gpu_visibility_readback{};
     std::uint32_t render_stress_offscreen_percent{};
     std::string ui_locale{"en-US"};
+    float ui_scale{1.0F};
     std::string project_path;
     std::vector<RuntimeInputSample> input_samples;
     std::vector<RuntimeInputEvent> input_events;

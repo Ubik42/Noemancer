@@ -682,6 +682,13 @@ void EditorUi::set_recent_projects(std::vector<StartupHubRecentProject> projects
         health[field]=source.at(field);
     startup_hub_persistence_json_=health.dump();
 }
+bool EditorUi::set_ui_locale(const std::string_view locale) {
+    if(locale.empty()||locale.size()>32U||!std::ranges::all_of(locale,[](const unsigned char value) {
+        return std::isalnum(value)||value=='-'||value=='_';
+    }))return false;
+    ui_locale_=locale;
+    return true;
+}
 void EditorUi::set_project_context(EditorProjectContext context) {
     project_context_=std::move(context);model_.reset_for_loaded_project();
     if(project_context_.root!="engine://") {
@@ -938,7 +945,7 @@ std::uint32_t EditorUi::requested_scene_width() const { return requested_scene_w
 std::uint32_t EditorUi::requested_scene_height() const { return requested_scene_height_; }
 std::uint32_t EditorUi::requested_inspector_width() const noexcept {return requested_inspector_width_;}
 std::uint32_t EditorUi::requested_inspector_height() const noexcept {return requested_inspector_height_;}
-std::string EditorUi::retained_inspector_document_json() const {return model_.inspector_semantic_ui_document_json();}
+std::string EditorUi::retained_inspector_document_json() const {return model_.inspector_semantic_ui_document_json(ui_locale_);}
 std::uint32_t EditorUi::requested_outliner_width() const noexcept {return requested_outliner_width_;}
 std::uint32_t EditorUi::requested_outliner_height() const noexcept {return requested_outliner_height_;}
 std::string EditorUi::retained_outliner_document_json() const {
@@ -1669,8 +1676,8 @@ std::string EditorUi::semantic_snapshot_json() const {
         snapshot["animationGraphAuthoring"]["diagnostic"]=animation_graph_inline_diagnostic_.empty()?
             nlohmann::json(nullptr):nlohmann::json(animation_graph_inline_diagnostic_);
     }
-    const auto retained_inspector=edit_authority?model_.inspector_semantic_ui_document_json():
-        semantic_ui_document_from_inspector(play_world_inspector_json_);
+    const auto retained_inspector=edit_authority?model_.inspector_semantic_ui_document_json(ui_locale_):
+        semantic_ui_document_from_inspector(play_world_inspector_json_,ui_locale_);
     const auto retained_outliner=retained_outliner_document_json();
     const auto retained_asset_browser=retained_asset_browser_document_json();
     snapshot["editorChrome"]["retainedPanels"]={{"schemaVersion","noemancer.editor-retained-panels/0.1"},

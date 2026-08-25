@@ -574,12 +574,24 @@ void collect_inline_controls(Rml::Element* element,const std::string_view semant
 }
 
 void collect_element_observations(Rml::Element* element, const std::string& semantic_parent, Json& nodes,
-                                  Json& overflow_nodes) {
+                                  Json& overflow_nodes, Json& actionable_overflow_nodes) {
     auto next_parent = semantic_parent;
     if (element->HasAttribute("data-semantic-id")) {
         const auto semantic_id = element->GetAttribute<Rml::String>("data-semantic-id", "");
-        const auto overflow_x = element->GetScrollWidth() > element->GetClientWidth() + 0.5F;
-        const auto overflow_y = element->GetScrollHeight() > element->GetClientHeight() + 0.5F;
+        // RmlUi's client box excludes padding and borders while ScrollWidth/Height include them.
+        // Compare against the visible border box so ordinary padding is not reported as clipped content.
+        const auto overflow_x = element->GetScrollWidth() > element->GetOffsetWidth() + 0.5F;
+        const auto overflow_y = element->GetScrollHeight() > element->GetOffsetHeight() + 0.5F;
+        const auto scroll_axis=element->GetAttribute<Rml::String>("data-scroll-axis", "");
+        const auto vertical_scroll_container=scroll_axis=="vertical"||scroll_axis=="both";
+        const auto horizontal_scroll_container=scroll_axis=="horizontal"||scroll_axis=="both";
+        const auto horizontal_excess=element->GetScrollWidth()-element->GetOffsetWidth();
+        auto* vertical_scrollbar=vertical_scroll_container?element->QuerySelector("scrollbarvertical"):nullptr;
+        const auto vertical_scrollbar_width=vertical_scrollbar==nullptr?0.0F:vertical_scrollbar->GetOffsetWidth();
+        const auto scrollbar_geometry=vertical_scroll_container&&overflow_x&&vertical_scrollbar_width>0.5F&&
+            horizontal_excess<=vertical_scrollbar_width+1.0F;
+        const auto actionable_overflow_x=overflow_x&&!horizontal_scroll_container&&!scrollbar_geometry;
+        const auto actionable_overflow_y=overflow_y&&!vertical_scroll_container;
         Json observation{
             {"id", semantic_id},
             {"parentId", semantic_parent.empty() ? Json(nullptr) : Json(semantic_parent)},
@@ -637,11 +649,18 @@ void collect_element_observations(Rml::Element* element, const std::string& sema
         }
         nodes.push_back(std::move(observation));
         if (overflow_x || overflow_y)
-            overflow_nodes.push_back({{"id", semantic_id}, {"overflowX", overflow_x}, {"overflowY", overflow_y}});
+            overflow_nodes.push_back({{"id", semantic_id}, {"overflowX", overflow_x}, {"overflowY", overflow_y},
+                {"actionableOverflowX",actionable_overflow_x},{"actionableOverflowY",actionable_overflow_y},
+                {"scrollAxis",scroll_axis},{"scrollbarGeometry",scrollbar_geometry},
+                {"horizontalExcess",horizontal_excess},{"verticalScrollbarWidth",vertical_scrollbar_width}});
+        if(actionable_overflow_x||actionable_overflow_y)
+            actionable_overflow_nodes.push_back({{"id",semantic_id},{"overflowX",actionable_overflow_x},
+                {"overflowY",actionable_overflow_y}});
         next_parent = semantic_id;
     }
     for (int index = 0; index < element->GetNumChildren(); ++index)
-        collect_element_observations(element->GetChild(index), next_parent, nodes, overflow_nodes);
+        collect_element_observations(element->GetChild(index), next_parent, nodes, overflow_nodes,
+            actionable_overflow_nodes);
 }
 
 class CaptureSystemInterface final : public Rml::SystemInterface {
@@ -941,6 +960,7 @@ struct RetainedUiRuntime::Impl final {
     Json primary_packet_summary;
     std::unordered_map<std::string,RetainedSurfaceState> surfaces;
     std::string last_error;
+    float density_independent_pixel_ratio{1.0F};
     bool owns_rml{};
     bool default_font_loaded{};
     std::vector<FontCandidate> fallback_fonts;
@@ -968,10 +988,15 @@ RetainedUiRuntime::~RetainedUiRuntime() {
     rml_runtime_claimed = false;
 }
 
+bool RetainedUiRuntime::initialize(const std::uint32_t width,const std::uint32_t height) {
+    return initialize(width,height,impl_->density_independent_pixel_ratio);
+}
+
 bool RetainedUiRuntime::initialize(const std::uint32_t width, const std::uint32_t height, const float density_scale) {
     if (impl_->owns_rml) { impl_->last_error = "Retained UI runtime is already initialized"; return false; }
-    if (width == 0 || height == 0 || !std::isfinite(density_scale) || density_scale <= 0.0F) {
-        impl_->last_error = "Retained UI viewport and density scale must be positive";
+    if (width == 0 || height == 0 || !std::isfinite(density_scale) ||
+        density_scale<0.75F||density_scale>3.0F) {
+        impl_->last_error = "Retained UI viewport must be positive and density scale must be in [0.75, 3.0]";
         return false;
     }
     {
@@ -1007,11 +1032,31 @@ bool RetainedUiRuntime::initialize(const std::uint32_t width, const std::uint32_
         return false;
     }
     impl_->context->SetDensityIndependentPixelRatio(density_scale);
+    impl_->density_independent_pixel_ratio=density_scale;
     impl_->context->AddEventListener("click",&impl_->actions);
     impl_->context->AddEventListener("change",&impl_->actions);
     impl_->context->AddEventListener("keydown",&impl_->actions);
     impl_->last_error.clear();
     return true;
+}
+
+bool RetainedUiRuntime::set_density_independent_pixel_ratio(const float ratio) {
+    if(!std::isfinite(ratio)||ratio<0.75F||ratio>3.0F) {
+        impl_->last_error="Density-independent pixel ratio must be finite and between 0.75 and 3.0";
+        return false;
+    }
+    impl_->density_independent_pixel_ratio=ratio;
+    bool updated=true;
+    if(impl_->context) {
+        impl_->context->SetDensityIndependentPixelRatio(ratio);
+        updated=impl_->context->Update();
+    }
+    for(auto& [unused,surface]:impl_->surfaces) {
+        static_cast<void>(unused);surface.context->SetDensityIndependentPixelRatio(ratio);
+        updated=surface.context->Update()&&updated;
+    }
+    if(!updated){impl_->last_error="Retained UI density update failed";return false;}
+    impl_->last_error.clear();return true;
 }
 
 bool RetainedUiRuntime::load_document(const std::string_view document_id, const std::string_view rml) {
@@ -1143,12 +1188,18 @@ RetainedUiImageReceipt RetainedUiRuntime::remove_image(const std::string_view im
 }
 
 bool RetainedUiRuntime::create_surface(const std::string_view surface_id,const std::uint32_t width,
+                                       const std::uint32_t height) {
+    return create_surface(surface_id,width,height,impl_->density_independent_pixel_ratio);
+}
+
+bool RetainedUiRuntime::create_surface(const std::string_view surface_id,const std::uint32_t width,
                                        const std::uint32_t height,const float density_scale) {
     const auto valid_id=!surface_id.empty()&&surface_id!="primary"&&std::ranges::all_of(surface_id,[](const char value){
         return std::isalnum(static_cast<unsigned char>(value))||value=='.'||value=='-'||value=='_';});
-    if(!impl_->owns_rml||!valid_id||width==0||height==0||!std::isfinite(density_scale)||density_scale<=0.0F||
+    if(!impl_->owns_rml||!valid_id||width==0||height==0||!std::isfinite(density_scale)||
+       density_scale<0.75F||density_scale>3.0F||
        impl_->surfaces.contains(std::string(surface_id))) {
-        impl_->last_error="A live runtime, unique safe surface ID, and positive viewport are required";return false;
+        impl_->last_error="A live runtime, unique safe surface ID, positive viewport, and density in [0.75, 3.0] are required";return false;
     }
     const auto context_name="noemancer.retained-ui."+std::string(surface_id);
     auto* context=Rml::CreateContext(context_name,{static_cast<int>(width),static_cast<int>(height)});
@@ -1286,12 +1337,14 @@ std::string RetainedUiRuntime::surface_observation_json(const std::string_view s
     const auto dimensions = context->GetDimensions();
     Json nodes = Json::array();
     Json overflow_nodes = Json::array();
+    Json actionable_overflow_nodes=Json::array();
     const auto shaping_stats = Rml::GetDefaultFontShapingStats();
-    collect_element_observations(document, "", nodes, overflow_nodes);
+    collect_element_observations(document, "", nodes, overflow_nodes,actionable_overflow_nodes);
     return Json{{"schemaVersion", "noemancer.retained-ui-observation/0.1"}, {"valid", true}, {"code", "ok"},
                 {"implementation", { {"name", "RmlUi"}, {"version", "6.2"} }},
                 {"surfaceId",surface_id},{"documentId", document_id}, {"viewport", {{"width", dimensions.x}, {"height", dimensions.y},
-                    {"densityScale", context->GetDensityIndependentPixelRatio()}}},
+                    {"densityScale", context->GetDensityIndependentPixelRatio()},
+                    {"densityIndependentPixelRatio",context->GetDensityIndependentPixelRatio()}}},
                 {"text", {{"defaultFontLoaded", impl_->default_font_loaded}, {"defaultFamily", "LatoLatin"},
                     {"fallbackFaceCount", impl_->fallback_fonts.size()},
                     {"fallbackFaces", [&] { Json faces=Json::array(); for(const auto& font:impl_->fallback_fonts)
@@ -1318,7 +1371,9 @@ std::string RetainedUiRuntime::surface_observation_json(const std::string_view s
                         {"committedUtf8Ready",true},{"compositionPreviewReady",true},
                         {"composition",impl_->text_input.observation()}}}}},
                 {"nodeCount", nodes.size()}, {"nodes", std::move(nodes)},
-                {"layoutDiagnostics", {{"overflowCount", overflow_nodes.size()}, {"overflowNodes", std::move(overflow_nodes)}}},
+                {"layoutDiagnostics", {{"overflowCount", overflow_nodes.size()}, {"overflowNodes", std::move(overflow_nodes)},
+                    {"actionableOverflowCount",actionable_overflow_nodes.size()},
+                    {"actionableOverflowNodes",std::move(actionable_overflow_nodes)}}},
                 {"logs", impl_->system.log_summary()}}.dump();
 }
 
@@ -1401,75 +1456,77 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
     const auto embedded_surface=tokens.value("embeddedSurface",false);
     std::ostringstream output;
     output << "<rml><head><style>"
-              "body{box-sizing:border-box;margin:0;width:100%;height:100%;background:transparent;color:" << escape_markup(text_color) << ";font-family:LatoLatin;font-size:14px;pointer-events:none;}"
-              ".surface{box-sizing:border-box;display:flex;flex-direction:column;width:" << surface_width << "px;max-height:100%;padding:12px;background:" << escape_markup(surface_color) << ";overflow-y:auto;pointer-events:auto;}"
-              ".hud-surface{position:absolute;right:20px;bottom:20px;}"
-              ".group{box-sizing:border-box;display:flex;flex-direction:column;flex-shrink:0;width:100%;margin-bottom:8px;background:" << escape_markup(group_color) << ";border-width:1px;border-color:#273140;}"
-              ".group-header{box-sizing:border-box;display:flex;flex-direction:row;align-items:center;width:100%;height:30px;padding:0 8px;background:#202733;color:" << escape_markup(text_color) << ";border-width:0;border-bottom-width:1px;border-color:#2c3747;text-align:left;}"
+              "body{box-sizing:border-box;margin:0;width:100%;height:100%;background:transparent;color:" << escape_markup(text_color) << ";font-family:LatoLatin;font-size:14dp;pointer-events:none;}"
+              ".surface{box-sizing:border-box;display:flex;flex-direction:column;width:" << surface_width << "dp;max-height:100%;padding:12dp;background:" << escape_markup(surface_color) << ";overflow-y:auto;pointer-events:auto;}"
+              ".hud-surface{position:absolute;right:20dp;bottom:20dp;}"
+              ".group{box-sizing:border-box;display:flex;flex-direction:column;flex-shrink:0;width:100%;margin-bottom:8dp;background:" << escape_markup(group_color) << ";border-width:1dp;border-color:#273140;}"
+              ".group-header{box-sizing:border-box;display:flex;flex-direction:row;align-items:center;width:100%;height:30dp;padding:0 8dp;background:#202733;color:" << escape_markup(text_color) << ";border-width:0;border-bottom-width:1dp;border-color:#2c3747;text-align:left;}"
               ".group-header:hover{background:#273141;}.group-header:focus{background:#2b3749;border-color:" << escape_markup(accent_color) << ";}"
-              ".group-chevron{display:block;width:18px;color:" << escape_markup(accent_color) << ";font-size:16px;text-align:center;}"
-              ".group-title{margin-left:4px;font-size:13px;letter-spacing:0.4px;}"
-              ".group-content{box-sizing:border-box;display:flex;flex-direction:column;width:100%;padding:6px 4px 7px 4px;}"
+              ".group-chevron{display:block;width:18dp;color:" << escape_markup(accent_color) << ";font-size:16dp;text-align:center;}"
+              ".group-title{margin-left:4dp;font-size:13dp;letter-spacing:0.4dp;}"
+              ".group-content{box-sizing:border-box;display:flex;flex-direction:column;width:100%;padding:6dp 4dp 7dp 4dp;}"
               ".group.collapsed .group-content{display:none;}.group.collapsed .group-header{border-bottom-width:0;}"
-              ".property-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;justify-content:space-between;width:100%;min-height:28px;padding:4px 8px;}"
-              ".property-row:hover{background:#222b38;}.property-row.disabled{opacity:0.48;}.property-row.error{background:#3a2025;border-left-width:2px;border-left-color:#ff6b78;}"
-              ".selectable-collection{box-sizing:border-box;display:flex;flex-direction:column;width:100%;overflow-y:auto;pointer-events:auto;}"
-              ".selectable-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;align-items:center;width:100%;min-height:28px;padding:4px 8px;pointer-events:auto;}"
-              ".selectable-row:hover{background:#222b38;}.selectable-row:focus{background:#28384c;outline:1px " << escape_markup(accent_color) << ";}"
+              ".property-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;justify-content:space-between;width:100%;min-height:28dp;padding:4dp 8dp;}"
+              ".property-row:hover{background:#222b38;}.property-row.disabled{opacity:0.48;}.property-row.error{background:#3a2025;border-left-width:2dp;border-left-color:#ff6b78;}"
+              ".selectable-collection{box-sizing:border-box;display:flex;flex-direction:column;width:auto;overflow-y:auto;pointer-events:auto;}"
+              ".selectable-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;align-items:center;width:auto;min-height:28dp;padding:4dp 8dp;pointer-events:auto;}"
+              ".selectable-row:hover{background:#222b38;}.selectable-row:focus{background:#28384c;}"
               ".selectable-row.selected{background:#294461;color:#ffffff;}.selectable-row.disabled{opacity:0.48;}"
-              ".grid-collection{flex-direction:column;padding:4px;overflow-y:auto;}"
-              ".grid-collection>.label{width:100%;padding:4px 5px;color:#91a0b4;}"
+              ".grid-collection{flex-direction:column;padding:4dp 0;overflow-y:auto;}"
+              ".grid-collection>.label{box-sizing:border-box;width:100%;padding:4dp 5dp;color:#91a0b4;}"
               ".grid-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;width:100%;}"
-              ".selectable-card{box-sizing:border-box;display:flex;flex-direction:column;flex-shrink:0;min-width:0;min-height:92px;padding:7px;pointer-events:auto;background:#171e28;border-width:2px;border-color:transparent;}"
+              ".selectable-card{box-sizing:border-box;display:flex;flex-direction:column;flex-shrink:0;min-width:0;min-height:92dp;padding:7dp;pointer-events:auto;background:#171e28;border-width:2dp;border-color:transparent;}"
               ".selectable-card:hover{background:#202b39;}.selectable-card:focus{background:#223247;border-color:" << escape_markup(accent_color) << ";}"
               ".selectable-card.selected{background:#294461;border-color:" << escape_markup(accent_color) << ";color:#ffffff;}.selectable-card.disabled{opacity:0.48;}"
-              ".selectable-card>.label{width:100%;margin-top:4px;color:" << escape_markup(text_color) << ";overflow:hidden;}"
-              ".selectable-card>.value{width:100%;margin-top:2px;overflow:hidden;}"
-              ".collection-card-image{box-sizing:border-box;width:100%;height:48px;background:#0c1118;border-width:1px;border-color:#253143;}"
-              ".collection-card-metadata{display:flex;flex-direction:column;width:100%;margin-top:3px;color:#91a0b4;font-size:11px;}"
+              ".selectable-card>.label{width:100%;margin-top:4dp;color:" << escape_markup(text_color) << ";overflow:hidden;}"
+              ".selectable-card>.value{width:100%;margin-top:2dp;overflow:hidden;}"
+              ".collection-card-image{box-sizing:border-box;width:100%;height:48dp;background:#0c1118;border-width:1dp;border-color:#253143;}"
+              ".collection-card-metadata{display:flex;flex-direction:column;width:100%;margin-top:3dp;color:#91a0b4;font-size:11dp;}"
               ".collection-card-meta{width:100%;overflow:hidden;}"
-              ".inline-actions{box-sizing:border-box;display:flex;flex-direction:row;justify-content:flex-end;align-items:flex-end;width:100%;margin-top:4px;}"
+              ".inline-actions{box-sizing:border-box;display:flex;flex-direction:row;justify-content:flex-end;align-items:flex-end;width:100%;margin-top:4dp;}"
               ".inline-actions.has-forms{flex-direction:column;align-items:stretch;}"
-              ".inline-action-form{box-sizing:border-box;display:flex;flex-direction:row;align-items:flex-end;min-width:0;margin-left:5px;}"
-              ".has-forms .inline-action-form{width:100%;margin:3px 0 0 0;}.has-forms .inline-action-input{flex-grow:1;width:auto;}.has-forms .inline-confirmation-label{flex-grow:1;}.has-forms>.inline-action{align-self:flex-end;}"
-              ".inline-action-input{box-sizing:border-box;width:112px;height:24px;padding:2px 5px;background:#0c1118;color:" << escape_markup(text_color) << ";border-width:1px;border-color:#34445a;}"
-              ".inline-action-input:focus{border-color:" << escape_markup(accent_color) << ";}.inline-confirmation-label{display:flex;flex-direction:row;align-items:center;margin-left:4px;color:#aab6c7;font-size:11px;}"
-              ".inline-action-confirmation{width:18px;height:18px;margin-right:3px;background:#0c1118;border-width:1px;border-color:#4b607b;}"
+              ".inline-action-form{box-sizing:border-box;display:flex;flex-direction:row;align-items:flex-end;min-width:0;margin-left:5dp;}"
+              ".has-forms .inline-action-form{flex-direction:column;align-items:stretch;width:100%;margin:3dp 0 0 0;}"
+              ".has-forms .inline-action-input{flex-grow:1;width:100%;}.has-forms .inline-confirmation-label{flex-grow:1;width:100%;margin-left:0;}"
+              ".has-forms .inline-action-form>.inline-action{align-self:flex-end;margin-top:3dp;}.has-forms>.inline-action{align-self:flex-end;}"
+              ".inline-action-input{box-sizing:border-box;width:112dp;height:24dp;padding:2dp 5dp;background:#0c1118;color:" << escape_markup(text_color) << ";border-width:1dp;border-color:#34445a;}"
+              ".inline-action-input:focus{border-color:" << escape_markup(accent_color) << ";}.inline-confirmation-label{display:flex;flex-direction:row;align-items:center;margin-left:4dp;color:#aab6c7;font-size:11dp;}"
+              ".inline-action-confirmation{width:18dp;height:18dp;margin-right:3dp;background:#0c1118;border-width:1dp;border-color:#4b607b;}"
               ".inline-action-confirmation:checked{background:" << escape_markup(accent_color) << ";}.inline-required{color:#ffd08a;}"
-              ".inline-action{box-sizing:border-box;min-width:28px;min-height:24px;margin-left:4px;padding:3px 7px;background:#202b39;color:" << escape_markup(text_color) << ";border-width:1px;border-color:#3a4a60;pointer-events:auto;}"
+              ".inline-action{box-sizing:border-box;min-width:28dp;min-height:24dp;margin-left:4dp;padding:3dp 7dp;background:#202b39;color:" << escape_markup(text_color) << ";border-width:1dp;border-color:#3a4a60;pointer-events:auto;}"
               ".inline-action:hover{background:#2a394c;border-color:" << escape_markup(accent_color) << ";}.inline-action:focus{background:#30445c;border-color:" << escape_markup(accent_color) << ";}"
               ".inline-action:disabled{background:#171c24;color:#647083;border-color:#29323f;opacity:0.5;}"
-              ".tree-row{flex-direction:column;align-items:stretch;min-height:0;padding:0;background:transparent;}"
-              ".tree-row>.label{box-sizing:border-box;width:100%;min-height:28px;padding:5px 8px;pointer-events:auto;}"
-              ".tree-row:hover,.tree-row:focus,.tree-row.selected{background:transparent;outline-width:0;}"
-              ".tree-row:hover>.label{background:#222b38;}.tree-row:focus>.label{background:#28384c;outline:1px " << escape_markup(accent_color) << ";}"
-              ".tree-row.selected>.label{background:#294461;color:#ffffff;}.tree-row>.tree-row{padding-left:14px;}"
+              ".tree-row{flex-direction:column;align-items:stretch;width:auto;min-height:0;padding:0;background:transparent;}"
+              ".tree-row>.label{box-sizing:border-box;width:100%;min-height:28dp;padding:5dp 8dp;pointer-events:auto;}"
+              ".tree-row:hover,.tree-row:focus,.tree-row.selected{background:transparent;}"
+              ".tree-row:hover>.label{background:#222b38;}.tree-row:focus>.label{background:#28384c;}"
+              ".tree-row.selected>.label{background:#294461;color:#ffffff;}.tree-row>.tree-row{box-sizing:border-box;width:auto;margin-left:14dp;}"
               ".label,.value{min-width:0;word-break:break-word;}"
               ".label{width:46%;}.value{width:50%;color:" << escape_markup(accent_color) << ";}"
-              ".value-editor{box-sizing:border-box;width:50%;min-width:0;padding:3px 6px;background:#080b10;color:" << escape_markup(accent_color) << ";border-width:1px;border-color:#34445a;}"
+              ".value-editor{box-sizing:border-box;width:50%;min-width:0;padding:3dp 6dp;background:#080b10;color:" << escape_markup(accent_color) << ";border-width:1dp;border-color:#34445a;}"
               ".value-editor:hover{border-color:#57708f;}.value-editor:focus{border-color:" << escape_markup(accent_color) << ";}"
               ".value-editor:disabled{background:#151922;color:#697385;border-color:#2b3442;}"
               ".vector-editor{box-sizing:border-box;display:flex;flex-direction:row;width:50%;min-width:0;}"
-              ".axis-field{box-sizing:border-box;display:flex;flex-direction:row;flex-grow:1;min-width:0;margin-left:3px;background:#080b10;border-width:1px;border-color:#34445a;}"
-              ".axis-field:first-child{margin-left:0;}.axis-field:hover{border-color:#57708f;}.axis-label{width:14px;padding-top:4px;color:#75849a;text-align:center;font-size:11px;}"
-              ".axis-input{box-sizing:border-box;display:block;flex-grow:1;min-width:0;width:auto;height:24px;padding:2px 3px;background:transparent;color:" << escape_markup(accent_color) << ";border-width:0;}"
+              ".axis-field{box-sizing:border-box;display:flex;flex-direction:row;flex-grow:1;min-width:0;margin-left:3dp;background:#080b10;border-width:1dp;border-color:#34445a;}"
+              ".axis-field:first-child{margin-left:0;}.axis-field:hover{border-color:#57708f;}.axis-label{width:14dp;padding-top:4dp;color:#75849a;text-align:center;font-size:11dp;}"
+              ".axis-input{box-sizing:border-box;display:block;flex-grow:1;min-width:0;width:auto;height:24dp;padding:2dp 3dp;background:transparent;color:" << escape_markup(accent_color) << ";border-width:0;}"
               ".axis-input:focus{background:#111925;color:#d9ecff;}"
-              ".value-editor.checkbox{width:18px;height:18px;margin-left:auto;padding:0;background:#080b10;border-width:1px;border-color:#4b607b;}"
+              ".value-editor.checkbox{width:18dp;height:18dp;margin-left:auto;padding:0;background:#080b10;border-width:1dp;border-color:#4b607b;}"
               ".value-editor.checkbox:checked{background:" << escape_markup(accent_color) << ";border-color:" << escape_markup(accent_color) << ";}"
-              ".value-editor.range{height:22px;padding:0;background:transparent;border-width:0px;}"
-              "input.range slidertrack{height:4px;margin-top:9px;background:#26364c;}"
-              "input.range sliderprogress{height:4px;margin-top:9px;background:" << escape_markup(accent_color) << ";}"
-              "input.range sliderbar{width:10px;height:16px;margin-left:-5px;margin-top:-6px;background:" << escape_markup(accent_color) << ";border-radius:5px;}"
+              ".value-editor.range{height:22dp;padding:0;background:transparent;border-width:0dp;}"
+              "input.range slidertrack{height:4dp;margin-top:9dp;background:#26364c;}"
+              "input.range sliderprogress{height:4dp;margin-top:9dp;background:" << escape_markup(accent_color) << ";}"
+              "input.range sliderbar{width:10dp;height:16dp;margin-left:-5dp;margin-top:-6dp;background:" << escape_markup(accent_color) << ";border-radius:5dp;}"
               "input.range sliderbar:hover{background:#d4eaff;}input.range sliderarrowdec,input.range sliderarrowinc{display:none;}"
-              "scrollbarvertical{width:9px;background:#111720;}scrollbarvertical slidertrack{background:#111720;}"
-              "scrollbarvertical sliderbar{min-height:28px;background:#37465a;border-radius:4px;}scrollbarvertical sliderbar:hover{background:#526984;}"
+              "scrollbarvertical{width:9dp;background:#111720;}scrollbarvertical slidertrack{background:#111720;}"
+              "scrollbarvertical sliderbar{min-height:28dp;background:#37465a;border-radius:4dp;}scrollbarvertical sliderbar:hover{background:#526984;}"
               "scrollbarvertical sliderarrowdec,scrollbarvertical sliderarrowinc{display:none;}"
-              ".meter{display:flex;flex-direction:column;margin:4px 0;}.meter .label{width:100%;}"
-              ".meter-line{display:flex;flex-direction:row;align-items:center;margin-top:3px;}"
-              ".meter-track{width:210px;height:8px;background:#080b10;border-radius:4px;overflow:hidden;}"
-              ".meter-fill{display:block;height:8px;background:" << escape_markup(accent_color) << ";}.meter-number{margin-left:8px;color:" << escape_markup(text_color) << ";}"
-              ".ability-slot{margin-top:6px;background:" << escape_markup(group_color) << ";border-left-width:3px;border-left-color:" << escape_markup(accent_color) << ";}"
-              ".action-button{box-sizing:border-box;width:100%;min-height:34px;margin-top:6px;padding:6px 10px;background:" << escape_markup(group_color) << ";color:" << escape_markup(text_color) << ";border-width:1px;border-color:#34445a;text-align:center;pointer-events:auto;}"
+              ".meter{display:flex;flex-direction:column;margin:4dp 0;}.meter .label{width:100%;}"
+              ".meter-line{display:flex;flex-direction:row;align-items:center;margin-top:3dp;}"
+              ".meter-track{width:210dp;height:8dp;background:#080b10;border-radius:4dp;overflow:hidden;}"
+              ".meter-fill{display:block;height:8dp;background:" << escape_markup(accent_color) << ";}.meter-number{margin-left:8dp;color:" << escape_markup(text_color) << ";}"
+              ".ability-slot{margin-top:6dp;background:" << escape_markup(group_color) << ";border-left-width:3dp;border-left-color:" << escape_markup(accent_color) << ";}"
+              ".action-button{box-sizing:border-box;width:100%;min-height:34dp;margin-top:6dp;padding:6dp 10dp;background:" << escape_markup(group_color) << ";color:" << escape_markup(text_color) << ";border-width:1dp;border-color:#34445a;text-align:center;pointer-events:auto;}"
               ".action-button:hover{background:#273449;border-color:" << escape_markup(accent_color) << ";}.action-button:focus{border-color:" << escape_markup(accent_color) << ";}.action-button:disabled{opacity:0.48;}"
               << source.value("resources",Json::object()).value("stylesheet",Json::object()).value("content",std::string{}) <<
               "</style></head><body dir=\"" << escape_markup(source.value("textDirection",std::string("ltr"))) <<
@@ -1531,6 +1588,8 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
         if(action_button&&!enabled)output << " disabled";
         if(role=="group")output << " data-expanded=\"" << (expanded?"true":"false") << "\"";
         if(role=="grid")output << " data-grid-columns=\"" << grid_columns.at(id) << "\"";
+        if(role=="inspector"||role=="hud"||role=="tree"||role=="list"||role=="grid")
+            output << " data-scroll-axis=\"vertical\"";
         if(selectable)output << " data-selected=\"" << (selected?"true":"false")
                              << "\" aria-selected=\"" << (selected?"true":"false")
                              << "\" tabindex=\"0\"";

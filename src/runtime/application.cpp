@@ -299,6 +299,10 @@ Application::Application(RunOptions options)
     startup_telemetry_ = options_.startup_telemetry != nullptr
         ? options_.startup_telemetry : &startup_telemetry_storage_;
     startup_telemetry_->begin_phase("application.construct");
+    if(!editor_ui_.set_ui_locale(options_.ui_locale))
+        startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.editor-startup/0.1"},
+            {"success",false},{"code","editor.ui-locale-invalid"},
+            {"detail","UI locale must contain only letters, digits, '-' or '_' and be at most 32 bytes."}}.dump();
     startup_telemetry_->begin_phase("engine.module-registration");
     engine_host_.register_default_modules();
     if(!options_.player_mode) {
@@ -1647,15 +1651,19 @@ int Application::run_interactive() {
         SDL_free(gamepads);
     }
 
-    const float display_scale = (performance_run||!options_.capture_frame_path.empty())
-        ?1.0F:SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    const auto reported_display_scale=SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    const float platform_display_scale=std::isfinite(reported_display_scale)&&reported_display_scale>0.0F
+        ?reported_display_scale:1.0F;
+    const bool deterministic_pixel_canvas=performance_run||!options_.capture_frame_path.empty()||
+        !options_.capture_editor_frame_path.empty();
     const auto window_flags = static_cast<SDL_WindowFlags>(
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN |
-        (performance_run?(SDL_WINDOW_UTILITY|SDL_WINDOW_NOT_FOCUSABLE):SDL_WINDOW_HIGH_PIXEL_DENSITY));
+        (performance_run?(SDL_WINDOW_UTILITY|SDL_WINDOW_NOT_FOCUSABLE):0U) |
+        (deterministic_pixel_canvas?0U:SDL_WINDOW_HIGH_PIXEL_DENSITY));
     SDL_Window* window = SDL_CreateWindow(
         options_.player_mode?(options_.player_display_name.empty()?"Noemancer Player":options_.player_display_name.c_str()):"Noemancer Editor",
-        static_cast<int>(options_.window_width * display_scale),
-        static_cast<int>(options_.window_height * display_scale),
+        static_cast<int>(options_.window_width),
+        static_cast<int>(options_.window_height),
         window_flags);
     if (window == nullptr) {
         logger_.error("sdl.window", SDL_GetError());
@@ -1710,13 +1718,38 @@ int Application::run_interactive() {
     io.ConfigDpiScaleFonts = true;
     io.ConfigDpiScaleViewports = true;
     io.IniFilename = nullptr;
+    // User scale is a presentation density, independent from the window's
+    // requested pixel canvas. Apply it exactly once to the freshly-created
+    // context; the SDL backend remains responsible for per-monitor DPI.
+    ImGui::GetStyle().ScaleAllSizes(options_.ui_scale);
+    bool editor_font_loaded{};
 #ifdef _WIN32
     // Use the native Windows UI face when present. The default embedded ImGui
     // bitmap font remains the deterministic fallback for minimal deployments.
     constexpr auto editor_font_path="C:\\Windows\\Fonts\\segoeui.ttf";
     if(std::filesystem::exists(editor_font_path))
-        static_cast<void>(io.Fonts->AddFontFromFileTTF(editor_font_path,15.0F));
+        editor_font_loaded=io.Fonts->AddFontFromFileTTF(editor_font_path,15.0F*options_.ui_scale)!=nullptr;
 #endif
+    if(!editor_font_loaded) {
+        ImFontConfig fallback_font{};
+        fallback_font.SizePixels=13.0F*options_.ui_scale;
+        static_cast<void>(io.Fonts->AddFontDefaultVector(&fallback_font));
+    }
+
+    int window_logical_width{},window_logical_height{},window_pixel_width{},window_pixel_height{};
+    SDL_GetWindowSize(window,&window_logical_width,&window_logical_height);
+    SDL_GetWindowSizeInPixels(window,&window_pixel_width,&window_pixel_height);
+    const auto framebuffer_scale_x=window_logical_width>0
+        ?static_cast<float>(window_pixel_width)/static_cast<float>(window_logical_width):1.0F;
+    const auto framebuffer_scale_y=window_logical_height>0
+        ?static_cast<float>(window_pixel_height)/static_cast<float>(window_logical_height):1.0F;
+    logger_.info("ui.display_configuration",nlohmann::json{
+        {"schemaVersion","noemancer.ui-display-configuration/0.1"},
+        {"requestedUiScale",options_.ui_scale},
+        {"platformDisplayScale",platform_display_scale},
+        {"effectiveFramebufferScale",std::max(framebuffer_scale_x,framebuffer_scale_y)},
+        {"locale",options_.ui_locale},
+        {"windowPixels",{{"width",window_pixel_width},{"height",window_pixel_height}}}}.dump());
 
     if (!ImGui_ImplSDL3_InitForSDLGPU(window)) {
         logger_.error("editor.imgui_platform", "Failed to initialize the SDL3 platform backend");
@@ -1834,18 +1867,18 @@ int Application::run_interactive() {
     const auto hud_document=project_hud_document(world_);
     const auto hud_markup=retained_ui_rml_from_semantic_document(hud_document);
     std::string hud_markup_cache=hud_markup;
-    if(!retained_ui.initialize(scene_renderer->width(),scene_renderer->height())||
+    if(!retained_ui.initialize(scene_renderer->width(),scene_renderer->height(),options_.ui_scale)||
        !retained_ui.load_document("ui.game-hud",hud_markup)||
        !retained_ui_gpu.initialize(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)||
-       (!options_.player_mode&&(!retained_ui.create_surface("editor.inspector",retained_inspector_width,retained_inspector_height)||
+       (!options_.player_mode&&(!retained_ui.create_surface("editor.inspector",retained_inspector_width,retained_inspector_height,options_.ui_scale)||
         !retained_ui.load_surface_document("editor.inspector","ui.editor-inspector",retained_ui_rml_from_semantic_document(
             editor_ui_.retained_inspector_document_json()))||
         !retained_inspector_gpu.initialize(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)||
-        !retained_ui.create_surface("editor.outliner",retained_outliner_width,retained_outliner_height)||
+        !retained_ui.create_surface("editor.outliner",retained_outliner_width,retained_outliner_height,options_.ui_scale)||
         !retained_ui.load_surface_document("editor.outliner","ui.editor-outliner",retained_ui_rml_from_semantic_document(
             editor_ui_.retained_outliner_document_json()))||
         !retained_outliner_gpu.initialize(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)||
-        !retained_ui.create_surface("editor.asset-browser",retained_asset_browser_width,retained_asset_browser_height)||
+        !retained_ui.create_surface("editor.asset-browser",retained_asset_browser_width,retained_asset_browser_height,options_.ui_scale)||
         !retained_ui.load_surface_document("editor.asset-browser","ui.editor-asset-browser",retained_ui_rml_from_semantic_document(
             editor_ui_.retained_asset_browser_document_json()))||
         !retained_asset_browser_gpu.initialize(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)))) {
@@ -2045,6 +2078,7 @@ int Application::run_interactive() {
         }
     };
     std::uint32_t frame = 0;
+    bool retained_observation_published{};
     std::vector<double> performance_frame_milliseconds;
     std::vector<double> performance_swapchain_wait_milliseconds;
     std::vector<double> performance_submit_wait_milliseconds;
@@ -2412,7 +2446,7 @@ int Application::run_interactive() {
             logger_.error("render.scene_resize", scene_renderer->last_error());
             break;
         }
-        if(!retained_ui.resize(scene_renderer->width(),scene_renderer->height(),1.0F)||!retained_ui.update()||!retained_ui.render()) {
+        if(!retained_ui.resize(scene_renderer->width(),scene_renderer->height(),options_.ui_scale)||!retained_ui.update()||!retained_ui.render()) {
             logger_.error("ui.retained_update",retained_ui.last_error()); break;
         }
         if(!runtime_surface_mode) {
@@ -2450,16 +2484,17 @@ int Application::run_interactive() {
             const auto asset_browser_width=editor_ui_.requested_asset_browser_width();
             const auto asset_browser_height=editor_ui_.requested_asset_browser_height();
             if(!ensure_inspector_texture(inspector_width,inspector_height)||
-               !retained_ui.resize_surface("editor.inspector",inspector_width,inspector_height,1.0F)||
+               !retained_ui.resize_surface("editor.inspector",inspector_width,inspector_height,options_.ui_scale)||
                !ensure_outliner_texture(outliner_width,outliner_height)||
-               !retained_ui.resize_surface("editor.outliner",outliner_width,outliner_height,1.0F)||
+               !retained_ui.resize_surface("editor.outliner",outliner_width,outliner_height,options_.ui_scale)||
                !ensure_asset_browser_texture(asset_browser_width,asset_browser_height)||
-               !retained_ui.resize_surface("editor.asset-browser",asset_browser_width,asset_browser_height,1.0F)) {
+               !retained_ui.resize_surface("editor.asset-browser",asset_browser_width,asset_browser_height,options_.ui_scale)) {
                 logger_.error("ui.inspector_surface",retained_ui.last_error().empty()?SDL_GetError():std::string(retained_ui.last_error()));break;
             }
             auto inspector_document=nlohmann::json::parse(editor_ui_.retained_inspector_document_json(),nullptr,false);
             if(inspector_document.is_object()) {
-                inspector_document["designTokens"]["surfaceWidthPx"]=inspector_width;
+                inspector_document["designTokens"]["surfaceWidthPx"]=std::max(1U,static_cast<std::uint32_t>(
+                    std::lround(static_cast<float>(inspector_width)/options_.ui_scale)));
                 inspector_document["designTokens"]["surfaceColor"]="#0b111b";
                 inspector_document["designTokens"]["groupColor"]="#111b29";
                 inspector_document["designTokens"]["textColor"]="#dce5f1";
@@ -2479,7 +2514,8 @@ int Application::run_interactive() {
             }
             auto outliner_document=nlohmann::json::parse(editor_ui_.retained_outliner_document_json(),nullptr,false);
             if(outliner_document.is_object()) {
-                outliner_document["designTokens"]["surfaceWidthPx"]=outliner_width;
+                outliner_document["designTokens"]["surfaceWidthPx"]=std::max(1U,static_cast<std::uint32_t>(
+                    std::lround(static_cast<float>(outliner_width)/options_.ui_scale)));
                 outliner_document["designTokens"]["surfaceColor"]="#0b111b";
                 outliner_document["designTokens"]["groupColor"]="#111b29";
                 outliner_document["designTokens"]["textColor"]="#dce5f1";
@@ -2500,13 +2536,15 @@ int Application::run_interactive() {
             auto asset_browser_document=nlohmann::json::parse(
                 editor_ui_.retained_asset_browser_document_json(),nullptr,false);
             if(asset_browser_document.is_object()) {
-                asset_browser_document["designTokens"]["surfaceWidthPx"]=asset_browser_width;
+                const auto asset_browser_logical_width=std::max(1U,static_cast<std::uint32_t>(
+                    std::lround(static_cast<float>(asset_browser_width)/options_.ui_scale)));
+                asset_browser_document["designTokens"]["surfaceWidthPx"]=asset_browser_logical_width;
                 asset_browser_document["designTokens"]["surfaceColor"]="#0b111b";
                 asset_browser_document["designTokens"]["groupColor"]="#111b29";
                 asset_browser_document["designTokens"]["textColor"]="#dce5f1";
                 asset_browser_document["designTokens"]["accentColor"]="#77b7ff";
                 asset_browser_document["designTokens"]["embeddedSurface"]=true;
-                asset_browser_document["designTokens"]["gridColumns"]=std::clamp(asset_browser_width/176U,1U,8U);
+                asset_browser_document["designTokens"]["gridColumns"]=std::clamp(asset_browser_logical_width/176U,1U,8U);
                 const auto document_source=asset_browser_document.dump();
                 if(document_source!=retained_asset_browser_document_cache) {
                     if(!retained_ui.reload_surface_document("editor.asset-browser","ui.editor-asset-browser",
@@ -2519,6 +2557,30 @@ int Application::run_interactive() {
             if(!retained_ui.render_surface("editor.asset-browser")) {
                 logger_.error("ui.asset_browser_render",retained_ui.last_error());break;
             }
+        }
+        const bool retained_capture_requested=!options_.capture_frame_path.empty()||
+            !options_.capture_editor_frame_path.empty();
+        const bool retained_observation_boundary=retained_capture_requested
+            ? requested_frames>0U&&frame+1U==requested_frames
+            : frame==0U;
+        if(!retained_observation_published&&retained_observation_boundary) {
+            logger_.info("ui.retained_observation",retained_ui.observation_json("ui.game-hud"));
+            if(!runtime_surface_mode) {
+                const auto parse_observation=[](const std::string& source) {
+                    auto parsed=nlohmann::json::parse(source,nullptr,false);
+                    return parsed.is_discarded()?nlohmann::json{{"valid",false},{"code","invalid-observation"}}:
+                        std::move(parsed);
+                };
+                logger_.info("ui.retained_surface_observations",nlohmann::json{
+                    {"schemaVersion","noemancer.ui-retained-surface-observations/0.1"},
+                    {"inspector",parse_observation(retained_ui.surface_observation_json(
+                        "editor.inspector","ui.editor-inspector"))},
+                    {"outliner",parse_observation(retained_ui.surface_observation_json(
+                        "editor.outliner","ui.editor-outliner"))},
+                    {"assetBrowser",parse_observation(retained_ui.surface_observation_json(
+                        "editor.asset-browser","ui.editor-asset-browser"))}}.dump());
+            }
+            retained_observation_published=true;
         }
         sync_retained_keyboard();
         scene_renderer->set_exposure(editor_ui_.requested_exposure());

@@ -177,6 +177,7 @@ public:
     [[nodiscard]] std::vector<EditorAssetThumbnailArtifact> asset_thumbnail_artifacts() const;
     void set_recent_projects(std::vector<StartupHubRecentProject> projects,
                              std::string_view persistence_observation_json = {});
+    [[nodiscard]] bool set_ui_locale(std::string_view locale);
     void set_project_context(EditorProjectContext context);
     [[nodiscard]] std::string compile_scripts(std::string_view configuration = "Debug");
     [[nodiscard]] bool begin_compile_scripts(std::string_view configuration = "Debug");
@@ -280,6 +281,7 @@ private:
     StartupHubModel startup_hub_;
     bool startup_hub_open_{true};
     std::string startup_hub_persistence_json_{"null"};
+    std::string ui_locale_{"en-US"};
     std::string engine_status_json_;
     std::string render_status_json_;
     std::string input_status_json_{R"({"schemaVersion":"noemancer.input-sources/0.1","devices":[],"sources":[]})"};

@@ -75,7 +75,7 @@ void print_usage() {
         << "                 [--vfx-respawn-interval N]\n"
         << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--disable-ambient-occlusion]\n"
         << "                 [--gpu-visibility-readback] [--render-stress-offscreen-percent N]\n"
-        << "                 [--ui-locale LOCALE]\n"
+        << "                 [--ui-locale LOCALE] [--ui-scale SCALE]\n"
         << "                 [--project PATH]\n"
         << "                 [--performance-evidence PATH] [--performance-hidden] [--performance-workload ID]\n"
         << "                 [--performance-warmup-frames N] [--performance-sample-frames N]\n"
@@ -517,6 +517,14 @@ int main(int argc, char** argv) {
                 std::cerr<<"UI locale must contain only letters, digits, '-' or '_'\n";
                 return 2;
             }
+        } else if (argument == "--ui-scale" && index < argc) {
+            float ui_scale{};
+            if(!parse_float(argv[index++],ui_scale)||!std::isfinite(ui_scale)||
+               ui_scale<0.75F||ui_scale>3.0F) {
+                std::cerr<<"UI scale must be finite and in [0.75, 3.0]\n";
+                return 2;
+            }
+            options.ui_scale=ui_scale;
         } else if (argument == "--project" && index < argc) {
             options.project_path = argv[index++];
             if (options.project_path.empty()) {

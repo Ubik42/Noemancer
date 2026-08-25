@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-24",
   "status": "active-development",
-  "currentSlice": "editor.dpi-localization-visual-matrix",
-  "currentStep": "establish-hidden-dpi-language-rtl-cjk-and-glyph-fallback-matrix",
+  "currentSlice": "editor.high-dpi-responsive-chrome",
+  "currentStep": "make-imgui-and-retained-editor-chrome-responsive-at-1.5x-and-2x",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,8 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "editor.dpi-localization-visual-matrix"
+    "editor.high-dpi-responsive-chrome",
+    "editor.redistributable-cjk-arabic-fallback-and-cluster-editing"
   ],
   "externalEvidencePending": [
     "performance.gpu-telemetry-compatible-host"
@@ -41,7 +42,8 @@
     "editor.retained-asset-browser",
     "editor.retained-safe-authoring-actions",
     "editor.retained-authoring-actions",
-    "editor.project-hub-recent-workspaces"
+    "editor.project-hub-recent-workspaces",
+    "editor.dpi-localization-visual-matrix"
   ],
   "closedExperiments": [
     {
