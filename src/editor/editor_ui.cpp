@@ -641,13 +641,50 @@ std::vector<EditorAssetThumbnailArtifact> EditorUi::asset_thumbnail_artifacts() 
     }
     return result;
 }
+void EditorUi::set_recent_projects(std::vector<StartupHubRecentProject> projects,
+                                   const std::string_view persistence_observation_json) {
+    startup_hub_.set_recent_projects(std::move(projects));
+    if(persistence_observation_json.empty()) {
+        startup_hub_persistence_json_="null";
+        return;
+    }
+    if(persistence_observation_json.size()>16U*1024U) {
+        startup_hub_persistence_json_=nlohmann::json{{"healthy",false},
+            {"code","recent-projects.persistence-observation-too-large"},
+            {"detail","Persistence health metadata exceeded the bounded observation budget."}}.dump();
+        return;
+    }
+    const auto source=nlohmann::json::parse(persistence_observation_json,nullptr,false);
+    if(!source.is_object()) {
+        startup_hub_persistence_json_=nlohmann::json{{"healthy",false},
+            {"code","recent-projects.persistence-observation-invalid"},
+            {"detail","Persistence health metadata was not a JSON object."}}.dump();
+        return;
+    }
+    const auto bounded_string=[&](const char* field,const std::size_t limit) {
+        if(!source.contains(field)||!source.at(field).is_string())return std::string{};
+        auto value=source.at(field).get<std::string>();
+        if(value.size()>limit) {
+            auto end=limit;
+            while(end>0U&&end<value.size()&&
+                (static_cast<unsigned char>(value[end])&0xc0U)==0x80U)--end;
+            value.resize(end);
+        }
+        return value;
+    };
+    nlohmann::json health{{"healthy",source.value("healthy",source.value("success",false))}};
+    const auto schema=bounded_string("schemaVersion",128U);if(!schema.empty())health["schemaVersion"]=schema;
+    const auto code=bounded_string("code",128U);if(!code.empty())health["code"]=code;
+    const auto detail=bounded_string("detail",512U);if(!detail.empty())health["detail"]=detail;
+    for(const auto field:{"loaded","truncated"})if(source.contains(field)&&source.at(field).is_boolean())
+        health[field]=source.at(field);
+    for(const auto field:{"entryCount","revision"})if(source.contains(field)&&source.at(field).is_number_unsigned())
+        health[field]=source.at(field);
+    startup_hub_persistence_json_=health.dump();
+}
 void EditorUi::set_project_context(EditorProjectContext context) {
     project_context_=std::move(context);model_.reset_for_loaded_project();
     if(project_context_.root!="engine://") {
-        const auto opened=std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        startup_hub_.set_recent_projects({StartupHubRecentProject{
-            project_context_.root,project_context_.name,static_cast<std::uint64_t>(std::max<std::int64_t>(0,opened))}});
         startup_hub_open_=false;
     }
     project_input_panel_.emplace(ProjectSettingsInputMapSnapshot{project_context_.project_id,project_context_.name,
@@ -1524,6 +1561,7 @@ std::string EditorUi::semantic_snapshot_json() const {
     auto snapshot=nlohmann::json::parse(model_.semantic_snapshot_json());
     snapshot["startupHub"]=nlohmann::json::parse(startup_hub_.semantic_snapshot_json(),nullptr,false);
     snapshot["startupHub"]["visible"]=startup_hub_open_;
+    snapshot["startupHub"]["persistence"]=nlohmann::json::parse(startup_hub_persistence_json_,nullptr,false);
     snapshot["simulation"]={{"state",simulation_state_==EditorSimulationState::edit?"edit":
         simulation_state_==EditorSimulationState::playing?"playing":"paused"},
         {"editWorldWritable",simulation_state_==EditorSimulationState::edit&&!script_compile_busy_},

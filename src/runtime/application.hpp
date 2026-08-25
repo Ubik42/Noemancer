@@ -30,6 +30,7 @@ class GamePersistenceStore;
 class ProjectInputEditSession;
 class ProjectHybridPixelAuthoring;
 class ProjectUiAuthoringSession;
+class RecentWorkspaceStore;
 
 struct RuntimeInputSample final {
     std::string source;
@@ -116,6 +117,8 @@ private:
     [[nodiscard]] LiveEditorTransportDispatchResult dispatch_live_editor_request(
         const LiveEditorTransportRequest& request);
     [[nodiscard]] std::string load_editor_project_json(const std::filesystem::path& project_path);
+    void publish_recent_workspaces();
+    void record_recent_workspace(std::string_view path, std::string_view display_name);
     void poll_package_job();
     void register_sprite_assets(World& world);
     [[nodiscard]] bool register_cooked_geometry_assets();
@@ -145,6 +148,7 @@ private:
     std::shared_ptr<VirtualFileSystem> virtual_file_system_;
     AssetVfsCatalog asset_vfs_catalog_;
     EditorUi editor_ui_;
+    std::unique_ptr<RecentWorkspaceStore> recent_workspace_store_;
     TilemapRenderBakeCache tilemap_render_bake_cache_;
     std::string startup_error_json_;
     std::filesystem::path script_project_root_;

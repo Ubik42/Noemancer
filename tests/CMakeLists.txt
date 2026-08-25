@@ -27,6 +27,10 @@ add_executable(noemancer_startup_hub_tests startup_hub_tests.cpp)
 target_link_libraries(noemancer_startup_hub_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.startup_hub COMMAND noemancer_startup_hub_tests)
 
+add_executable(noemancer_recent_workspace_store_tests recent_workspace_store_tests.cpp)
+target_link_libraries(noemancer_recent_workspace_store_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.recent_workspace_store COMMAND noemancer_recent_workspace_store_tests)
+
 add_executable(noemancer_live_editor_session_tests live_editor_session_tests.cpp)
 target_link_libraries(noemancer_live_editor_session_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.live_editor_session COMMAND noemancer_live_editor_session_tests)

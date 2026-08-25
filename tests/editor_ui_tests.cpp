@@ -203,9 +203,29 @@ int main() {
        auto_completion->result_json.find(R"("success":true)")==std::string::npos) {
         std::cerr<<editor.semantic_snapshot_json()<<'\n';return 8;
     }
+    const auto recent_root=std::filesystem::absolute("generated/editor-ui-recent-projects");
+    std::filesystem::remove_all(recent_root);std::filesystem::create_directories(recent_root/"available-project");
+    {std::ofstream not_directory(recent_root/"not-a-project",std::ios::binary);not_directory<<"fixture";}
+    editor.set_recent_projects({
+        {.path=(recent_root/"available-project").generic_string(),.display_name="Available Project",.last_opened_unix_seconds=300U},
+        {.path=(recent_root/"missing-project").generic_string(),.display_name="Missing Project",.last_opened_unix_seconds=200U},
+        {.path=(recent_root/"not-a-project").generic_string(),.display_name="Not Directory",.last_opened_unix_seconds=100U}},
+        R"({"schemaVersion":"noemancer.recent-projects-store/0.1","healthy":true,"code":"ok","loaded":true,"entryCount":3,"revision":7,"storePath":"D:/secret/recent-projects.json"})");
+    const auto recent_before_context=editor.semantic_snapshot_json();
     editor.set_project_context({.project_id="project.test",.name="Test Project",.root="D:/test-project",
         .startup_scene="scenes/start.scene.json",.asset_roots={"assets"},
         .hybrid_pixel_profile=noemancer::HybridPixelProfile{}});
+    const auto recent_after_context=editor.semantic_snapshot_json();
+    if(recent_before_context.find("Available Project")==std::string::npos||
+       recent_before_context.find(R"("status":"missing")")==std::string::npos||
+       recent_after_context.find("Available Project")==std::string::npos||
+       recent_after_context.find("Missing Project")==std::string::npos||
+       recent_after_context.find(R"("entryCount":3)")==std::string::npos||
+       recent_after_context.find(R"("healthy":true)")==std::string::npos||
+       recent_after_context.find("secret/recent-projects")!=std::string::npos||
+       recent_after_context.find(R"("visible":false)")==std::string::npos) {
+        std::cerr<<"Recent Project injection was overwritten or leaked Store authority\n";return 56;
+    }
     editor.set_exposure(2.0F);
     editor.set_render_surface(1, 960, 540);
     editor.set_retained_outliner_surface(2,320,640);
@@ -488,6 +508,23 @@ int main() {
         "outliner.create-empty",panel_binding("editor-entity-create",retained_action_world.revision()));
     if(read_only.find(R"("success":false)")==std::string::npos||
        read_only.find("retained-action.world-read-only")==std::string::npos)return 61;
+    noemancer::EditorUi no_project_editor(world,assets);
+    no_project_editor.set_recent_projects({
+        {.path=(recent_root/"available-project").generic_string(),.display_name="Available Project",.last_opened_unix_seconds=300U},
+        {.path=(recent_root/"missing-project").generic_string(),.display_name="Missing Project",.last_opened_unix_seconds=200U},
+        {.path=(recent_root/"not-a-project").generic_string(),.display_name="Not Directory",.last_opened_unix_seconds=100U}});
+    const auto no_project_before_render=no_project_editor.semantic_snapshot_json();
+    ImGui::NewFrame();no_project_editor.render();ImGui::Render();
+    const auto no_project_after_render=no_project_editor.semantic_snapshot_json();
+    if(no_project_before_render.find(R"("visible":true)")==std::string::npos||
+       no_project_before_render.find("Available Project")==std::string::npos||
+       no_project_before_render.find(R"("status":"missing")")==std::string::npos||
+       no_project_after_render.find("Available Project")==std::string::npos||
+       no_project_after_render.find("Missing Project")==std::string::npos||
+       no_project_after_render.find(R"("persistence":null)")==std::string::npos) {
+        std::cerr<<"Project Hub did not retain its injected visible list without an open project\n";return 57;
+    }
+    std::filesystem::remove_all(recent_root);
     std::filesystem::remove_all(bulk_root);
     ImGui::DestroyContext();
 

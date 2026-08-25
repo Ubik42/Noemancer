@@ -1,5 +1,7 @@
 #include "runtime/application.hpp"
 
+#include "editor/recent_workspace_store.hpp"
+
 #include "engine/play_world_apply.hpp"
 #include "runtime/audio_output_backend.hpp"
 #include "runtime/asset_vfs_catalog.hpp"
@@ -299,6 +301,12 @@ Application::Application(RunOptions options)
     startup_telemetry_->begin_phase("application.construct");
     startup_telemetry_->begin_phase("engine.module-registration");
     engine_host_.register_default_modules();
+    if(!options_.player_mode) {
+        recent_workspace_store_=std::make_unique<RecentWorkspaceStore>(RecentWorkspaceStoreOptions{
+            .storage_path=default_user_data_root().parent_path()/"editor"/"recent-workspaces.json"});
+        static_cast<void>(recent_workspace_store_->load());
+        publish_recent_workspaces();
+    }
     if (options_.player_mode) {
         startup_telemetry_->begin_phase("project.parse");
     } else if (options_.project_path.empty()) {
@@ -567,9 +575,30 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
         context.project_ui_can_redo=project_ui_session_->can_redo();
     }
     editor_ui_.set_project_context(std::move(context));
+    record_recent_workspace(project_root_.generic_string(),project_name_);
     return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",true},{"code","ok"},
         {"operation","project.open"},{"detail","Project opened in the Editor."},{"projectPath",project_root_.generic_string()},
         {"scene",loaded.project->startup_scene.generic_string()},{"scriptCompile",std::move(compile)}}.dump();
+}
+
+void Application::publish_recent_workspaces() {
+    if(!recent_workspace_store_)return;
+    editor_ui_.set_recent_projects(recent_workspace_store_->snapshot().projects,
+        recent_workspace_store_->observation_json());
+}
+
+void Application::record_recent_workspace(const std::string_view path,const std::string_view display_name) {
+    if(!recent_workspace_store_)return;
+    const auto opened=std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto receipt=recent_workspace_store_->record_opened(path,display_name,
+        static_cast<std::uint64_t>(std::max<std::int64_t>(0,opened)));
+    publish_recent_workspaces();
+    const auto diagnostic=nlohmann::json{{"schemaVersion","noemancer.recent-workspaces-record/0.1"},
+        {"success",receipt.success},{"code",receipt.code},{"detail",receipt.detail},
+        {"revision",receipt.revision},{"entryCount",receipt.projects.size()},{"recovered",receipt.recovered}}.dump();
+    if(receipt.success)logger_.info("editor.recent-workspaces",diagnostic);
+    else logger_.error("editor.recent-workspaces",diagnostic);
 }
 
 void Application::apply_project_request(const EditorProjectRequest& request) {

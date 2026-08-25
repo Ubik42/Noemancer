@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-24",
   "status": "active-development",
-  "currentSlice": "editor.project-hub-recent-workspaces",
-  "currentStep": "persist-bounded-recent-projects-and-reopen-through-workspace-authority",
+  "currentSlice": "editor.dpi-localization-visual-matrix",
+  "currentStep": "establish-hidden-dpi-language-rtl-cjk-and-glyph-fallback-matrix",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,7 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "editor.project-hub-recent-workspaces"
+    "editor.dpi-localization-visual-matrix"
   ],
   "externalEvidencePending": [
     "performance.gpu-telemetry-compatible-host"
@@ -40,7 +40,8 @@
     "editor.retained-asset-browser-collection",
     "editor.retained-asset-browser",
     "editor.retained-safe-authoring-actions",
-    "editor.retained-authoring-actions"
+    "editor.retained-authoring-actions",
+    "editor.project-hub-recent-workspaces"
   ],
   "closedExperiments": [
     {
