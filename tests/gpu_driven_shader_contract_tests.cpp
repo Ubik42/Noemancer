@@ -78,6 +78,79 @@ void test_metadata_semantics(const std::string& source) {
             "The shader must carry the fixed GPU instance/visible-index capacity contract.");
 }
 
+void test_gpu_visibility_hiz_contract(const std::filesystem::path& repository_root) {
+    const auto frustum_only = read_text(repository_root / "assets" / "shaders" / "gpu_visibility.comp.hlsl");
+    const auto hiz = read_text(repository_root / "assets" / "shaders" / "gpu_occlusion.comp.hlsl");
+
+    // The original pipeline is intentionally left as the stable frustum-only
+    // ABI.  HiZ is an opt-in successor pass and must not silently change the
+    // resource layout used by existing SceneRenderer callers.
+    for (const auto& binding : {
+             "StructuredBuffer<GpuDrivenInstance> instances : register(t0, space0);",
+             "StructuredBuffer<GpuDrivenBatch> batches : register(t1, space0);",
+             "RWStructuredBuffer<uint> visibleIndices : register(u0, space1);",
+             "RWByteAddressBuffer indirectCommands : register(u1, space1);",
+             "cbuffer VisibilityParameters : register(b0, space2)"}) {
+        require(frustum_only.find(binding) != std::string::npos,
+            std::string("Frustum-only GPU visibility ABI changed: ") + binding);
+    }
+    require(frustum_only.find("Texture2D<float2> depthPyramid") == std::string::npos,
+        "The legacy frustum-only pipeline must not acquire an unbound HiZ resource.");
+
+    for (const auto& binding : {
+             "Texture2D<float2> depthPyramid : register(t0, space0);",
+             "SamplerState depthPyramidSampler : register(s0, space0);",
+             "StructuredBuffer<GpuDrivenInstance> instances : register(t1, space0);",
+             "StructuredBuffer<GpuDrivenBatch> batches : register(t2, space0);",
+             "RWStructuredBuffer<uint> visibleIndices : register(u0, space1);",
+             "RWByteAddressBuffer indirectCommands : register(u1, space1);",
+             "RWStructuredBuffer<uint> visibilityStats : register(u2, space1);",
+             "cbuffer GpuOcclusionParameters : register(b0, space2)"}) {
+        require(hiz.find(binding) != std::string::npos,
+            std::string("HiZ GPU visibility ABI binding is missing: ") + binding);
+    }
+
+    const auto parameters = block_after(hiz, "cbuffer GpuOcclusionParameters", "GPU occlusion parameters");
+    const auto planes = parameters.find("float4 frustumPlanes[6]");
+    const auto projection = parameters.find("float4x4 viewProjection");
+    const auto viewport = parameters.find("float4 viewport");
+    const auto depth = parameters.find("float4 depthParameters");
+    const auto policy = parameters.find("float4 occlusionParameters");
+    const auto dispatch = parameters.find("uint4 dispatchParameters");
+    require(planes != std::string::npos && projection != std::string::npos &&
+                viewport != std::string::npos && depth != std::string::npos &&
+                policy != std::string::npos && dispatch != std::string::npos &&
+                planes < projection && projection < viewport && viewport < depth &&
+                depth < policy && policy < dispatch,
+        "GPU occlusion cbuffer fields must preserve the documented 224-byte order.");
+
+    require(hiz.find("Texture2D<float2> depthPyramid") <
+                hiz.find("depthPyramid.Load(int3(coordinate, mip))"),
+        "HiZ must read the RG32F hierarchy through explicit mip Load coordinates.");
+    require(hiz.find("occlusionParameters.x > 0.5f") != std::string::npos &&
+                hiz.find("static_transform(instance)") != std::string::npos &&
+                hiz.find("STAT_DISABLED_VISIBLE") != std::string::npos,
+        "HiZ must have an explicit opt-in switch, static-transform guard, and disabled-path counter.");
+    require(hiz.find("PROJECTED_OFFSCREEN") != std::string::npos &&
+                hiz.find("PROJECTED_UNCERTAIN") != std::string::npos &&
+                hiz.find("STAT_OFFSCREEN_VISIBLE") != std::string::npos &&
+                hiz.find("STAT_INVALID_VISIBLE") != std::string::npos,
+        "Invalid, offscreen, and uncertain projected bounds must remain visible.");
+    require(hiz.find("requestedMip") != std::string::npos &&
+                hiz.find("availableMips - 1u") != std::string::npos &&
+                hiz.find("mip_dimension") != std::string::npos,
+        "HiZ sampling must clamp the requested mip against the actual pyramid.");
+    require(hiz.find("maximumOccluderDepth = max(maximumOccluderDepth, sampleMaximum)") !=
+                std::string::npos &&
+                hiz.find("sphere.nearestDepth > maximumOccluderDepth + bias") !=
+                std::string::npos,
+        "Occlusion must use the conservative max depth and a strict biased comparison.");
+    require(hiz.find("RWStructuredBuffer<uint> visibilityStats") != std::string::npos &&
+                hiz.find("STAT_HIZ_TESTED") != std::string::npos &&
+                hiz.find("STAT_HIZ_CULLED") != std::string::npos,
+        "HiZ statistics counter ABI is incomplete.");
+}
+
 void test_storage_read_guards(const std::string& source) {
     const auto main_body = block_after(source, "VertexOutput main", "GPU-driven vertex main");
     const auto metadata_guard = main_body.find("drawMetadata.x > gpuDrivenInstanceCapacity");
@@ -235,6 +308,7 @@ int main(int argc, char** argv) {
         const auto shader_path = repository_root / "assets" / "shaders" / "scene_gpu_driven.vert.hlsl";
         const auto source = read_text(shader_path);
         test_metadata_semantics(source);
+        test_gpu_visibility_hiz_contract(repository_root);
         test_storage_read_guards(source);
         test_deterministic_clip_output(source);
         test_sprite_mixed_lighting_contract(repository_root);

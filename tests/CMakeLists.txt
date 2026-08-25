@@ -217,6 +217,18 @@ target_link_libraries(noemancer_screen_space_global_illumination_tests PRIVATE
 add_test(NAME noemancer.screen_space_global_illumination
     COMMAND noemancer_screen_space_global_illumination_tests)
 
+add_executable(noemancer_gpu_occlusion_policy_tests gpu_occlusion_policy_tests.cpp)
+target_link_libraries(noemancer_gpu_occlusion_policy_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.gpu_occlusion_policy COMMAND noemancer_gpu_occlusion_policy_tests)
+
+add_executable(noemancer_gpu_occlusion_runtime_contract_tests
+    gpu_occlusion_runtime_contract_tests.cpp)
+target_link_libraries(noemancer_gpu_occlusion_runtime_contract_tests PRIVATE
+    nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.gpu_occlusion_runtime_contract
+    COMMAND noemancer_gpu_occlusion_runtime_contract_tests "${PROJECT_SOURCE_DIR}")
+
 add_executable(noemancer_image_decoder_tests image_decoder_tests.cpp)
 target_link_libraries(noemancer_image_decoder_tests PRIVATE noemancer::engine)
 add_test(NAME noemancer.image_decoder COMMAND noemancer_image_decoder_tests)

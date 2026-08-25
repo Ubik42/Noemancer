@@ -40,6 +40,8 @@ GpuBatchResourceIdentityResult build_gpu_batch_resource_identity(
     key.material_generation = descriptor.material_generation;
     key.raster_generation = descriptor.raster_generation;
     key.textures.reserve(descriptor.textures.size());
+    std::vector<TextureResourceBindingRequest> binding_requests;
+    binding_requests.reserve(descriptor.textures.size());
 
     std::set<std::string> semantics;
     for (std::size_t index = 0; index < descriptor.textures.size(); ++index) {
@@ -84,13 +86,20 @@ GpuBatchResourceIdentityResult build_gpu_batch_resource_identity(
             return failure("duplicate-texture-semantic",
                            "shader binding semantic is repeated: " + binding.semantic);
         }
+        binding_requests.push_back({binding.handle, binding.semantic, binding.fallback.stable_id});
         key.textures.push_back(std::move(texture_identity));
+    }
+
+    auto binding_snapshot = texture_resources.snapshot_bindings(binding_requests);
+    if (!binding_snapshot.valid) {
+        return failure(binding_snapshot.code, binding_snapshot.detail);
     }
 
     GpuBatchResourceIdentityResult result;
     result.valid = true;
     result.code = "ok";
     result.key = std::move(key);
+    result.binding_snapshot = std::move(binding_snapshot);
     return result;
 }
 

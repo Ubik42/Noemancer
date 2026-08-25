@@ -73,9 +73,10 @@ void print_usage() {
         << "                 [--ssgi-quality low|medium|high] [--ssgi-debug final|confidence|visibility|bent-normal|miss]\n"
         << "                 [--reference-scene commercial-raster-v1]\n"
         << "                 [--render-stress-instances N]\n"
+        << "                 [--gpu-occlusion-stress] [--gpu-occlusion-stress-instances N]\n"
         << "                 [--animation-physics-stress]\n"
         << "                 [--vfx-respawn-interval N]\n"
-        << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr] [--disable-ssgi]\n"
+        << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--enable-gpu-occlusion] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr] [--disable-ssgi]\n"
         << "                 [--gpu-visibility-readback] [--render-stress-offscreen-percent N]\n"
         << "                 [--ui-locale LOCALE] [--ui-scale SCALE]\n"
         << "                 [--project PATH]\n"
@@ -507,6 +508,14 @@ int main(int argc, char** argv) {
                 std::cerr << "Render stress instance count must be in [1, 4096]\n";
                 return 2;
             }
+        } else if(argument=="--gpu-occlusion-stress") {
+            options.gpu_occlusion_stress=true;
+        } else if(argument=="--gpu-occlusion-stress-instances"&&index<argc) {
+            if(!parse_frames(argv[index++],options.gpu_occlusion_stress_instances)||
+               options.gpu_occlusion_stress_instances<32U||options.gpu_occlusion_stress_instances>4096U) {
+                std::cerr<<"GPU occlusion stress instance count must be in [32, 4096]\n";return 2;
+            }
+            options.gpu_occlusion_stress=true;
         } else if (argument == "--animation-physics-stress") {
             options.animation_physics_stress = true;
         } else if (argument == "--vfx-respawn-interval" && index < argc) {
@@ -526,6 +535,8 @@ int main(int argc, char** argv) {
             options.gpu_debug = true;
         } else if(argument=="--disable-gpu-driven") {
             options.disable_gpu_driven=true;
+        } else if(argument=="--enable-gpu-occlusion") {
+            options.enable_gpu_occlusion=true;
         } else if(argument=="--disable-ambient-occlusion") {
             options.disable_ambient_occlusion=true;
         } else if(argument=="--disable-auto-exposure") {
@@ -659,10 +670,13 @@ int main(int argc, char** argv) {
     if(options.player_mode&&!options.capture_editor_frame_path.empty()) {
         std::cerr<<"Editor frame capture is only available in Editor run mode\n";return 2;
     }
-    const auto generated_workload_count=(options.reference_scene_id.empty()?0U:1U)+(options.render_stress_instances>0?1U:0U)+
-        (options.animation_physics_stress?1U:0U);
-    if(generated_workload_count>1U||options.animation_physics_stress&&(!options.project_path.empty()||options.player_mode)) {
-        std::cerr<<"Reference scene cannot be combined with a project, Player profile, or render stress scene\n";return 2;
+    const auto generated_workload_count=(options.reference_scene_id.empty()?0U:1U)+
+        (options.render_stress_instances>0?1U:0U)+(options.animation_physics_stress?1U:0U)+
+        (options.gpu_occlusion_stress?1U:0U);
+    if(generated_workload_count>1U||
+       (options.animation_physics_stress||options.gpu_occlusion_stress)&&
+           (!options.project_path.empty()||options.player_mode)) {
+        std::cerr<<"Generated reference/stress workloads cannot be combined with a project or Player profile\n";return 2;
     }
 
     if (options.headless && (!options.capture_frame_path.empty() || !options.capture_editor_frame_path.empty() || options.probe_pixel)) {
@@ -677,9 +691,12 @@ int main(int argc, char** argv) {
     if(options.performance_hidden&&options.performance_evidence_path.empty()) {
         std::cerr<<"Hidden performance mode requires --performance-evidence\n";return 2;
     }
+    const bool has_partial_visibility_stress=(options.render_stress_instances>=32U&&
+        options.render_stress_offscreen_percent>0U)||
+        (options.gpu_occlusion_stress&&options.gpu_occlusion_stress_instances>=32U);
     if(options.gpu_visibility_readback&&(options.headless||options.disable_gpu_driven||options.probe_pixel||
-       options.render_stress_instances<32U||options.render_stress_offscreen_percent==0U)) {
-        std::cerr<<"GPU visibility readback requires interactive GPU-driven rendering with at least 32 stress instances and a 25-50% offscreen workload\n";
+       !has_partial_visibility_stress||(options.gpu_occlusion_stress&&!options.enable_gpu_occlusion))) {
+        std::cerr<<"GPU visibility readback requires interactive GPU-driven rendering with a partial visibility stress workload; GPU occlusion stress also requires --enable-gpu-occlusion\n";
         return 2;
     }
     if(options.render_stress_offscreen_percent>0U&&!options.gpu_visibility_readback) {

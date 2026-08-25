@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-25",
   "status": "active-development",
-  "currentSlice": "render.bindless-gpu-scene-and-occlusion-decision",
-  "currentStep": "measure-descriptor-churn-visible-ratio-and-hiz-occlusion-roi",
+  "currentSlice": "render.shadow-scalability-vsm-decision",
+  "currentStep": "measure-existing-shadow-pressure-and-author-vsm-adoption-decision",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "render.bindless-gpu-scene-and-occlusion-decision",
     "render.shadow-scalability-vsm-decision",
     "render.native-rhi-raytracing-foundation",
     "render.rtgi-production-path",
@@ -57,7 +56,8 @@
     "render.dynamic-sky-atmosphere",
     "render.screen-space-hiz-history-and-temporal-denoising",
     "render.ssr-production-path",
-    "render.ssgi-production-path"
+    "render.ssgi-production-path",
+    "render.bindless-gpu-scene-and-occlusion-decision"
   ],
   "closedExperiments": [
     {

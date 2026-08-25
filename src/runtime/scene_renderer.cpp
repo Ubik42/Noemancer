@@ -286,6 +286,18 @@ struct alignas(16) GpuVisibilityParameters final {
     std::array<std::uint32_t,2> padding{};
 };
 static_assert(sizeof(GpuVisibilityParameters)==112,"GpuVisibilityParameters must match gpu_visibility.comp.hlsl");
+struct alignas(16) GpuOcclusionParameters final {
+    std::array<std::array<float,4>,6> frustum_planes{};
+    Mat4 view_projection;
+    std::array<float,4> viewport{};
+    std::array<float,4> depth_parameters{};
+    std::array<float,4> occlusion_parameters{};
+    std::array<std::uint32_t,4> dispatch_parameters{};
+};
+static_assert(sizeof(GpuOcclusionParameters)==224,"GpuOcclusionParameters must match gpu_occlusion.comp.hlsl");
+constexpr std::uint32_t gpu_occlusion_statistic_count=8U;
+constexpr std::uint32_t gpu_occlusion_statistics_bytes=
+    gpu_occlusion_statistic_count*sizeof(std::uint32_t);
 
 struct alignas(16) ShadowInstancingData {
     std::array<Mat4,maximum_instances_per_draw> models{};
@@ -700,6 +712,32 @@ void SceneRenderer::set_sky_atmosphere(SkyAtmosphereSettings settings) {
     sky_atmosphere_=std::move(settings);
 }
 
+SDL_GPUComputePipeline* load_occlusion_compute_pipeline(SDL_GPUDevice* device) {
+    const auto formats=SDL_GetGPUShaderFormats(device);
+    const bool use_dxil=(formats&SDL_GPU_SHADERFORMAT_DXIL)!=0;
+    const bool use_spirv=!use_dxil&&(formats&SDL_GPU_SHADERFORMAT_SPIRV)!=0;
+    if(!use_dxil&&!use_spirv)return nullptr;
+    const auto artifact=runtime_shader_artifacts().load(ShaderArtifactRequest{
+        .stem="gpu_occlusion.comp",.stage=ShaderArtifactStage::compute,
+        .resources={.uniform_buffers=1,.samplers=1,.read_only_storage_buffers=2,
+            .read_write_storage_buffers=3}},
+        use_dxil?ShaderArtifactBackend::dxil:ShaderArtifactBackend::spv);
+    if(!artifact.success) {
+        shader_artifact_failure=artifact.code+": "+artifact.detail;
+        return nullptr;
+    }
+    SDL_GPUComputePipelineCreateInfo info{};
+    info.code=reinterpret_cast<const Uint8*>(artifact.bytes.data());
+    info.code_size=artifact.bytes.size();info.entrypoint=artifact.entrypoint.c_str();
+    info.format=use_dxil?SDL_GPU_SHADERFORMAT_DXIL:SDL_GPU_SHADERFORMAT_SPIRV;
+    info.num_samplers=1;info.num_readonly_storage_buffers=2;
+    info.num_readwrite_storage_buffers=3;info.num_uniform_buffers=1;
+    info.threadcount_x=64;info.threadcount_y=1;info.threadcount_z=1;
+    auto* pipeline=SDL_CreateGPUComputePipeline(device,&info);
+    if(!pipeline)shader_artifact_failure="pipeline-create: "+std::string(SDL_GetError());
+    return pipeline;
+}
+
 bool SceneRenderer::create_sky_atmosphere_resources() {
     shader_artifact_failure.clear();
     sky_lut_fallback_reason_.clear();
@@ -931,6 +969,14 @@ bool SceneRenderer::create_gpu_driven_resources() {
         }
         return true;
     }
+    shader_artifact_failure.clear();
+    gpu_occlusion_pipeline_=load_occlusion_compute_pipeline(device_);
+    if(!gpu_occlusion_pipeline_) {
+        gpu_occlusion_fallback_reason_=shader_artifact_failure.empty()
+            ? "gpu-occlusion-pipeline-unavailable"
+            : "shader-artifact: "+shader_artifact_failure;
+    }
+    shader_artifact_failure.clear();
     const auto create_buffer=[&](SDL_GPUBuffer*& buffer,const std::uint32_t size,const SDL_GPUBufferUsageFlags usage,const char* name) {
         SDL_GPUBufferCreateInfo info{};info.usage=usage;info.size=size;buffer=SDL_CreateGPUBuffer(device_,&info);
         if(buffer)SDL_SetGPUBufferName(device_,buffer,name);return buffer!=nullptr;
@@ -949,19 +995,31 @@ bool SceneRenderer::create_gpu_driven_resources() {
         if(gpu_driven_visible_index_buffer_)SDL_ReleaseGPUBuffer(device_,gpu_driven_visible_index_buffer_);
         if(gpu_driven_indirect_buffer_)SDL_ReleaseGPUBuffer(device_,gpu_driven_indirect_buffer_);
         SDL_ReleaseGPUComputePipeline(device_,gpu_visibility_pipeline_);
+        if(gpu_occlusion_pipeline_)SDL_ReleaseGPUComputePipeline(device_,gpu_occlusion_pipeline_);
         gpu_driven_instance_buffer_=nullptr;gpu_driven_batch_buffer_=nullptr;gpu_driven_visible_index_buffer_=nullptr;
-        gpu_driven_indirect_buffer_=nullptr;gpu_visibility_pipeline_=nullptr;return true;
+        gpu_driven_indirect_buffer_=nullptr;gpu_visibility_pipeline_=nullptr;gpu_occlusion_pipeline_=nullptr;return true;
+    }
+    if(gpu_occlusion_pipeline_ &&
+       !create_buffer(gpu_occlusion_statistics_buffer_,gpu_occlusion_statistics_bytes,
+            compute_write,"gpu-driven.occlusion-statistics")) {
+        SDL_ReleaseGPUComputePipeline(device_,gpu_occlusion_pipeline_);
+        gpu_occlusion_pipeline_=nullptr;
+        gpu_occlusion_fallback_reason_="statistics-buffer-unavailable";
     }
     constexpr auto upload_size=gpu_driven_instance_capacity*sizeof(GpuDrivenInstance)+
-        gpu_driven_batch_capacity*sizeof(GpuDrivenBatch)+gpu_driven_batch_capacity*sizeof(GpuIndexedIndirectCommand);
+        gpu_driven_batch_capacity*sizeof(GpuDrivenBatch)+gpu_driven_batch_capacity*sizeof(GpuIndexedIndirectCommand)+
+        gpu_occlusion_statistics_bytes;
     SDL_GPUTransferBufferCreateInfo upload_info{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,static_cast<Uint32>(upload_size),0};
     gpu_driven_upload_buffer_=SDL_CreateGPUTransferBuffer(device_,&upload_info);
     if(!gpu_driven_upload_buffer_) {
         SDL_ReleaseGPUBuffer(device_,gpu_driven_instance_buffer_);SDL_ReleaseGPUBuffer(device_,gpu_driven_batch_buffer_);
         SDL_ReleaseGPUBuffer(device_,gpu_driven_visible_index_buffer_);SDL_ReleaseGPUBuffer(device_,gpu_driven_indirect_buffer_);
         SDL_ReleaseGPUComputePipeline(device_,gpu_visibility_pipeline_);
+        if(gpu_occlusion_pipeline_)SDL_ReleaseGPUComputePipeline(device_,gpu_occlusion_pipeline_);
+        if(gpu_occlusion_statistics_buffer_)SDL_ReleaseGPUBuffer(device_,gpu_occlusion_statistics_buffer_);
         gpu_driven_instance_buffer_=nullptr;gpu_driven_batch_buffer_=nullptr;gpu_driven_visible_index_buffer_=nullptr;
-        gpu_driven_indirect_buffer_=nullptr;gpu_visibility_pipeline_=nullptr;return true;
+        gpu_driven_indirect_buffer_=nullptr;gpu_visibility_pipeline_=nullptr;gpu_occlusion_pipeline_=nullptr;
+        gpu_occlusion_statistics_buffer_=nullptr;return true;
     }
     return true;
 }
@@ -2266,6 +2324,7 @@ bool SceneRenderer::create_pipelines() {
 }
 
 bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_t height) {
+    depth_pyramid_history_ready_=false;
     const bool hybrid_pixel = hybrid_pixel_active();
     if (hybrid_pixel) {
         pixel_presentation_ = plan_pixel_presentation({
@@ -2755,6 +2814,7 @@ void SceneRenderer::set_capture_contract_json(std::string contract_json) {
 
 void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnapshot& render_world) {
     last_error_.clear();
+    gpu_occlusion_used_this_frame_=false;
     if (!color_texture_ || !shadow_texture_) return;
     if (render_graph_.graph_id.empty()) render_graph_ = make_forward_render_graph();
     if (!render_graph_.valid) { last_error_ = "Render graph is invalid"; return; }
@@ -2891,6 +2951,12 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         for (std::size_t index=0;index<view_projection.value.size();++index)
             view_projection_delta=std::max(view_projection_delta,std::abs(view_projection.value[index]-previous_view_projection_[index]));
     const bool camera_cut=temporal_history_valid_ && view_projection_delta>2.0F;
+    float unjittered_projection_delta{};
+    if(frame_index_>0U) {
+        for(std::size_t index=0;index<unjittered_view_projection.value.size();++index)
+            unjittered_projection_delta=std::max(unjittered_projection_delta,
+                std::abs(unjittered_view_projection.value[index]-previous_unjittered_view_projection_[index]));
+    }
     if(camera_cut)++temporal_camera_cut_epoch_;
     std::ostringstream temporal_projection_identity;
     temporal_projection_identity << (camera_orthographic?"orthographic":"perspective")
@@ -2914,6 +2980,24 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         return;
     }
     temporal_history_valid_=temporal_history_plan.use_previous;
+    gpu_occlusion_history_valid_=gpu_occlusion_enabled_&&gpu_occlusion_pipeline_&&
+        gpu_occlusion_statistics_buffer_&&depth_pyramid_texture_&&depth_pyramid_history_ready_&&
+        !camera_orthographic&&!camera_cut&&
+        frame_index_>0U&&previous_temporal_frame_+1U==frame_index_&&
+        unjittered_projection_delta<=0.000001F;
+    if(!gpu_occlusion_enabled_)gpu_occlusion_fallback_reason_="disabled-by-policy";
+    else if(!gpu_occlusion_pipeline_||!gpu_occlusion_statistics_buffer_)gpu_occlusion_fallback_reason_="pipeline-or-statistics-unavailable";
+    else if(!depth_pyramid_texture_)gpu_occlusion_fallback_reason_="shared-hiz-unavailable";
+    else if(!depth_pyramid_history_ready_)gpu_occlusion_fallback_reason_="shared-hiz-history-unavailable";
+    else if(camera_orthographic)gpu_occlusion_fallback_reason_="orthographic-conservative-fallback";
+    else if(camera_cut)gpu_occlusion_fallback_reason_="camera-cut";
+    else if(frame_index_==0U||previous_temporal_frame_+1U!=frame_index_)gpu_occlusion_fallback_reason_="history-unavailable";
+    else if(unjittered_projection_delta>0.000001F)gpu_occlusion_fallback_reason_="camera-motion-conservative-fallback";
+    else gpu_occlusion_fallback_reason_="none";
+    // Consume last frame's readiness once. The reduce pass republishes it
+    // only after recording the complete mip chain, so an early-returning
+    // frame cannot accidentally reuse an older pyramid as fresh history.
+    depth_pyramid_history_ready_=false;
     ssgi_plan_=build_screen_space_global_illumination_plan(ssgi_config_,hybrid_pixel_active(),{
         depth_pyramid_texture_&&depth_pyramid_seed_pipeline_&&depth_pyramid_reduce_pipeline_,
         normal_texture_!=nullptr,
@@ -3443,6 +3527,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     std::vector<GpuIndexedIndirectCommand> gpu_commands;
     std::vector<GpuDrivenRenderBatch> gpu_render_batches;
     std::vector<std::vector<std::uint32_t>> gpu_reference_visible_indices;
+    std::vector<std::string> gpu_candidate_draw_ids;
     std::vector<bool> gpu_driven_items(objects.size(),false);
     gpu_instances.reserve(std::min<std::size_t>(objects.size(),gpu_driven_instance_capacity));
     const bool gpu_driven_available=gpu_visibility_pipeline_&&gpu_driven_lit_pipeline_&&gpu_driven_lit_double_sided_pipeline_&&
@@ -3508,6 +3593,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
             gpu_instances.push_back({item.data.model,item.data.previous_model,item.data.color,item.data.material,
                 item.data.emissive_normal,item.data.occlusion_alpha_flags,identity,
                 {item.bounds.center[0],item.bounds.center[1],item.bounds.center[2],item.bounds.radius}});
+            gpu_candidate_draw_ids.push_back(slot.draw_id);
             gpu_driven_items[item_index]=true;
         }
         gpu_batches.reserve(gpu_batch_plan.batches.size());gpu_commands.reserve(gpu_batch_plan.batches.size());
@@ -3538,6 +3624,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         gpu_driven_topology_reused_=false;gpu_driven_stable_slots_reused_=0;gpu_driven_moved_slots_=0;
     }
     gpu_driven_candidates_=gpu_instances.size();gpu_driven_batches_=gpu_batches.size();gpu_driven_reference_visible_=0;
+    gpu_driven_candidate_draw_ids_=std::move(gpu_candidate_draw_ids);
     gpu_driven_batch_candidate_offsets_.clear();
     gpu_driven_batch_candidate_counts_.clear();
     gpu_driven_batch_visible_offsets_.clear();
@@ -3559,6 +3646,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     gpu_driven_command_upload_bytes_=0;gpu_driven_dirty_ranges_=0;gpu_driven_dirty_instances_=0;
     bool gpu_frame_ready=!gpu_instances.empty();
     GpuVisibilityParameters gpu_visibility_parameters{};
+    GpuOcclusionParameters gpu_occlusion_parameters{};
     if(!gpu_instances.empty()) {
         const auto instances_bytes=static_cast<std::uint32_t>(gpu_instances.size()*sizeof(GpuDrivenInstance));
         const auto batches_bytes=static_cast<std::uint32_t>(gpu_batches.size()*sizeof(GpuDrivenBatch));
@@ -3591,6 +3679,11 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
             if(batches_changed){std::memcpy(mapped+upload_cursor,gpu_batches.data(),batches_bytes);upload_cursor+=batches_bytes;}
             const auto command_upload_offset=upload_cursor;
             std::memcpy(mapped+upload_cursor,gpu_commands.data(),commands_bytes);
+            upload_cursor+=commands_bytes;
+            const auto occlusion_statistics_upload_offset=upload_cursor;
+            const std::array<std::uint32_t,gpu_occlusion_statistic_count> zero_statistics{};
+            std::memcpy(mapped+upload_cursor,zero_statistics.data(),gpu_occlusion_statistics_bytes);
+            upload_cursor+=gpu_occlusion_statistics_bytes;
             SDL_UnmapGPUTransferBuffer(device_,gpu_driven_upload_buffer_);
             auto* copy=SDL_BeginGPUCopyPass(command);
             if(!copy){gpu_frame_ready=false;gpu_driven_fallback_reason_="copy-pass-failed: "+std::string(SDL_GetError());}
@@ -3608,8 +3701,18 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
                     SDL_UploadToGPUBuffer(copy,&source,&destination,true);}
                 source.offset=command_upload_offset;destination={gpu_driven_indirect_buffer_,0,commands_bytes};
                 SDL_UploadToGPUBuffer(copy,&source,&destination,true);
+                if(gpu_occlusion_statistics_buffer_) {
+                    source.offset=occlusion_statistics_upload_offset;
+                    destination={gpu_occlusion_statistics_buffer_,0,gpu_occlusion_statistics_bytes};
+                    // This copy pass is ordered before visibility compute in the
+                    // same command buffer, so the counter allocation is safe to
+                    // reuse. Cycling it allowed Vulkan to keep an older backing
+                    // allocation and accumulate evidence across frames.
+                    SDL_UploadToGPUBuffer(copy,&source,&destination,false);
+                }
                 SDL_EndGPUCopyPass(copy);gpu_driven_upload_bytes_=gpu_driven_instance_upload_bytes_+
-                    gpu_driven_batch_upload_bytes_+gpu_driven_command_upload_bytes_;
+                    gpu_driven_batch_upload_bytes_+gpu_driven_command_upload_bytes_+
+                    (gpu_occlusion_statistics_buffer_?gpu_occlusion_statistics_bytes:0U);
                 gpu_driven_stable_upload_bytes_total_+=gpu_driven_instance_upload_bytes_+gpu_driven_batch_upload_bytes_;
                 if(!packed_dirty_ranges.empty()){gpu_driven_instance_mirror_.assign(current_instance_bytes.begin(),current_instance_bytes.end());
                     ++gpu_driven_instance_uploads_;}
@@ -3624,6 +3727,16 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
             }
             gpu_visibility_parameters.candidate_count=static_cast<std::uint32_t>(gpu_instances.size());
             gpu_visibility_parameters.batch_count=static_cast<std::uint32_t>(gpu_batches.size());
+            gpu_occlusion_parameters.frustum_planes=gpu_visibility_parameters.frustum_planes;
+            gpu_occlusion_parameters.view_projection=Mat4{previous_view_projection_};
+            gpu_occlusion_parameters.viewport={static_cast<float>(render_width_),static_cast<float>(render_height_),
+                1.0F/static_cast<float>(render_width_),1.0F/static_cast<float>(render_height_)};
+            gpu_occlusion_parameters.depth_parameters={camera_near,camera_far,0.0F,0.05F};
+            gpu_occlusion_parameters.occlusion_parameters={gpu_occlusion_history_valid_?1.0F:0.0F,
+                static_cast<float>(depth_pyramid_mip_count_?depth_pyramid_mip_count_-1U:0U),
+                static_cast<float>(depth_pyramid_mip_count_),1.0F};
+            gpu_occlusion_parameters.dispatch_parameters={gpu_visibility_parameters.candidate_count,
+                gpu_visibility_parameters.batch_count,1U,0U};
         }
         if(!gpu_frame_ready) {
             std::fill(gpu_driven_items.begin(),gpu_driven_items.end(),false);gpu_render_batches.clear();
@@ -3989,13 +4102,24 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     }
     } else if(pass_id=="render.pass.gpu-visibility") {
     if(gpu_frame_ready) {
-        SDL_PushGPUComputeUniformData(command,0,&gpu_visibility_parameters,sizeof(gpu_visibility_parameters));
-        const std::array<SDL_GPUStorageBufferReadWriteBinding,2> outputs{{
-            {gpu_driven_visible_index_buffer_,true,0,0,0},{gpu_driven_indirect_buffer_,false,0,0,0}}};
-        auto* compute=SDL_BeginGPUComputePass(command,nullptr,0,outputs.data(),static_cast<Uint32>(outputs.size()));
+        const bool use_occlusion=gpu_occlusion_history_valid_&&gpu_occlusion_pipeline_&&
+            gpu_occlusion_statistics_buffer_&&depth_pyramid_texture_;
+        gpu_occlusion_used_this_frame_=use_occlusion;
+        const std::array<SDL_GPUStorageBufferReadWriteBinding,3> outputs{{
+            {gpu_driven_visible_index_buffer_,true,0,0,0},{gpu_driven_indirect_buffer_,false,0,0,0},
+            {gpu_occlusion_statistics_buffer_,true,0,0,0}}};
+        auto* compute=SDL_BeginGPUComputePass(command,nullptr,0,outputs.data(),use_occlusion?3U:2U);
         if(!compute){gpu_frame_ready=false;gpu_driven_fallback_reason_="compute-pass-failed: "+std::string(SDL_GetError());}
         if(compute) {
-            SDL_BindGPUComputePipeline(compute,gpu_visibility_pipeline_);
+            if(use_occlusion) {
+                SDL_PushGPUComputeUniformData(command,0,&gpu_occlusion_parameters,sizeof(gpu_occlusion_parameters));
+                SDL_BindGPUComputePipeline(compute,gpu_occlusion_pipeline_);
+                const SDL_GPUTextureSamplerBinding hiz_source{depth_pyramid_texture_,sprite_nearest_sampler_};
+                SDL_BindGPUComputeSamplers(compute,0,&hiz_source,1U);
+            } else {
+                SDL_PushGPUComputeUniformData(command,0,&gpu_visibility_parameters,sizeof(gpu_visibility_parameters));
+                SDL_BindGPUComputePipeline(compute,gpu_visibility_pipeline_);
+            }
             const std::array<SDL_GPUBuffer*,2> inputs{gpu_driven_instance_buffer_,gpu_driven_batch_buffer_};
             SDL_BindGPUComputeStorageBuffers(compute,0,inputs.data(),static_cast<Uint32>(inputs.size()));
             SDL_DispatchGPUCompute(compute,(gpu_visibility_parameters.candidate_count+63U)/64U,1,1);
@@ -4166,6 +4290,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         SDL_EndGPUComputePass(pass);++depth_pyramid_reduce_dispatches_;
         source_width=destination_width;source_height=destination_height;
     }
+    depth_pyramid_history_ready_=true;
     } else if (pass_id == "render.pass.ambient-occlusion") {
     SDL_GPUColorTargetInfo color_target{}; color_target.texture=ambient_occlusion_texture_;
     color_target.clear_color={1,1,1,1}; color_target.load_op=SDL_GPU_LOADOP_CLEAR; color_target.store_op=SDL_GPU_STOREOP_STORE;
@@ -4673,6 +4798,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid)))return;
     gpu_pass_timestamps_.end_frame(command);
     previous_view_projection_=view_projection.value;
+    previous_unjittered_view_projection_=unjittered_view_projection.value;
     previous_temporal_frame_=frame_index_;
     previous_camera_id_=active_camera_id_;
     previous_models_.clear();
@@ -4692,6 +4818,9 @@ bool SceneRenderer::enqueue_gpu_visibility_readback(SDL_GPUCommandBuffer* comman
     gpu_visibility_readback_error_.clear();
     gpu_visibility_readback_count_match_=false;
     gpu_visibility_readback_exact_set_match_=false;
+    gpu_visibility_readback_conservative_subset_match_=false;
+    gpu_visibility_readback_unexpected_visible_=0;
+    gpu_occlusion_readback_statistics_.fill(0U);
     gpu_visibility_readback_match_=false;
     if(!command||gpu_visibility_readback_transfer_) {
         gpu_visibility_readback_state_="failed";
@@ -4718,7 +4847,15 @@ bool SceneRenderer::enqueue_gpu_visibility_readback(SDL_GPUCommandBuffer* comman
         last_error_=gpu_visibility_readback_error_;
         return false;
     }
-    const auto bytes=indirect_bytes+visible_index_bytes;
+    const auto statistics_bytes=gpu_occlusion_used_this_frame_&&gpu_occlusion_statistics_buffer_
+        ?static_cast<std::size_t>(gpu_occlusion_statistics_bytes):0U;
+    if(statistics_bytes>std::numeric_limits<Uint32>::max()-indirect_bytes-visible_index_bytes) {
+        gpu_visibility_readback_state_="failed";
+        gpu_visibility_readback_error_="visibility statistics readback exceeds the SDL transfer size limit";
+        last_error_=gpu_visibility_readback_error_;
+        return false;
+    }
+    const auto bytes=indirect_bytes+visible_index_bytes+statistics_bytes;
     const SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,static_cast<Uint32>(bytes),0};
     gpu_visibility_readback_transfer_=SDL_CreateGPUTransferBuffer(device_,&info);
     if(!gpu_visibility_readback_transfer_) {
@@ -4740,6 +4877,13 @@ bool SceneRenderer::enqueue_gpu_visibility_readback(SDL_GPUCommandBuffer* comman
     const SDL_GPUBufferRegion index_source{gpu_driven_visible_index_buffer_,0,static_cast<Uint32>(visible_index_bytes)};
     const SDL_GPUTransferBufferLocation index_destination{gpu_visibility_readback_transfer_,static_cast<Uint32>(indirect_bytes)};
     SDL_DownloadFromGPUBuffer(copy,&index_source,&index_destination);
+    if(statistics_bytes>0U) {
+        const SDL_GPUBufferRegion statistics_source{gpu_occlusion_statistics_buffer_,0,
+            static_cast<Uint32>(statistics_bytes)};
+        const SDL_GPUTransferBufferLocation statistics_destination{gpu_visibility_readback_transfer_,
+            static_cast<Uint32>(indirect_bytes+visible_index_bytes)};
+        SDL_DownloadFromGPUBuffer(copy,&statistics_source,&statistics_destination);
+    }
     SDL_EndGPUCopyPass(copy);
     gpu_visibility_readback_state_="queued";
     gpu_visibility_readback_frame_=frame_index_;
@@ -4752,11 +4896,14 @@ bool SceneRenderer::enqueue_gpu_visibility_readback(SDL_GPUCommandBuffer* comman
     gpu_visibility_readback_out_of_range_indices_=0;
     gpu_visibility_readback_wrong_batch_indices_=0;
     gpu_visibility_readback_duplicate_indices_=0;
+    gpu_visibility_readback_occlusion_active_=statistics_bytes>0U;
     gpu_visibility_readback_bytes_=bytes;
     gpu_visibility_readback_indirect_bytes_=indirect_bytes;
     gpu_visibility_readback_cpu_set_hash_=visibility_index_set_hash(gpu_driven_batch_reference_visible_indices_);
     gpu_visibility_readback_gpu_set_hash_.clear();
     gpu_visibility_readback_actual_indices_.clear();
+    gpu_visibility_readback_actual_draw_ids_.clear();
+    gpu_visibility_readback_candidate_draw_ids_=gpu_driven_candidate_draw_ids_;
     gpu_visibility_readback_batch_candidate_offsets_=gpu_driven_batch_candidate_offsets_;
     gpu_visibility_readback_batch_candidate_counts_=gpu_driven_batch_candidate_counts_;
     gpu_visibility_readback_batch_visible_offsets_=gpu_driven_batch_visible_offsets_;
@@ -4809,8 +4956,10 @@ bool SceneRenderer::resolve_gpu_visibility_readback() {
     std::size_t out_of_range{};
     std::size_t wrong_batch{};
     std::size_t duplicates{};
+    std::size_t unexpected_visible{};
     bool exact_set_match=true;
     std::vector<std::vector<std::uint32_t>> gpu_visible_indices(gpu_visibility_readback_batches_);
+    std::vector<std::string> gpu_visible_draw_ids;
     for(std::size_t index=0;index<gpu_visibility_readback_batches_;++index) {
         GpuIndexedIndirectCommand command{};
         std::memcpy(&command,mapped+index*sizeof(command),sizeof(command));
@@ -4818,7 +4967,10 @@ bool SceneRenderer::resolve_gpu_visibility_readback() {
         const auto candidate_count=gpu_visibility_readback_batch_candidate_counts_[index];
         const auto visible_offset=gpu_visibility_readback_batch_visible_offsets_[index];
         if(command.instance_count>candidate_count)++invalid;
-        if(command.instance_count!=gpu_visibility_readback_expected_indices_[index].size())++mismatched_counts;
+        const auto expected_count=gpu_visibility_readback_expected_indices_[index].size();
+        if(gpu_visibility_readback_occlusion_active_
+            ?command.instance_count>expected_count
+            :command.instance_count!=expected_count)++mismatched_counts;
         visible+=command.instance_count;
         const auto readable_count=std::min(command.instance_count,candidate_count);
         auto& actual=gpu_visible_indices[index];
@@ -4831,6 +4983,8 @@ bool SceneRenderer::resolve_gpu_visibility_readback() {
             actual.push_back(candidate);
             if(candidate>=gpu_visibility_readback_candidates_)++out_of_range;
             else if(candidate<candidate_offset||candidate>=candidate_offset+candidate_count)++wrong_batch;
+            else if(candidate<gpu_visibility_readback_candidate_draw_ids_.size())
+                gpu_visible_draw_ids.push_back(gpu_visibility_readback_candidate_draw_ids_[candidate]);
         }
         std::sort(actual.begin(),actual.end());
         for(std::size_t position=1;position<actual.size();++position) {
@@ -4838,7 +4992,16 @@ bool SceneRenderer::resolve_gpu_visibility_readback() {
         }
         auto expected=gpu_visibility_readback_expected_indices_[index];
         std::sort(expected.begin(),expected.end());
+        for(const auto candidate:actual) {
+            if(!std::binary_search(expected.begin(),expected.end(),candidate))++unexpected_visible;
+        }
         if(actual!=expected)exact_set_match=false;
+    }
+    if(gpu_visibility_readback_occlusion_active_) {
+        const auto statistics_offset=gpu_visibility_readback_indirect_bytes_+
+            gpu_visibility_readback_candidates_*sizeof(std::uint32_t);
+        std::memcpy(gpu_occlusion_readback_statistics_.data(),mapped+statistics_offset,
+            gpu_occlusion_statistics_bytes);
     }
     SDL_UnmapGPUTransferBuffer(device_,gpu_visibility_readback_transfer_);
     SDL_ReleaseGPUTransferBuffer(device_,gpu_visibility_readback_transfer_);
@@ -4849,16 +5012,30 @@ bool SceneRenderer::resolve_gpu_visibility_readback() {
     gpu_visibility_readback_out_of_range_indices_=out_of_range;
     gpu_visibility_readback_wrong_batch_indices_=wrong_batch;
     gpu_visibility_readback_duplicate_indices_=duplicates;
+    gpu_visibility_readback_unexpected_visible_=unexpected_visible;
     gpu_visibility_readback_gpu_set_hash_=visibility_index_set_hash(gpu_visible_indices);
     gpu_visibility_readback_actual_indices_=gpu_visible_indices;
+    std::sort(gpu_visible_draw_ids.begin(),gpu_visible_draw_ids.end());
+    gpu_visible_draw_ids.erase(std::unique(gpu_visible_draw_ids.begin(),gpu_visible_draw_ids.end()),gpu_visible_draw_ids.end());
+    gpu_visibility_readback_actual_draw_ids_=std::move(gpu_visible_draw_ids);
     gpu_visibility_readback_count_match_=invalid==0&&mismatched_counts==0&&
-        visible==gpu_visibility_readback_cpu_visible_&&visible<=gpu_visibility_readback_candidates_;
+        (gpu_visibility_readback_occlusion_active_
+            ?visible<=gpu_visibility_readback_cpu_visible_
+            :visible==gpu_visibility_readback_cpu_visible_)&&
+        visible<=gpu_visibility_readback_candidates_;
     gpu_visibility_readback_exact_set_match_=exact_set_match&&out_of_range==0&&wrong_batch==0&&duplicates==0;
-    gpu_visibility_readback_match_=gpu_visibility_readback_count_match_&&gpu_visibility_readback_exact_set_match_&&
-        gpu_visibility_readback_cpu_set_hash_==gpu_visibility_readback_gpu_set_hash_;
+    gpu_visibility_readback_conservative_subset_match_=gpu_visibility_readback_occlusion_active_&&
+        invalid==0&&out_of_range==0&&wrong_batch==0&&duplicates==0&&unexpected_visible==0&&
+        visible<=gpu_visibility_readback_cpu_visible_;
+    gpu_visibility_readback_match_=gpu_visibility_readback_occlusion_active_
+        ?gpu_visibility_readback_count_match_&&gpu_visibility_readback_conservative_subset_match_
+        :gpu_visibility_readback_count_match_&&gpu_visibility_readback_exact_set_match_&&
+            gpu_visibility_readback_cpu_set_hash_==gpu_visibility_readback_gpu_set_hash_;
     gpu_visibility_readback_state_="complete";
     if(!gpu_visibility_readback_match_) {
-        gpu_visibility_readback_error_="GPU compact visible-index sets do not exactly match the CPU frustum oracle";
+        gpu_visibility_readback_error_=gpu_visibility_readback_occlusion_active_
+            ?"GPU occlusion-visible indices are not a valid subset of the CPU frustum oracle"
+            :"GPU compact visible-index sets do not exactly match the CPU frustum oracle";
         last_error_=gpu_visibility_readback_error_;
     }
     return gpu_visibility_readback_match_;
@@ -5228,7 +5405,7 @@ std::string SceneRenderer::status_json() const {
                 {"right", pixel_presentation_.letterbox.right}, {"bottom", pixel_presentation_.letterbox.bottom}}}};
     }
     std::ostringstream out;
-    out << "{\"schemaVersion\":\"noemancer.renderer-status.v28\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
+    out << "{\"schemaVersion\":\"noemancer.renderer-status.v29\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
         << ",\"pipeline\":\"forward-lit\",\"builtInPrimitives\":{\"sphere\":{\"topology\":\"uv-sphere\",\"segments\":"
         << builtin_sphere_segments << ",\"rings\":" << builtin_sphere_rings << ",\"triangles\":"
         << builtin_sphere_index_count/3U << "}},\"surface\":{\"width\":" << width_
@@ -5430,6 +5607,23 @@ std::string SceneRenderer::status_json() const {
         << ",\"uploadBytes\":" << (gpu_driven_instance_upload_bytes_+gpu_driven_batch_upload_bytes_)
         << ",\"uploadBytesTotal\":" << gpu_driven_stable_upload_bytes_total_
         << ",\"uploadPolicy\":\"exact-linear-dirty-ranges/no-cycle-for-partial/full-cycle-for-rebuild\"}"
+        << ",\"occlusion\":{\"schemaVersion\":\"noemancer.gpu-occlusion-runtime/0.1\",\"requested\":"
+        << (gpu_occlusion_enabled_?"true":"false") << ",\"available\":"
+        << (gpu_occlusion_pipeline_&&gpu_occlusion_statistics_buffer_&&depth_pyramid_texture_?"true":"false")
+        << ",\"usedThisFrame\":" << (gpu_occlusion_used_this_frame_?"true":"false")
+        << ",\"historyValid\":" << (gpu_occlusion_history_valid_?"true":"false")
+        << ",\"source\":\"previous-frame-shared-rg32f-min-max-hiz\",\"strategy\":\"projected-sphere-conservative-max-depth\""
+        << ",\"eligibility\":\"static-opaque-unskinned-perspective-and-stationary-camera\""
+        << ",\"fallbackReason\":" << nlohmann::json(gpu_occlusion_fallback_reason_).dump()
+        << ",\"statisticsSource\":\"explicit-one-shot-readback\",\"statisticsFrame\":" << gpu_visibility_readback_frame_
+        << ",\"statistics\":{\"candidates\":" << gpu_occlusion_readback_statistics_[0]
+        << ",\"frustumCulled\":" << gpu_occlusion_readback_statistics_[1]
+        << ",\"hizTested\":" << gpu_occlusion_readback_statistics_[2]
+        << ",\"hizCulled\":" << gpu_occlusion_readback_statistics_[3]
+        << ",\"uncertainVisible\":" << gpu_occlusion_readback_statistics_[4]
+        << ",\"offscreenVisible\":" << gpu_occlusion_readback_statistics_[5]
+        << ",\"disabledVisible\":" << gpu_occlusion_readback_statistics_[6]
+        << ",\"acceptedVisible\":" << gpu_occlusion_readback_statistics_[7] << "}}"
         << ",\"readback\":{\"state\":" << nlohmann::json(gpu_visibility_readback_state_).dump()
         << ",\"frame\":" << gpu_visibility_readback_frame_ << ",\"candidates\":" << gpu_visibility_readback_candidates_
         << ",\"batches\":" << gpu_visibility_readback_batches_ << ",\"cpuReferenceVisible\":" << gpu_visibility_readback_cpu_visible_
@@ -5438,16 +5632,20 @@ std::string SceneRenderer::status_json() const {
         << ",\"outOfRangeIndices\":" << gpu_visibility_readback_out_of_range_indices_
         << ",\"wrongBatchIndices\":" << gpu_visibility_readback_wrong_batch_indices_
         << ",\"duplicateIndices\":" << gpu_visibility_readback_duplicate_indices_
+        << ",\"unexpectedVisibleIndices\":" << gpu_visibility_readback_unexpected_visible_
+        << ",\"occlusionActive\":" << (gpu_visibility_readback_occlusion_active_?"true":"false")
         << ",\"cpuSetHash\":" << (gpu_visibility_readback_cpu_set_hash_.empty()?"null":nlohmann::json(gpu_visibility_readback_cpu_set_hash_).dump())
         << ",\"gpuSetHash\":" << (gpu_visibility_readback_gpu_set_hash_.empty()?"null":nlohmann::json(gpu_visibility_readback_gpu_set_hash_).dump())
         << ",\"indexSets\":{\"ordering\":\"batch-then-ascending-u32\",\"hashAlgorithm\":\"fnv1a64/le-u64-batch-and-count/le-u32-index\",\"cpu\":"
         << nlohmann::json(gpu_visibility_readback_expected_indices_).dump() << ",\"gpu\":"
         << nlohmann::json(gpu_visibility_readback_actual_indices_).dump() << "}"
+        << ",\"actualDrawIds\":" << nlohmann::json(gpu_visibility_readback_actual_draw_ids_).dump()
         << ",\"countMatch\":" << (gpu_visibility_readback_count_match_?"true":"false")
         << ",\"exactSetMatch\":" << (gpu_visibility_readback_exact_set_match_?"true":"false")
+        << ",\"conservativeSubsetMatch\":" << (gpu_visibility_readback_conservative_subset_match_?"true":"false")
         << ",\"transferBytes\":" << gpu_visibility_readback_bytes_ << ",\"match\":" << (gpu_visibility_readback_match_?"true":"false")
         << ",\"error\":" << (gpu_visibility_readback_error_.empty()?"null":nlohmann::json(gpu_visibility_readback_error_).dump())
-        << ",\"synchronization\":\"same-command-buffer-command-and-index-copy/fenced-one-shot-submit\",\"includedInPerformanceSample\":false,\"abi\":\"noemancer.gpu-visibility-readback/0.2\"}"
+        << ",\"synchronization\":\"same-command-buffer-command-index-and-optional-statistics-copy/fenced-one-shot-submit\",\"includedInPerformanceSample\":false,\"abi\":\"noemancer.gpu-visibility-readback/0.3\"}"
         << ",\"abi\":\"noemancer.gpu-driven-static-opaque/0.4\"}"
         << ",\"skinning\":{\"renderInstances\":" << skinned_render_instances_ << ",\"drawItems\":" << skinned_draw_items_
         << ",\"jointMatrices\":" << skinning_joint_matrices_ << ",\"paletteCapacity\":" << SkeletalPose::maximum_joints
@@ -5688,10 +5886,12 @@ void SceneRenderer::release() {
     if (vfx_additive_draw_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,vfx_additive_draw_pipeline_);
     if (vfx_compute_pipeline_) SDL_ReleaseGPUComputePipeline(device_,vfx_compute_pipeline_);
     if(gpu_visibility_pipeline_)SDL_ReleaseGPUComputePipeline(device_,gpu_visibility_pipeline_);
+    if(gpu_occlusion_pipeline_)SDL_ReleaseGPUComputePipeline(device_,gpu_occlusion_pipeline_);
     if(gpu_driven_instance_buffer_)SDL_ReleaseGPUBuffer(device_,gpu_driven_instance_buffer_);
     if(gpu_driven_batch_buffer_)SDL_ReleaseGPUBuffer(device_,gpu_driven_batch_buffer_);
     if(gpu_driven_visible_index_buffer_)SDL_ReleaseGPUBuffer(device_,gpu_driven_visible_index_buffer_);
     if(gpu_driven_indirect_buffer_)SDL_ReleaseGPUBuffer(device_,gpu_driven_indirect_buffer_);
+    if(gpu_occlusion_statistics_buffer_)SDL_ReleaseGPUBuffer(device_,gpu_occlusion_statistics_buffer_);
     if(gpu_driven_upload_buffer_)SDL_ReleaseGPUTransferBuffer(device_,gpu_driven_upload_buffer_);
     if(gpu_visibility_readback_transfer_)SDL_ReleaseGPUTransferBuffer(device_,gpu_visibility_readback_transfer_);
     if(gpu_visibility_readback_fence_)SDL_ReleaseGPUFence(device_,gpu_visibility_readback_fence_);
@@ -5735,9 +5935,9 @@ void SceneRenderer::release() {
     sky_medium_lut_valid_=false;sky_lut_valid_=false;sky_medium_lut_identity_.clear();
     sky_lut_identity_.clear();sky_camera_volume_identity_.clear();sky_lut_width_=sky_lut_height_=0;
     sky_camera_volume_extent_.fill(0);
-    vfx_additive_draw_pipeline_=nullptr;vfx_compute_pipeline_=nullptr;gpu_visibility_pipeline_=nullptr;
+    vfx_additive_draw_pipeline_=nullptr;vfx_compute_pipeline_=nullptr;gpu_visibility_pipeline_=nullptr;gpu_occlusion_pipeline_=nullptr;
     gpu_driven_instance_buffer_=nullptr;gpu_driven_batch_buffer_=nullptr;gpu_driven_visible_index_buffer_=nullptr;
-    gpu_driven_indirect_buffer_=nullptr;gpu_driven_upload_buffer_=nullptr;vfx_spawn_pipeline_=nullptr;
+    gpu_driven_indirect_buffer_=nullptr;gpu_driven_upload_buffer_=nullptr;gpu_occlusion_statistics_buffer_=nullptr;vfx_spawn_pipeline_=nullptr;
     gpu_visibility_readback_transfer_=nullptr;gpu_visibility_readback_fence_=nullptr;
     vfx_group_pipeline_=nullptr; vfx_sort_alpha_pipeline_=nullptr; vfx_particle_buffer_=nullptr;
     vfx_alive_buffers_.fill(nullptr); vfx_dead_buffer_=nullptr;
@@ -5754,6 +5954,9 @@ void SceneRenderer::release() {
     gpu_visibility_readback_batch_candidate_offsets_.clear();gpu_visibility_readback_batch_candidate_counts_.clear();
     gpu_visibility_readback_batch_visible_offsets_.clear();gpu_visibility_readback_expected_indices_.clear();
     gpu_visibility_readback_actual_indices_.clear();
+    gpu_driven_candidate_draw_ids_.clear();gpu_visibility_readback_candidate_draw_ids_.clear();
+    gpu_visibility_readback_actual_draw_ids_.clear();
+    depth_pyramid_history_ready_=false;
 }
 
 } // namespace noemancer

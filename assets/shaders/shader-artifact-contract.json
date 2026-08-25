@@ -139,6 +139,24 @@
       "threadGroup": null
     },
     {
+      "stem": "gpu_occlusion.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 1,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 2,
+        "readwriteStorageBuffers": 3
+      },
+      "threadGroup": [
+        64,
+        1,
+        1
+      ]
+    },
+    {
       "stem": "gpu_visibility.comp",
       "stage": "compute",
       "profile": "cs_6_0",

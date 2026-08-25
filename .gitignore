@@ -6,6 +6,7 @@
 *.suo
 *.VC.db
 *.VC.opendb
+*.obj
 /tools/mcp/node_modules/
 /tools/mcp/dist/
 /assets/local-test/**/*.fbx

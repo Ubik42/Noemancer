@@ -8,8 +8,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ExpectedRendererSchemaVersion = 'noemancer.renderer-status.v27'
-$ExpectedReadbackAbi = 'noemancer.gpu-visibility-readback/0.2'
+$ExpectedRendererSchemaVersion = 'noemancer.renderer-status.v29'
+$ExpectedReadbackAbi = 'noemancer.gpu-visibility-readback/0.3'
 $ExpectedQualitySchemaVersion = 'noemancer.render-quality.v1'
 $Width = 1920
 $Height = 1080
@@ -172,7 +172,7 @@ foreach($backend in $Backends) {
     $overallMatch = Get-RequiredBoolean -Object $readback -Name 'match' -Context 'GPU visibility readback'
     if(!$overallMatch) { throw "GPU visibility readback overall match is false for $backend." }
     if((Get-RequiredProperty -Object $readback -Name 'synchronization' -Context 'GPU visibility readback') -ne
-       'same-command-buffer-command-and-index-copy/fenced-one-shot-submit') {
+       'same-command-buffer-command-index-and-optional-statistics-copy/fenced-one-shot-submit') {
         throw "GPU visibility readback synchronization contract is unexpected for $backend."
     }
     if($null -ne (Get-RequiredProperty -Object $readback -Name 'error' -Context 'GPU visibility readback')) {

@@ -24,6 +24,7 @@
 #include "engine/project_input_authoring.hpp"
 #include "engine/project_ui_authoring.hpp"
 #include "engine/project_workspace.hpp"
+#include "engine/scene_document.hpp"
 #include "engine/retained_ui_runtime.hpp"
 #include "engine/semantic_ui.hpp"
 #include "engine/sprite_atlas_artifact.hpp"
@@ -54,6 +55,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -341,6 +343,160 @@ bool persist_project_sky_atmosphere(const std::filesystem::path& manifest_path,
     detail="Sky Atmosphere settings were atomically persisted.";return true;
 }
 
+struct GpuOcclusionStressSceneResult final {
+    SceneDocument document;
+    nlohmann::json contract;
+};
+
+GpuOcclusionStressSceneResult make_gpu_occlusion_stress_scene_document(
+    const std::uint32_t requested_instance_count,
+    const bool gpu_occlusion_requested,
+    const bool visibility_readback_requested) {
+    constexpr std::uint32_t default_instance_count=256U;
+    constexpr std::uint32_t minimum_instance_count=32U;
+    constexpr std::uint32_t maximum_instance_count=4096U;
+    const auto instance_count=std::clamp(
+        requested_instance_count==0U?default_instance_count:requested_instance_count,
+        minimum_instance_count,maximum_instance_count);
+    constexpr std::uint64_t deterministic_seed=0x4e4f454d414e4348ULL;
+    constexpr std::uint32_t side_control_count=4U;
+    constexpr std::uint32_t front_control_count=4U;
+
+    SceneDocument document{
+        .scene_guid="scene.gpu-occlusion-stress",
+        .name="GPU Occlusion Stress Scene",
+        .source_uri="generated://scenes/gpu-occlusion-stress.scene.json"
+    };
+    document.entities.reserve(static_cast<std::size_t>(instance_count)+16U);
+    document.entities.push_back(SceneEntityDocument{
+        .guid="entity.gpu-occlusion-stress.root",
+        .name="GPU Occlusion Stress Root"
+    });
+    document.entities.push_back(SceneEntityDocument{
+        .guid="entity.gpu-occlusion-stress.camera",
+        .name="GPU Occlusion Stress Camera",
+        .parent_guid="entity.gpu-occlusion-stress.root",
+        .transform=SceneTransform{{0.0,6.0,26.0}},
+        .camera=SceneCamera{{0.0,4.0,0.0},52.0,0.1,220.0,true}
+    });
+    document.entities.push_back(SceneEntityDocument{
+        .guid="entity.gpu-occlusion-stress.sun",
+        .name="GPU Occlusion Stress Sun",
+        .parent_guid="entity.gpu-occlusion-stress.root",
+        .directional_light=SceneDirectionalLight{{-0.45,-1.0,-0.3},{1.0,0.96,0.9},1.1,0.18,true}
+    });
+
+    const auto add_opaque=[&](std::string guid,std::string name,const SceneVector3 position,
+                              const SceneVector3 scale,const SceneVector3 color,
+                              const double metallic,const double roughness,const bool casts_shadows=true) {
+        document.entities.push_back(SceneEntityDocument{
+            .guid=std::move(guid),
+            .name=std::move(name),
+            .parent_guid="entity.gpu-occlusion-stress.root",
+            .transform=SceneTransform{position,scale},
+            .mesh_renderer=SceneMeshRenderer{"asset.primitive.cube",true,casts_shadows,true},
+            .pbr_material=ScenePbrMaterial{color,metallic,roughness}
+        });
+    };
+
+    add_opaque("entity.gpu-occlusion-stress.ground","Stress Ground",
+        {0.0,-0.35,0.0},{24.0,0.35,24.0},{0.075,0.095,0.13},0.05,0.84,false);
+    // This broad, static slab is deliberately between the camera and the
+    // candidate volume.  Its bounds leave the side/front controls visible so
+    // the readback can prove both accepted and HiZ-culled paths in one frame.
+    add_opaque("entity.gpu-occlusion-stress.foreground-occluder","Foreground Occluder",
+        {0.0,4.0,9.5},{12.0,6.5,1.0},{0.12,0.18,0.28},0.18,0.66);
+
+    constexpr std::uint32_t columns=7U;
+    constexpr std::uint32_t rows=5U;
+    constexpr std::uint32_t depth_layers=6U;
+    constexpr double column_spacing=1.25;
+    constexpr double row_spacing=1.15;
+    constexpr double depth_spacing=2.25;
+    std::uint32_t offscreen_count{};
+    for(std::uint32_t index=0U;index<instance_count;++index) {
+        const auto offscreen=(index%8U)==0U;
+        if(offscreen)++offscreen_count;
+        const auto column=index%columns;
+        const auto row=(index/columns)%rows;
+        const auto layer=(index/(columns*rows))%depth_layers;
+        const auto central_x=(static_cast<double>(column)-3.0)*column_spacing;
+        const auto central_y=2.0+static_cast<double>(row)*row_spacing;
+        const auto central_z=6.2-static_cast<double>(layer)*depth_spacing;
+        const auto x=offscreen
+            ? ((index/8U)%2U==0U?48.0:-48.0)
+            : central_x;
+        const auto y=offscreen?4.0:central_y;
+        const auto z=offscreen?5.5-static_cast<double>((index/8U)%depth_layers)*depth_spacing:central_z;
+        const auto r=0.22+0.55*static_cast<double>((index*17U)%97U)/96.0;
+        const auto g=0.24+0.58*static_cast<double>((index*31U)%89U)/88.0;
+        const auto b=0.28+0.52*static_cast<double>((index*47U)%83U)/82.0;
+        add_opaque("entity.gpu-occlusion-stress.candidate-"+std::to_string(index),
+            "Static Opaque Candidate "+std::to_string(index),{x,y,z},{0.82,0.82,0.82},
+            {r,g,b},0.05+0.55*static_cast<double>(index%11U)/10.0,
+            0.28+0.58*static_cast<double>((index/11U)%13U)/12.0);
+    }
+
+    for(std::uint32_t index=0U;index<side_control_count;++index) {
+        const auto left=(index%2U)==0U;
+        const auto y=index<2U?2.2:5.9;
+        add_opaque("entity.gpu-occlusion-stress.side-control-"+std::to_string(index),
+            "Side Control "+std::to_string(index),{left?-14.0:14.0,y,8.0},{1.0,1.0,1.0},
+            {0.12+0.12*static_cast<double>(index),0.62,0.84},0.12,0.38);
+    }
+    constexpr double front_control_x[front_control_count]={-8.0,-2.7,2.7,8.0};
+    for(std::uint32_t index=0U;index<front_control_count;++index) {
+        add_opaque("entity.gpu-occlusion-stress.front-control-"+std::to_string(index),
+            "Front Control "+std::to_string(index),{front_control_x[index],index%2U==0U?1.8:6.3,15.0},
+            {0.9,0.9,0.9},{0.85,0.3+0.12*static_cast<double>(index),0.16+0.14*static_cast<double>(index)},
+            0.04,0.45);
+    }
+
+    const auto behind_occluder_count=instance_count-offscreen_count;
+    const auto renderable_opaque_count=1U+1U+instance_count+side_control_count+front_control_count;
+    nlohmann::json contract{
+        {"schemaVersion","noemancer.gpu-occlusion-stress-scene/0.1"},
+        {"fixtureId","render.gpu-occlusion-stress/0.1"},
+        {"sceneGuid",document.scene_guid},
+        {"sourceUri",document.source_uri},
+        {"deterministic",true},
+        {"seed",deterministic_seed},
+        {"requestedCandidateCount",requested_instance_count},
+        {"candidateCount",instance_count},
+        {"counts",{
+            {"totalSceneEntities",document.entities.size()},
+            {"staticOpaqueCandidates",instance_count},
+            {"behindOccluderCandidates",behind_occluder_count},
+            {"offscreenCandidates",offscreen_count},
+            {"foregroundOccluders",1U},
+            {"sideControlObjects",side_control_count},
+            {"frontControlObjects",front_control_count},
+            {"renderableOpaque",renderable_opaque_count}
+        }},
+        {"requestedFeatures",{
+            {"gpuOcclusion",gpu_occlusion_requested},
+            {"gpuVisibilityReadback",visibility_readback_requested}
+        }},
+        {"layout",{
+            {"cameraPosition",{0.0,6.0,26.0}},
+            {"cameraTarget",{0.0,4.0,0.0}},
+            {"occluderCenter",{0.0,4.0,9.5}},
+            {"occluderScale",{12.0,6.5,1.0}},
+            {"candidatePattern","7 columns x 5 rows x 6 depth layers; every eighth candidate is offscreen"},
+            {"candidateDepthRange",{6.2,-5.05}},
+            {"offscreenCenterX",48.0}
+        }},
+        {"readbackExpectations",{
+            {"requiresStaticOpaqueCandidates",true},
+            {"requiresForegroundOccluder",true},
+            {"requiresAcceptedControlObjects",true},
+            {"requiresPartialVisibility",true},
+            {"offscreenSelection","candidateIndex modulo 8 equals zero"}
+        }}
+    };
+    return GpuOcclusionStressSceneResult{std::move(document),std::move(contract)};
+}
+
 } // namespace
 
 Application::Application(RunOptions options)
@@ -445,13 +601,18 @@ Application::Application(RunOptions options)
         project_id_ = "editor.bootstrap";
         project_name_ = "Noemancer Editor";
         project_input_actions_=default_input_action_definitions();
-        const auto scene = !options_.reference_scene_id.empty()
-            ? make_commercial_raster_reference_scene_document()
-            : options_.animation_physics_stress
-                ? make_animation_physics_stress_scene_document()
-            : options_.render_stress_instances > 0
-                ? make_render_stress_scene_document(options_.render_stress_instances,options_.render_stress_offscreen_percent)
-                : make_bootstrap_scene_document();
+        SceneDocument scene;
+        if(!options_.reference_scene_id.empty())scene=make_commercial_raster_reference_scene_document();
+        else if(options_.animation_physics_stress)scene=make_animation_physics_stress_scene_document();
+        else if(options_.gpu_occlusion_stress) {
+            const auto generated=make_gpu_occlusion_stress_scene_document(
+                options_.gpu_occlusion_stress_instances,options_.enable_gpu_occlusion,
+                options_.gpu_visibility_readback);
+            gpu_occlusion_stress_contract_json_=generated.contract.dump();
+            scene=generated.document;
+        } else if(options_.render_stress_instances > 0)
+            scene=make_render_stress_scene_document(options_.render_stress_instances,options_.render_stress_offscreen_percent);
+        else scene=make_bootstrap_scene_document();
         startup_telemetry_->begin_phase("scene.load");
         static_cast<void>(world_.load_scene(scene));
     }
@@ -1401,7 +1562,8 @@ int Application::run() {
 
 void Application::tick_frame(const double delta_seconds) {
     engine_host_.run_frame(delta_seconds, [this] {
-        if (options_.headless||options_.player_mode||options_.animation_physics_stress) world_.tick(1.0F / 60.0F);
+        if (options_.headless||options_.player_mode||options_.animation_physics_stress||options_.gpu_occlusion_stress)
+            world_.tick(1.0F / 60.0F);
         else if (play_world_ && (!play_paused_ || play_single_step_)) {
             play_world_->tick(1.0F / 60.0F);
             play_single_step_=false;
@@ -1639,6 +1801,8 @@ int Application::run_headless() {
     const auto frame_count = options_.frames == 0 ? 3U : options_.frames;
     logger_.info("runtime.start", "headless");
     logger_.info("runtime.native_dependencies",native_runtime_dependencies_json());
+    if(!gpu_occlusion_stress_contract_json_.empty())
+        logger_.info("render.gpu_occlusion_stress_scene",gpu_occlusion_stress_contract_json_);
     startup_telemetry_->begin_phase("runtime.headless-loop");
     nlohmann::json input_injections = nlohmann::json::array();
     for (const auto& sample : options_.input_samples) {
@@ -1678,6 +1842,7 @@ int Application::run_headless() {
         active_world().semantic_ui_project_document_json(options_.ui_locale));
     const auto vfs_observation=parse_observation(virtual_file_system_->observation_json());
     const auto asset_vfs_observation=parse_observation(asset_vfs_catalog_.observation_json());
+    const auto gpu_occlusion_stress_observation=parse_observation(gpu_occlusion_stress_contract_json_);
     logger_.info("runtime.production_state",nlohmann::json{
         {"schemaVersion","noemancer.runtime-production-state/0.1"},
         {"mode",options_.player_mode?"packaged-player":
@@ -1688,7 +1853,8 @@ int Application::run_headless() {
         {"scripting",scripting_observation},
         {"virtualFileSystem",vfs_observation},
         {"assetVfsCatalog",asset_vfs_observation},
-        {"projectUi",project_ui_observation}}
+        {"projectUi",project_ui_observation},
+        {"gpuOcclusionStress",gpu_occlusion_stress_observation}}
         .dump());
     log_startup_telemetry(options_.player_mode ? "player" :
         options_.project_path.empty() ? "engine-fixture" : "source-project", "success");
@@ -1926,6 +2092,7 @@ int Application::run_interactive() {
     std::uint64_t applied_hybrid_pixel_profile_revision=hybrid_pixel_profile_revision_;
     std::uint64_t applied_sky_atmosphere_revision=sky_atmosphere_revision_;
     scene_renderer->set_gpu_driven_enabled(!options_.disable_gpu_driven);
+    scene_renderer->set_gpu_occlusion_enabled(options_.enable_gpu_occlusion);
     scene_renderer->set_ambient_occlusion_enabled(!options_.disable_ambient_occlusion);
     scene_renderer->set_auto_exposure_enabled(!options_.disable_auto_exposure);
     if(!scene_renderer->set_ssr_options(!options_.disable_ssr,options_.ssr_quality,options_.ssr_debug_mode)) {
@@ -2192,6 +2359,8 @@ int Application::run_interactive() {
     if (!options_.player_mode) static_cast<void>(start_live_editor_session());
     logger_.info("runtime.start", SDL_GetGPUDeviceDriver(device));
     logger_.info("runtime.native_dependencies",native_runtime_dependencies_json());
+    if(!gpu_occlusion_stress_contract_json_.empty())
+        logger_.info("render.gpu_occlusion_stress_scene",gpu_occlusion_stress_contract_json_);
     if(!options_.player_mode)logger_.info("editor.semantic_snapshot", editor_ui_.semantic_snapshot_json());
     logger_.info("ui.text_capabilities",retained_ui_text_capabilities_json(options_.ui_locale));
 

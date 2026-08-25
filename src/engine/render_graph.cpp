@@ -96,14 +96,14 @@ CompiledRenderGraph RenderGraphCompiler::compile(
 }
 
 CompiledRenderGraph make_forward_render_graph() {
-    // v16 keeps every existing resource/pass identity intact while making the
-    // screen-space inputs explicit.  The depth pyramid is one logical
+    // v17 keeps every existing resource/pass identity intact while making the
+    // previous-frame occlusion input explicit.  The depth pyramid is one logical
     // RG32_FLOAT mip-chain resource: seed writes mip 0 and reduce fills the
     // remaining mips through an explicit read/modify/write edge.  Keeping the
     // chain behind one stable resource ID lets SSR, SSGI and future occlusion
     // consumers attach to the same graph contract instead of creating local
     // HiZ resources.
-    auto graph = RenderGraphCompiler::compile("render.graph.forward.v16",
+    auto graph = RenderGraphCompiler::compile("render.graph.forward.v17",
         {{"render.resource.shadow-depth", "D32_FLOAT", true, "2d-array", 4, false, "shadow"}, {"render.resource.scene-hdr", "RGBA16_FLOAT", true},
          {"render.resource.atmosphere-camera-volume", "RGBA16_FLOAT", false, "3d", 1, true, "camera-volume"},
          {"render.resource.scene-hdr-aerial", "RGBA16_FLOAT", true},
@@ -142,7 +142,7 @@ CompiledRenderGraph make_forward_render_graph() {
          {"render.resource.temporal-history", "RGBA16_FLOAT", false, "2d", 1, true, "output"},
          {"render.resource.temporal-depth-history", "R32_FLOAT", false, "2d", 1, true, "output"},
          {"render.resource.previous-normal-history", "RGBA16_FLOAT", false, "2d", 1, true, "output"},
-         {"render.resource.scene-depth-pyramid", "RG32_FLOAT", true, "2d", 1, false, "render"},
+         {"render.resource.scene-depth-pyramid", "RG32_FLOAT", false, "2d", 1, false, "render"},
          {"render.resource.scene-depth", "D32_FLOAT", false}, {"render.resource.object-id", "R32_UINT", false},
          {"render.resource.world-normal", "RGBA16_FLOAT", false},
          {"render.resource.gpu-scene-instances","STRUCTURED-224",false,"buffer",1,true,"scalar"},
@@ -150,8 +150,8 @@ CompiledRenderGraph make_forward_render_graph() {
          {"render.resource.gpu-visible-indices","UINT32",false,"buffer",1,true,"scalar"},
          {"render.resource.gpu-indirect-commands","INDEXED-INDIRECT-20",false,"buffer",1,true,"scalar"}},
         {{"render.pass.shadow-depth", "render.pipeline.shadow-depth", {}, {"render.resource.shadow-depth"}, {}},
-         {"render.pass.gpu-visibility","render.pipeline.compute-frustum-compact",
-          {"render.resource.gpu-scene-instances","render.resource.gpu-draw-batches"},
+         {"render.pass.gpu-visibility","render.pipeline.compute-frustum-hiz-compact",
+          {"render.resource.gpu-scene-instances","render.resource.gpu-draw-batches","render.resource.scene-depth-pyramid"},
           {"render.resource.gpu-visible-indices","render.resource.gpu-indirect-commands"},{"render.pass.shadow-depth"}},
          {"render.pass.sky-atmosphere", "render.pipeline.sky-atmosphere", {},
           {"render.resource.scene-hdr", "render.resource.atmosphere-camera-volume"}, {"render.pass.gpu-visibility"}},

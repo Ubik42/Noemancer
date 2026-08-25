@@ -64,6 +64,7 @@ public:
     [[nodiscard]] bool set_ssgi_options(bool enabled, const std::string& quality,
         const std::string& debug_mode);
     void set_gpu_driven_enabled(bool enabled);
+    void set_gpu_occlusion_enabled(bool enabled) noexcept { gpu_occlusion_enabled_ = enabled; }
     void set_gpu_pass_timing_enabled(bool enabled) noexcept { gpu_pass_timestamps_.set_enabled(enabled); }
     [[nodiscard]] bool gpu_pass_timing_submission_pending() const noexcept {
         return gpu_pass_timestamps_.submission_requires_fence();
@@ -175,6 +176,7 @@ private:
     bool gpu_debug_{};
     GpuPassTimestampAdapter gpu_pass_timestamps_;
     bool gpu_driven_enabled_{true};
+    bool gpu_occlusion_enabled_{};
     std::string gpu_device_name_;
     std::string gpu_driver_name_;
     std::string gpu_driver_version_;
@@ -262,10 +264,12 @@ private:
     SDL_GPUGraphicsPipeline* vfx_additive_draw_pipeline_{nullptr};
     SDL_GPUComputePipeline* vfx_compute_pipeline_{nullptr};
     SDL_GPUComputePipeline* gpu_visibility_pipeline_{nullptr};
+    SDL_GPUComputePipeline* gpu_occlusion_pipeline_{nullptr};
     SDL_GPUBuffer* gpu_driven_instance_buffer_{nullptr};
     SDL_GPUBuffer* gpu_driven_batch_buffer_{nullptr};
     SDL_GPUBuffer* gpu_driven_visible_index_buffer_{nullptr};
     SDL_GPUBuffer* gpu_driven_indirect_buffer_{nullptr};
+    SDL_GPUBuffer* gpu_occlusion_statistics_buffer_{nullptr};
     SDL_GPUTransferBuffer* gpu_driven_upload_buffer_{nullptr};
     SDL_GPUTransferBuffer* gpu_visibility_readback_transfer_{nullptr};
     SDL_GPUFence* gpu_visibility_readback_fence_{nullptr};
@@ -286,6 +290,9 @@ private:
     std::vector<std::uint32_t> gpu_visibility_readback_batch_visible_offsets_;
     std::vector<std::vector<std::uint32_t>> gpu_visibility_readback_expected_indices_;
     std::vector<std::vector<std::uint32_t>> gpu_visibility_readback_actual_indices_;
+    std::vector<std::string> gpu_driven_candidate_draw_ids_;
+    std::vector<std::string> gpu_visibility_readback_candidate_draw_ids_;
+    std::vector<std::string> gpu_visibility_readback_actual_draw_ids_;
     SDL_GPUComputePipeline* vfx_spawn_pipeline_{nullptr};
     SDL_GPUComputePipeline* vfx_group_pipeline_{nullptr};
     SDL_GPUComputePipeline* vfx_sort_alpha_pipeline_{nullptr};
@@ -341,6 +348,7 @@ private:
     std::array<SDL_GPUTexture*,2> temporal_history_normal_textures_{};
     SDL_GPUTexture* depth_pyramid_texture_{nullptr};
     std::uint32_t depth_pyramid_mip_count_{};
+    bool depth_pyramid_history_ready_{};
     std::uint64_t depth_pyramid_working_set_bytes_{};
     std::uint64_t depth_pyramid_seed_dispatches_{};
     std::uint64_t depth_pyramid_reduce_dispatches_{};
@@ -422,6 +430,13 @@ private:
     std::uint64_t gpu_driven_dispatches_{};
     std::uint64_t gpu_driven_indirect_draws_{};
     std::string gpu_driven_fallback_reason_;
+    bool gpu_occlusion_history_valid_{};
+    bool gpu_occlusion_used_this_frame_{};
+    std::string gpu_occlusion_fallback_reason_{"disabled-by-policy"};
+    std::array<std::uint32_t,8> gpu_occlusion_readback_statistics_{};
+    bool gpu_visibility_readback_occlusion_active_{};
+    std::size_t gpu_visibility_readback_unexpected_visible_{};
+    bool gpu_visibility_readback_conservative_subset_match_{};
     std::string gpu_visibility_readback_state_{"not-requested"};
     std::string gpu_visibility_readback_error_;
     std::uint64_t gpu_visibility_readback_frame_{};
@@ -676,6 +691,7 @@ private:
     std::unordered_map<std::string,std::array<float,16>> previous_models_;
     std::unordered_map<std::string,std::vector<std::array<float,16>>> previous_skinning_matrices_;
     std::array<float,16> previous_view_projection_{};
+    std::array<float,16> previous_unjittered_view_projection_{};
     std::uint64_t previous_temporal_frame_{};
     std::string previous_camera_id_;
     std::uint32_t taa_history_index_{};

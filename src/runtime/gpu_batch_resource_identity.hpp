@@ -48,6 +48,10 @@ struct GpuBatchResourceIdentityResult final {
     std::string code;
     std::string detail;
     GpuBatchKey key;
+    // A sorted, identity-only view of the same bindings for future
+    // descriptor-array/bindless consumers.  The batch key itself preserves
+    // shader binding order; this snapshot is the canonical evidence view.
+    TextureResourceBindingSnapshot binding_snapshot;
 };
 
 // Builds a stable engine key from runtime texture indirection.  A pending

@@ -89,6 +89,12 @@ void test_committed_and_pending_generations() {
                 committed.key.textures[0].semantic == "base-color" &&
                 committed.key.textures[0].resource_generation == 1U,
             "committed table state must use descriptor identity and generation");
+    require(committed.binding_snapshot.valid && committed.binding_snapshot.returned_count == 1U &&
+                committed.binding_snapshot.bindings[0].state == "committed" &&
+                committed.binding_snapshot.bindings[0].committed_generation == 1U &&
+                committed.binding_snapshot.bindings[0].effective_generation == 1U &&
+                committed.binding_snapshot.canonical_json().find("texturePointer") == std::string::npos,
+            "valid batch identities must carry pointer-free committed binding evidence");
 
     require(table.stage_replacement(handle, second,
                                     TextureResourceMetadata{64U, 64U, 1U, 0U, 8192U}),
@@ -98,6 +104,10 @@ void test_committed_and_pending_generations() {
     require_valid_key(pending);
     require(pending.key.textures[0].resource_generation == 2U,
             "pending replacement must use current generation plus one");
+    require(pending.binding_snapshot.valid && pending.binding_snapshot.bindings[0].state == "pending" &&
+                pending.binding_snapshot.bindings[0].committed_generation == 1U &&
+                pending.binding_snapshot.bindings[0].effective_generation == 2U,
+            "pending batch identities must distinguish committed and effective generations");
     require(table.view(handle)->transition_pending,
             "fixture must remain pending while the key is projected");
 
@@ -108,6 +118,12 @@ void test_committed_and_pending_generations() {
     require_valid_key(committed_replacement);
     require(committed_replacement.key.textures[0].resource_generation == 2U,
             "committed replacement must retain the effective pending generation");
+    require(committed_replacement.binding_snapshot.valid &&
+                committed_replacement.binding_snapshot.bindings[0].state == "committed" &&
+                committed_replacement.binding_snapshot.bindings[0].committed_generation == 2U &&
+                committed_replacement.binding_snapshot.bindings[0].effective_generation == 2U &&
+                committed_replacement.binding_snapshot.fingerprint() != committed.binding_snapshot.fingerprint(),
+            "committed replacement must publish a new binding fingerprint");
 }
 
 void test_binding_semantics_are_independent_of_storage_semantics() {
@@ -164,6 +180,12 @@ void test_fallback_and_stale_handle() {
                 fallback.key.textures[0].semantic == "normal" &&
                 fallback.key.textures[0].resource_generation == 1U,
             "stale handles must use only the caller-provided stable fallback");
+    require(fallback.binding_snapshot.valid && fallback.binding_snapshot.bindings.size() == 1U &&
+                fallback.binding_snapshot.bindings[0].state == "stale" &&
+                fallback.binding_snapshot.bindings[0].fallback &&
+                fallback.binding_snapshot.bindings[0].stale_handle &&
+                fallback.binding_snapshot.bindings[0].effective_generation == 1U,
+            "stale handles must be explicit fallback entries in binding evidence");
 
     const auto missing_fallback = build_gpu_batch_resource_identity(
         table, descriptor({binding(stale, "normal")}));

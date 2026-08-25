@@ -66,6 +66,7 @@ add_library(noemancer_engine STATIC
     temporal_history.cpp
     screen_space_reflections.cpp
     screen_space_global_illumination.cpp
+    gpu_occlusion_policy.cpp
     texture_streaming_demand.cpp
     texture_streaming_policy.cpp
     text_layout.cpp

@@ -88,7 +88,7 @@ int main() {
          graph_json.find("render.pipeline.ssr-energy-conserving-composite") == std::string::npos ||
         graph_json.find("render.resource.reactive-mask") == std::string::npos ||
         graph_json.find("render.resource.gpu-indirect-commands") == std::string::npos ||
-        graph_json.find("render.pipeline.compute-frustum-compact") == std::string::npos ||
+        graph_json.find("render.pipeline.compute-frustum-hiz-compact") == std::string::npos ||
         graph_json.find("render.pass.sky-atmosphere") == std::string::npos ||
         graph_json.find("render.pipeline.sky-atmosphere") == std::string::npos ||
         graph_json.find("render.resource.atmosphere-camera-volume") == std::string::npos ||
@@ -141,7 +141,7 @@ int main() {
         !sky_pass->reads.empty() ||
         sky_pass->writes!=std::vector<std::string>{"render.resource.scene-hdr", "render.resource.atmosphere-camera-volume"} ||
         sky_pass->depends_on!=std::vector<std::string>{"render.pass.gpu-visibility"} ||
-         graph.graph_id!="render.graph.forward.v16" ||
+         graph.graph_id!="render.graph.forward.v17" ||
         aerial_pass==graph.passes.end() || aerial_pass->pipeline_id!="render.pipeline.aerial-perspective" ||
         aerial_pass->reads!=std::vector<std::string>{"render.resource.scene-hdr", "render.resource.scene-depth", "render.resource.atmosphere-camera-volume"} ||
         aerial_pass->writes!=std::vector<std::string>{"render.resource.scene-hdr-aerial"} ||
@@ -339,11 +339,20 @@ int main() {
         std::cerr << "Temporal history is not represented as a persistent external graph resource\n";
         return 12;
     }
-    const auto previous_normal_history_resource=std::ranges::find_if(graph.resources,[](const noemancer::RenderResourceDefinition& resource){
-        return resource.id=="render.resource.previous-normal-history";
-    });
     const auto depth_pyramid_resource=std::ranges::find_if(graph.resources,[](const noemancer::RenderResourceDefinition& resource){
         return resource.id=="render.resource.scene-depth-pyramid";
+    });
+    const auto gpu_visibility_pass=std::ranges::find_if(graph.passes,[](const noemancer::RenderPassDefinition& pass){
+        return pass.id=="render.pass.gpu-visibility";
+    });
+    if(depth_pyramid_resource==graph.resources.end() || depth_pyramid_resource->transient ||
+       gpu_visibility_pass==graph.passes.end() ||
+       std::ranges::count(gpu_visibility_pass->reads,"render.resource.scene-depth-pyramid")!=1) {
+        std::cerr << "GPU visibility did not declare the persistent previous-frame HiZ input\n";
+        return 23;
+    }
+    const auto previous_normal_history_resource=std::ranges::find_if(graph.resources,[](const noemancer::RenderResourceDefinition& resource){
+        return resource.id=="render.resource.previous-normal-history";
     });
     const auto ssr_history_resource=std::ranges::find_if(graph.resources,[](const noemancer::RenderResourceDefinition& resource){
         return resource.id=="render.resource.scene-reflection-history";
@@ -354,7 +363,7 @@ int main() {
        previous_normal_history_resource->resolution_space!="output" ||
        depth_pyramid_resource==graph.resources.end() || depth_pyramid_resource->format!="RG32_FLOAT" ||
        depth_pyramid_resource->dimension!="2d" || depth_pyramid_resource->layers!=1U ||
-       !depth_pyramid_resource->transient || depth_pyramid_resource->external ||
+       depth_pyramid_resource->transient || depth_pyramid_resource->external ||
        depth_pyramid_resource->resolution_space!="render" ||
        ssr_history_resource==graph.resources.end() || ssr_history_resource->format!="RGBA16_FLOAT" ||
        ssr_history_resource->transient || !ssr_history_resource->external ||
@@ -371,8 +380,8 @@ int main() {
        previous_normal_plan->transient || previous_normal_plan->alias_candidate ||
        depth_pyramid_plan==graph.resource_plans.end() ||
        depth_pyramid_plan->writers!=std::vector<std::string>{"render.pass.depth-pyramid-seed", "render.pass.depth-pyramid-reduce"} ||
-       depth_pyramid_plan->readers!=std::vector<std::string>{"render.pass.depth-pyramid-reduce", "render.pass.ssgi-hierarchical-gather", "render.pass.ssr-hierarchical-trace", "render.pass.temporal-resolve"} ||
-       !depth_pyramid_plan->transient || !depth_pyramid_plan->alias_candidate ||
+       depth_pyramid_plan->readers!=std::vector<std::string>{"render.pass.gpu-visibility", "render.pass.depth-pyramid-reduce", "render.pass.ssgi-hierarchical-gather", "render.pass.ssr-hierarchical-trace", "render.pass.temporal-resolve"} ||
+       depth_pyramid_plan->transient || depth_pyramid_plan->alias_candidate ||
        ssr_history_plan==graph.resource_plans.end() ||
        ssr_history_plan->writers!=std::vector<std::string>{"render.pass.ssr-temporal-resolve"} ||
        ssr_history_plan->readers!=std::vector<std::string>{"render.pass.ssr-temporal-resolve"} ||

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +47,50 @@ struct TextureResourceView final {
     bool transition_pending{};
 };
 
+// A binding request is an authored shader-slot identity plus an optional
+// stable fallback.  It deliberately carries no SDL pointer: the table can
+// project the request into a descriptor-array/bindless-ready identity while
+// keeping physical resources private to Runtime.
+struct TextureResourceBindingRequest final {
+    TextureResourceHandle handle{};
+    std::string semantic;
+    std::string fallback_stable_id;
+};
+
+struct TextureResourceBindingSnapshotEntry final {
+    std::string stable_id;
+    std::string semantic;
+    TextureResourceHandle handle{};
+    std::string state; // committed, pending, fallback, or stale
+    std::string owner;
+    std::uint64_t committed_generation{};
+    std::uint64_t effective_generation{};
+    bool available{};
+    bool transition_pending{};
+    bool fallback{};
+    bool stale_handle{};
+    std::string fallback_stable_id;
+};
+
+// Canonical, bounded identity-only evidence for a sampled-resource binding
+// set.  The canonical JSON and fingerprint are computed from stable strings,
+// generations and state only; SDL handles are never serialized.
+struct TextureResourceBindingSnapshot final {
+    static constexpr std::size_t maximum_entries = 256U;
+
+    std::string schema_version{"noemancer.texture-binding-snapshot/0.1"};
+    bool valid{};
+    std::string code;
+    std::string detail;
+    std::size_t requested_count{};
+    std::size_t returned_count{};
+    bool truncated{};
+    std::vector<TextureResourceBindingSnapshotEntry> bindings;
+
+    [[nodiscard]] std::string fingerprint() const;
+    [[nodiscard]] std::string canonical_json() const;
+};
+
 // Runtime-private indirection for sampled GPU textures. Persisted documents and
 // public commands retain stable Asset IDs; SDL handles never cross this table.
 // Replacements are staged while a command buffer is recorded and become the
@@ -67,6 +112,9 @@ public:
 
     [[nodiscard]] std::string observe_json(std::string_view owner = {},
                                            std::size_t maximum_resources = 256U) const;
+    [[nodiscard]] TextureResourceBindingSnapshot snapshot_bindings(
+        std::span<const TextureResourceBindingRequest> requests,
+        std::size_t maximum_bindings = TextureResourceBindingSnapshot::maximum_entries) const;
     [[nodiscard]] std::size_t size() const noexcept { return live_count_; }
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
 

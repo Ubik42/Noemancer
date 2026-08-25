@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 
 $SourceContractSchema = 'noemancer.shader-artifact-source-contract/0.1'
 $ManifestSchema = 'noemancer.shader-artifact-manifest/0.1'
-$ExpectedShaderCount = 47
+$ExpectedShaderCount = 48
 $ResourceNames = @(
     'samplers',
     'uniformBuffers',
@@ -274,6 +274,7 @@ try {
     # different compute binding layout or dispatch width.
     $expectedComputeBindings = @{
         'gpu_visibility.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 2; readwriteStorageBuffers = 2; threadGroupX = 64 }
+        'gpu_occlusion.comp' = [ordered]@{ samplers = 1; uniformBuffers = 1; readonlyStorageBuffers = 2; readwriteStorageBuffers = 3; threadGroupX = 64 }
         'vfx_group.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 7; threadGroupX = 64 }
         'vfx_sim.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 7; threadGroupX = 64 }
         'vfx_sort_alpha.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 3; threadGroupX = 256 }
