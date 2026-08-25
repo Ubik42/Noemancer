@@ -89,7 +89,10 @@ const nlohmann::json* find_voice(const nlohmann::json& status, const std::uint64
 int main() {
     using namespace noemancer;
     configure_process_diagnostics("test.audio-render-graph");
-    MiniaudioRenderGraph graph;
+    const auto source_path = write_test_wav();
+    auto vfs=std::make_shared<VirtualFileSystem>();
+    assert(vfs->mount({.id="test.audio",.virtual_root="asset://test",.source_root=source_path.parent_path()}).success);
+    MiniaudioRenderGraph graph(vfs);
     assert(graph.initialize(48000U, 2U));
 
     auto clip = std::make_shared<AudioClip>();
@@ -135,10 +138,10 @@ int main() {
     assert(status["liveSounds"] == 1U);
     assert(status["missingClipVoices"] == 1U);
 
-    const auto source_path = write_test_wav();
+    const auto source_uri="asset://test/"+source_path.filename().generic_string();
     graph.set_source_catalog({
-        {"asset.audio.resident", source_path, "sha256:resident", AudioSourceStorage::resident},
-        {"asset.audio.stream", source_path, "sha256:stream", AudioSourceStorage::stream}
+        {"asset.audio.resident", source_uri, "sha256:resident", AudioSourceStorage::resident},
+        {"asset.audio.stream", source_uri, "sha256:stream", AudioSourceStorage::stream}
     });
     snapshot.revision = 10U;
     snapshot.clips.clear();

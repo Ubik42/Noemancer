@@ -227,7 +227,8 @@ add_test(NAME noemancer.audio_asset COMMAND noemancer_audio_asset_tests)
 
 add_executable(noemancer_audio_render_graph_tests
     audio_render_graph_tests.cpp
-    ${PROJECT_SOURCE_DIR}/src/runtime/miniaudio_render_graph.cpp)
+    ${PROJECT_SOURCE_DIR}/src/runtime/miniaudio_render_graph.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/miniaudio_vfs_adapter.cpp)
 target_link_libraries(noemancer_audio_render_graph_tests PRIVATE noemancer::engine noemancer_miniaudio nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.audio_render_graph COMMAND noemancer_audio_render_graph_tests)
 
@@ -451,6 +452,24 @@ set_tests_properties(noemancer.tool_call PROPERTIES PASS_REGULAR_EXPRESSION "ope
 
 add_test(NAME noemancer.managed_bindings COMMAND noemancer bindings csharp)
 set_tests_properties(noemancer.managed_bindings PROPERTIES PASS_REGULAR_EXPRESSION "PropertyId<Float3> Position")
+
+add_executable(noemancer_virtual_file_system_tests virtual_file_system_tests.cpp)
+target_link_libraries(noemancer_virtual_file_system_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.virtual_file_system COMMAND noemancer_virtual_file_system_tests)
+
+add_executable(noemancer_asset_vfs_catalog_tests
+    asset_vfs_catalog_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/asset_vfs_catalog.cpp)
+target_include_directories(noemancer_asset_vfs_catalog_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_asset_vfs_catalog_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.asset_vfs_catalog COMMAND noemancer_asset_vfs_catalog_tests)
+
+add_executable(noemancer_miniaudio_vfs_adapter_tests
+    miniaudio_vfs_adapter_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/miniaudio_vfs_adapter.cpp)
+target_include_directories(noemancer_miniaudio_vfs_adapter_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_miniaudio_vfs_adapter_tests PRIVATE noemancer::engine noemancer_miniaudio)
+add_test(NAME noemancer.miniaudio_vfs_adapter COMMAND noemancer_miniaudio_vfs_adapter_tests)
 
 # Install the Windows error-mode/Debug-CRT guard into every native test before
 # main().  This keeps unattended CTest runs machine-readable even when a test

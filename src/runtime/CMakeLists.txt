@@ -1,4 +1,5 @@
 add_executable(noemancer
+    asset_vfs_catalog.cpp
     asset_thumbnail_gpu_cache.cpp
     application.cpp
     game_persistence_store.cpp
@@ -7,6 +8,7 @@ add_executable(noemancer
     live_editor_transport.cpp
     audio_output_backend.cpp
     miniaudio_render_graph.cpp
+    miniaudio_vfs_adapter.cpp
     main.cpp
     performance_evidence.cpp
     runtime_texture_upload.cpp

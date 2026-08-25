@@ -1,4 +1,5 @@
 #include "runtime/miniaudio_render_graph.hpp"
+#include "runtime/miniaudio_vfs_adapter.hpp"
 
 #include <miniaudio.h>
 #include <nlohmann/json.hpp>
@@ -73,7 +74,7 @@ struct MiniaudioRenderGraph::Impl final {
     struct Voice final {
         std::string asset_id;
         std::string bus_id;
-        std::filesystem::path source_path;
+        std::string source_uri;
         std::string content_hash;
         AudioSourceStorage storage{AudioSourceStorage::resident};
         bool resource_source{};
@@ -93,6 +94,8 @@ struct MiniaudioRenderGraph::Impl final {
         }
     };
 
+    std::shared_ptr<VirtualFileSystem> vfs;
+    std::unique_ptr<MiniaudioVfsAdapter> vfs_adapter;
     ma_resource_manager resource_manager{};
     bool resource_manager_ready{};
     ma_engine engine{};
@@ -110,6 +113,10 @@ struct MiniaudioRenderGraph::Impl final {
     std::uint64_t reconciliations{};
     std::uint64_t rendered_frames{};
     std::size_t missing_clip_voices{};
+
+    explicit Impl(std::shared_ptr<VirtualFileSystem> mounted_vfs) : vfs(std::move(mounted_vfs)) {
+        if (vfs) vfs_adapter = std::make_unique<MiniaudioVfsAdapter>(*vfs);
+    }
 
     [[nodiscard]] ma_sound_group* group(const std::string_view id) const {
         if (const auto found = groups.find(std::string(id)); found != groups.end()) return found->second.get();
@@ -186,14 +193,17 @@ struct MiniaudioRenderGraph::Impl final {
     }
 };
 
-MiniaudioRenderGraph::MiniaudioRenderGraph() : impl_(std::make_unique<Impl>()) {}
+MiniaudioRenderGraph::MiniaudioRenderGraph(std::shared_ptr<VirtualFileSystem> vfs)
+    : impl_(std::make_unique<Impl>(std::move(vfs))) {}
 MiniaudioRenderGraph::~MiniaudioRenderGraph() { shutdown(); }
 
 bool MiniaudioRenderGraph::initialize(const std::uint32_t sample_rate, const std::uint32_t channels) {
     std::unordered_map<std::string, AudioSourceLocation> source_catalog;
+    std::shared_ptr<VirtualFileSystem> vfs;
     if (impl_) source_catalog = std::move(impl_->source_catalog);
+    if (impl_) vfs = impl_->vfs;
     shutdown();
-    impl_ = std::make_unique<Impl>();
+    impl_ = std::make_unique<Impl>(std::move(vfs));
     impl_->source_catalog = std::move(source_catalog);
     if (sample_rate == 0U || channels == 0U) {
         last_error_ = "miniaudio graph requires a non-zero sample rate and channel count";
@@ -205,6 +215,7 @@ bool MiniaudioRenderGraph::initialize(const std::uint32_t sample_rate, const std
     resource_config.decodedChannels = 0U;
     resource_config.decodedSampleRate = sample_rate;
     resource_config.jobThreadCount = impl_->resource_job_threads;
+    resource_config.pVFS = impl_->vfs_adapter ? impl_->vfs_adapter->native_vfs() : nullptr;
     auto result = ma_resource_manager_init(&resource_config, &impl_->resource_manager);
     if (result != MA_SUCCESS) {
         last_error_ = std::string("miniaudio resource manager: ") + ma_result_description(result);
@@ -259,7 +270,7 @@ void MiniaudioRenderGraph::shutdown() {
 }
 
 void MiniaudioRenderGraph::set_source_catalog(std::vector<AudioSourceLocation> locations) {
-    if (!impl_) impl_ = std::make_unique<Impl>();
+    if (!impl_) impl_ = std::make_unique<Impl>(nullptr);
     impl_->source_catalog.clear();
     impl_->source_status.clear();
     for (auto& location : locations) {
@@ -361,7 +372,7 @@ bool MiniaudioRenderGraph::reconcile(const AudioRenderSnapshot& snapshot) {
         const auto& current = *it->second;
         const bool source_changed = current.asset_id != incoming->asset_id ||
             (selection.location != nullptr && (!current.resource_source ||
-                current.source_path != selection.location->source_path ||
+                current.source_uri != selection.location->source_uri ||
                 current.content_hash != selection.content_hash ||
                 current.storage != selection.storage)) ||
             (selection.location == nullptr && current.resource_source) ||
@@ -405,11 +416,11 @@ bool MiniaudioRenderGraph::reconcile(const AudioRenderSnapshot& snapshot) {
             ma_result init_result = MA_SUCCESS;
             if (selection.location) {
                 voice->resource_source = true;
-                voice->source_path = selection.location->source_path;
+                voice->source_uri = selection.location->source_uri;
                 voice->content_hash = selection.content_hash;
                 voice->storage = selection.storage;
                 auto source_config = ma_resource_manager_data_source_config_init();
-                const auto path = selection.location->source_path.string();
+                const auto& path = selection.location->source_uri;
                 source_config.pFilePath = path.c_str();
                 source_config.flags = storage_flags(selection.storage) |
                     MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_ASYNC |

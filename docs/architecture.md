@@ -164,6 +164,8 @@ The graph is an engine capability consumed by Editor, CLI, MCP, accessibility an
 
 ## Runtime and performance rules
 
+The read authority is `VirtualFileSystem`, not a collection of middleware-owned absolute paths. It mounts source directories and atomically committed package directories behind canonical `scheme://path` identities, resolves the longest virtual root before priority and stable mount order, rejects lexical traversal and resolved symlink escapes, and publishes bounded stat/range-read receipts with mount revision and SHA-256. `AssetVfsCatalog` projects an `AssetRegistry` into stable `asset://roots/<slot>/...` records; source and packaged registries retain the same public URI while their private mount identity/kind differs. miniaudio consumes those URIs only through a Runtime-private `ma_vfs` adapter, so its decoder, resident snapshot and streamed voices share the Engine authority without exposing third-party handles. Package Directory is the current storage adapter; a future archive format must enter behind this contract and requires measured distribution value, not architectural fashion. Project documents and cooked texture/geometry/animation readers migrate incrementally; offline tools may still receive explicit physical build-input paths at their private boundary.
+
 - Interactive and Headless execution share World and simulation behavior; hardware adapters may differ.
 - Render, audio and build work must not be coupled to the editor frame when independent scheduling is required.
 - Hot paths use native data and batched boundaries. JSON is for control/observation, not per-particle or per-entity inner loops.

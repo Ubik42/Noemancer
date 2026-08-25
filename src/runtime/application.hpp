@@ -8,6 +8,8 @@
 #include "engine/live_editor_session.hpp"
 #include "engine/log.hpp"
 #include "engine/world.hpp"
+#include "engine/virtual_file_system.hpp"
+#include "runtime/asset_vfs_catalog.hpp"
 #include "runtime/performance_evidence.hpp"
 #include "runtime/live_editor_transport.hpp"
 
@@ -122,6 +124,7 @@ private:
     void register_animation_graph_assets(World& world);
     void register_tilemap_assets(World& world);
     void register_audio_assets(World& world);
+    [[nodiscard]] bool rebuild_asset_vfs_catalog();
     void configure_persistence_store(std::string project_id);
     void process_persistence_requests(World& world);
     void log_startup_telemetry(std::string_view mode, std::string_view outcome);
@@ -139,6 +142,8 @@ private:
     std::uint64_t play_base_revision_{};
     std::string play_base_scene_json_;
     AssetRegistry asset_registry_;
+    std::shared_ptr<VirtualFileSystem> virtual_file_system_;
+    AssetVfsCatalog asset_vfs_catalog_;
     EditorUi editor_ui_;
     TilemapRenderBakeCache tilemap_render_bake_cache_;
     std::string startup_error_json_;

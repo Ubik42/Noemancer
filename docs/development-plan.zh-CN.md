@@ -146,7 +146,9 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 
 同一切片的可见上下文也已闭合：`noemancer.editor-context/0.1` 从真实 `EditorUi` 投影 Project/Scene、Edit/Play authority、Outliner/Inspector 选择、当前面板、活动 Dock/Tab 和最近事务，`editor.context.observe/intent` 通过 live Command Registry 使用同一 revision；人类操作会使旧意图失效，Play 选择不会污染 Edit World，面板意图在下一帧真正聚焦 Dock。没有第二套 Context 服务，也没有公开 ImGui/RmlUi 句柄。Release 隐藏 HD2D 项目中 MCP 将 Agent Context 切到 Inspector 后恢复，Context revision 9→11→14，World revision 始终为 1；证据位于 `generated/acceptance/live-editor-context-current/evidence.json`。
 
-当前前沿转入 `production.virtual-filesystem-and-package-mount`：先定义有界、线程安全、只暴露引擎 plain-data 句柄的 VFS/Package Mount 合同，把源项目目录、原子 Package 目录和未来只读归档统一到同一读取/流送接口；随后让音频长流、纹理/几何/动画制品和项目数据逐步迁移，不把 miniaudio、KTX、ozz 或平台文件句柄泄露到公共 Scene/RPC。第一批必须证明路径穿越拒绝、Mount 优先级/身份、确定性读取、取消与预算、包内等价和现有目录包兼容，不能为了“有 VFS”立即发明自有压缩格式。
+`production.virtual-filesystem-and-package-mount` 的首批基底已经退出：Engine VFS 以有界 plain-data 合同统一只读目录和当前原子 Package Directory，支持规范 URI、最长根/优先级/稳定挂载序、range/EOF、取消、SHA-256、revision 和有界 observation，并拒绝词法穿越与 symlink 越界。Runtime 的 Registry bridge 为源码与包体生成相同 `asset://roots/<slot>/...` 身份；miniaudio Resource Manager 已通过私有 `ma_vfs` Adapter 使用同一 URI，resident snapshot 与 bounded stream 不再接触绝对资源路径。聚焦测试实际证明 source/package 同字节读取、并发句柄与真实 WAV 解码。没有发明自有归档压缩格式，也没有把 miniaudio 或平台句柄泄露到 Scene/RPC。
+
+当前前沿转入 `production.vfs-project-and-cooked-asset-migration`：按真实收益把 Player Profile/Scene/HUD、KTX2、Cooked Geometry 和 Cooked Animation 的读取逐步迁移到同一 VFS Authority，保留离线作者工具需要的显式物理路径边界；每次迁移都必须证明源码/包体语义等价、现有原子目录包兼容、错误身份稳定且没有额外全文件复制。长音频 range 当前每次重新 resolve/open/hash，先作为明确性能债记录；只有固定长流 workload 证明瓶颈后才在 VFS Authority 增加 opaque sequential reader，不允许 Adapter 绕开 VFS。
 
 该最小纵切的退出不等于完整射击游戏生产栈：当前 Prefab 生成/销毁仍重建完整 Scene，项目碰撞使用有界实体观察上的半径判断；只有后续更大迁移或性能证据表明需要时，才增加池化生成和原生批量重叠查询。Hybrid Pixel/HD2D 项目仍在 Pixel Grid、Sprite normal/depth/material、混合光照和像素 VFX 的核心 Profile 成立后启动。任何迁移都不得因单个游戏的特殊需求向 Engine/Runtime C++ 写入专用规则；需求只有在能抽象为稳定通用能力，并通过独立 Fixture、Schema/命令、最小回归与性能证据后，才回写引擎。
 

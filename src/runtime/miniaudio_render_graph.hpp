@@ -2,13 +2,13 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "engine/gameplay_runtime.hpp"
+#include "engine/virtual_file_system.hpp"
 
 namespace noemancer {
 
@@ -22,7 +22,7 @@ enum class AudioSourceStorage : std::uint8_t {
 
 struct AudioSourceLocation final {
     std::string asset_id;
-    std::filesystem::path source_path;
+    std::string source_uri;
     std::string content_hash;
     AudioSourceStorage storage{AudioSourceStorage::resident};
 };
@@ -32,7 +32,7 @@ struct AudioSourceLocation final {
 // the private implementation and are owned by the audio producer thread.
 class MiniaudioRenderGraph final {
 public:
-    MiniaudioRenderGraph();
+    explicit MiniaudioRenderGraph(std::shared_ptr<VirtualFileSystem> vfs = {});
     ~MiniaudioRenderGraph();
     MiniaudioRenderGraph(const MiniaudioRenderGraph&) = delete;
     MiniaudioRenderGraph& operator=(const MiniaudioRenderGraph&) = delete;

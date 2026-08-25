@@ -2,6 +2,7 @@
 
 #include "engine/play_world_apply.hpp"
 #include "runtime/audio_output_backend.hpp"
+#include "runtime/asset_vfs_catalog.hpp"
 #include "runtime/asset_thumbnail_gpu_cache.hpp"
 #include "runtime/game_persistence_store.hpp"
 #include "runtime/input_source_adapter.hpp"
@@ -357,7 +358,8 @@ std::filesystem::path default_user_data_root() {
 } // namespace
 
 Application::Application(RunOptions options)
-    : options_(options), logger_(options.log_format), editor_ui_(world_, asset_registry_) {
+    : options_(options), logger_(options.log_format),
+      virtual_file_system_(std::make_shared<VirtualFileSystem>()), editor_ui_(world_, asset_registry_) {
     startup_telemetry_ = options_.startup_telemetry != nullptr
         ? options_.startup_telemetry : &startup_telemetry_storage_;
     startup_telemetry_->begin_phase("application.construct");
@@ -441,6 +443,11 @@ Application::Application(RunOptions options)
         startup_telemetry_->begin_phase("scene.load");
         static_cast<void>(world_.load_scene(scene));
     }
+    if(startup_error_json_.empty()&&!rebuild_asset_vfs_catalog()) {
+        startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.vfs-startup/0.1"},{"success",false},
+            {"code",asset_vfs_catalog_.code.empty()?"vfs.mount-failed":asset_vfs_catalog_.code},
+            {"detail",asset_vfs_catalog_.detail}}.dump();
+    }
     if (options_.player_mode || options_.project_path.empty()) {
         startup_telemetry_->begin_phase("asset.cook");
     }
@@ -515,6 +522,17 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
         for(std::size_t index=1U;index<loaded.project->asset_roots.size();++index)
             static_cast<void>(next_registry.add_root(loaded.project->root/loaded.project->asset_roots[index]));
     }
+    auto next_asset_vfs_catalog=build_asset_vfs_catalog(next_registry,{
+        .mount_identity="project.assets",.mount_kind=VfsMountKind::directory});
+    auto next_virtual_file_system=std::make_shared<VirtualFileSystem>();
+    if(next_asset_vfs_catalog.success)for(const auto& mount:next_asset_vfs_catalog.mounts) {
+        const auto receipt=next_virtual_file_system->mount(mount);
+        if(!receipt.success) {next_asset_vfs_catalog.success=false;next_asset_vfs_catalog.code=receipt.code;
+            next_asset_vfs_catalog.detail=receipt.detail;break;}
+    }
+    if(!next_asset_vfs_catalog.success)return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",false},
+        {"code",next_asset_vfs_catalog.code.empty()?"vfs.mount-failed":next_asset_vfs_catalog.code},
+        {"detail",next_asset_vfs_catalog.detail}}.dump();
     startup_telemetry_->begin_phase("scene.load");
     const auto scene_receipt=world_.load_scene(*loaded.startup_scene);
     if(!scene_receipt.success)return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",false},
@@ -523,7 +541,8 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
         {"code","project.input-actions-invalid"},{"detail","Project input actions could not configure the Edit World."}}.dump();
     if(!world_.configure_project_hud(loaded.project->hud_document_json))return Json{{"schemaVersion","noemancer.editor-project-action/0.1"},{"success",false},
         {"code","project.hud-document-invalid"},{"detail","Project HUD could not configure the Edit World."}}.dump();
-    asset_registry_=std::move(next_registry);project_root_=loaded.project->root;
+    asset_registry_=std::move(next_registry);asset_vfs_catalog_=std::move(next_asset_vfs_catalog);
+    virtual_file_system_=std::move(next_virtual_file_system);project_root_=loaded.project->root;
     project_id_=loaded.project->project_id;project_name_=loaded.project->name;
     configure_persistence_store(loaded.project->project_id);
     project_input_actions_=loaded.project->input_actions;
@@ -1231,6 +1250,22 @@ void Application::register_audio_assets(World& world) {
     }
 }
 
+bool Application::rebuild_asset_vfs_catalog() {
+    auto next_catalog=build_asset_vfs_catalog(asset_registry_,{
+        .mount_identity=options_.player_mode?"package.assets":"project.assets",
+        .mount_kind=options_.player_mode?VfsMountKind::package_directory:VfsMountKind::directory});
+    if(!next_catalog.success) { asset_vfs_catalog_=std::move(next_catalog);return false; }
+    auto next_vfs=std::make_shared<VirtualFileSystem>();
+    for(const auto& mount:next_catalog.mounts) {
+        const auto receipt=next_vfs->mount(mount);
+        if(!receipt.success) {
+            next_catalog.success=false;next_catalog.code=receipt.code;next_catalog.detail=receipt.detail;
+            asset_vfs_catalog_=std::move(next_catalog);return false;
+        }
+    }
+    asset_vfs_catalog_=std::move(next_catalog);virtual_file_system_=std::move(next_vfs);return true;
+}
+
 int Application::run() {
     if (!startup_error_json_.empty()) {
         logger_.error("project.load", startup_error_json_);
@@ -1529,6 +1564,8 @@ int Application::run_headless() {
     const auto input_observation=parse_observation(active_world().input_observation_json());
     const auto project_ui_observation=parse_observation(
         active_world().semantic_ui_project_document_json(options_.ui_locale));
+    const auto vfs_observation=parse_observation(virtual_file_system_->observation_json());
+    const auto asset_vfs_observation=parse_observation(asset_vfs_catalog_.observation_json());
     logger_.info("runtime.production_state",nlohmann::json{
         {"schemaVersion","noemancer.runtime-production-state/0.1"},
         {"mode",options_.player_mode?"packaged-player":
@@ -1537,6 +1574,8 @@ int Application::run_headless() {
         {"hybridPixelProfile",std::move(hybrid_profile)},
         {"input",input_observation},
         {"scripting",scripting_observation},
+        {"virtualFileSystem",vfs_observation},
+        {"assetVfsCatalog",asset_vfs_observation},
         {"projectUi",project_ui_observation}}
         .dump());
     log_startup_telemetry(options_.player_mode ? "player" :
@@ -1866,10 +1905,11 @@ int Application::run_interactive() {
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.extension!=".wav"&&asset.extension!=".ogg"&&
             asset.extension!=".flac"&&asset.extension!=".mp3"))continue;
+        const auto* mounted=asset_vfs_catalog_.find(asset.id);if(mounted==nullptr)continue;
         const auto storage=asset.source_bytes>=1024U*1024U?AudioAssetStorage::stream:AudioAssetStorage::resident;
-        audio_sources.push_back({asset.id,asset_registry_.source_path(asset),asset.content_hash,storage});
+        audio_sources.push_back({asset.id,mounted->uri,asset.content_hash,storage});
     }
-    if(audio_output.initialize(audio_sample_rate,2,std::move(audio_sources)))logger_.info("audio.device",audio_output.status_json());
+    if(audio_output.initialize(audio_sample_rate,2,std::move(audio_sources),virtual_file_system_))logger_.info("audio.device",audio_output.status_json());
     else logger_.info("audio.device",std::string("degraded: ")+audio_output.last_error());
     const World* published_audio_world=nullptr;
     std::uint64_t published_audio_revision{};

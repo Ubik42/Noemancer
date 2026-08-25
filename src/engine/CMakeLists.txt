@@ -69,6 +69,7 @@ add_library(noemancer_engine STATIC
     visibility_culling.cpp
     vfx_gpu_residency.cpp
     vfx_runtime.cpp
+    virtual_file_system.cpp
     world.cpp
 )
 

@@ -21,6 +21,7 @@ struct AudioOutputBackend::Impl final {
     std::uint32_t sample_rate{48000};
     std::uint32_t channels{2};
     std::vector<AudioOutputSource> sources;
+    std::shared_ptr<VirtualFileSystem> vfs;
     std::size_t target_frames{4800};
     bool ring_ready{};
     bool device_ready{};
@@ -61,11 +62,11 @@ void AudioOutputBackend::Impl::callback(ma_device* device,void* output,const voi
 }
 
 void AudioOutputBackend::Impl::produce(const std::stop_token stop) {
-    MiniaudioRenderGraph render_graph;
+    MiniaudioRenderGraph render_graph(vfs);
     std::vector<AudioSourceLocation> source_catalog;
     source_catalog.reserve(sources.size());
     for (const auto& source : sources) source_catalog.push_back({
-        source.asset_id, source.source_path, source.content_hash,
+        source.asset_id, source.source_uri, source.content_hash,
         source.storage == AudioAssetStorage::stream ? AudioSourceStorage::stream : AudioSourceStorage::resident});
     render_graph.set_source_catalog(std::move(source_catalog));
     if (!render_graph.initialize(sample_rate, channels)) {
@@ -131,9 +132,11 @@ AudioOutputBackend::AudioOutputBackend():impl_(std::make_unique<Impl>()){}
 AudioOutputBackend::~AudioOutputBackend(){shutdown();}
 
 bool AudioOutputBackend::initialize(const std::uint32_t sample_rate,const std::uint32_t channels,
-                                    std::vector<AudioOutputSource> sources) {
+                                    std::vector<AudioOutputSource> sources,
+                                    std::shared_ptr<VirtualFileSystem> vfs) {
     shutdown();impl_=std::make_unique<Impl>();impl_->sample_rate=sample_rate;impl_->channels=channels;
     impl_->sources=std::move(sources);
+    impl_->vfs=std::move(vfs);
     impl_->target_frames=std::max<std::size_t>(sample_rate/10U,512U);
     if(ma_pcm_rb_init(ma_format_f32,channels,static_cast<ma_uint32>(impl_->target_frames*2U),nullptr,nullptr,&impl_->ring)!=MA_SUCCESS) {
         last_error_="miniaudio ring buffer initialization failed";return false;
