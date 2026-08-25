@@ -225,7 +225,8 @@ int main() {
         cube_node->at("actions").at(0).at("binding").value("entityId", "") != "entity.demo-cube" ||
         cube_node->at("actions").at(0).at("binding").value("sourceRevision", 0U) != world.revision() ||
         cube_node->at("presentation").at("inlineActionIds") !=
-            nlohmann::json::array({"outliner.copy","outliner.duplicate"}) ||
+            nlohmann::json::array({"outliner.rename","outliner.copy","outliner.duplicate",
+                "outliner.reparent","outliner.delete"}) ||
         root_node->at("actions").size() != 1U ||
         !root_node->at("presentation").at("inlineActionIds").empty() ||
         edit_nodes.at(0).at("presentation").at("inlineActionIds") !=
@@ -236,6 +237,16 @@ int main() {
         !edit_nodes.at(0).at("actions").at(0).at("state").value("enabled", false) ||
         cube_node->at("actions").at(2).at("binding").value("operation", "") != "copy" ||
         cube_node->at("actions").at(2).at("binding").value("entityId", "") != "entity.demo-cube" ||
+        cube_node->at("actions").at(1).at("input").value("field", "") != "displayName" ||
+        cube_node->at("actions").at(1).at("input").value("value", "") != "Demo Cube" ||
+        cube_node->at("actions").at(1).at("input").value("maxLength", 0U) != 128U ||
+        cube_node->at("actions").at(4).at("input").value("field", "") != "parentEntityId" ||
+        cube_node->at("actions").at(4).at("input").value("value", "") != "entity.bootstrap-root" ||
+        cube_node->at("actions").at(4).at("input").at("options").at(0).value("label", "") != "Scene Root" ||
+        std::ranges::any_of(cube_node->at("actions").at(4).at("input").at("options"), [](const auto& option) {
+            return option.value("value", std::string{}) == "entity.demo-cube";
+        }) ||
+        !cube_node->at("actions").at(5).at("confirmation").value("required", false) ||
         edit_nodes.at(0).at("actions").at(1).at("state").value("enabled", true)) {
         std::cerr << "Edit World Outliner semantic hierarchy or selection is incomplete\n";
         return 38;
@@ -245,6 +256,29 @@ int main() {
         std::cerr << "Outliner semantic ordering is not deterministic\n";
         return 39;
     }
+    if (!model.select_object("entity.bootstrap-root")) return 78;
+    const auto root_selection_outliner = nlohmann::json::parse(model.outliner_semantic_ui_document_json());
+    const auto selected_root = std::ranges::find_if(root_selection_outliner.at("nodes"), [](const auto& node) {
+        return node.value("id", std::string{}) == "editor.outliner.entity.entity.bootstrap-root";
+    });
+    if (selected_root == root_selection_outliner.at("nodes").end() ||
+        selected_root->at("actions").at(4).at("input").at("options").size() != 1U ||
+        selected_root->at("actions").at(4).at("input").at("options").at(0).value("value", "invalid") != "")
+        return 79;
+    if (!model.select_object("entity.demo-sphere")) return 56;
+    const auto changed_selection_outliner = nlohmann::json::parse(model.outliner_semantic_ui_document_json());
+    const auto changed_sphere = std::ranges::find_if(changed_selection_outliner.at("nodes"), [](const auto& node) {
+        return node.value("id", std::string{}) == "editor.outliner.entity.entity.demo-sphere";
+    });
+    const auto changed_cube = std::ranges::find_if(changed_selection_outliner.at("nodes"), [](const auto& node) {
+        return node.value("id", std::string{}) == "editor.outliner.entity.entity.demo-cube";
+    });
+    if (changed_sphere == changed_selection_outliner.at("nodes").end() ||
+        changed_cube == changed_selection_outliner.at("nodes").end() ||
+        changed_sphere->at("actions").at(1).at("input").value("value", "") != "Jolt Dynamic Sphere" ||
+        changed_cube->at("actions").size() != 1U ||
+        !changed_cube->at("presentation").at("inlineActionIds").empty()) return 57;
+    if (!model.select_object("entity.demo-cube")) return 58;
     const std::vector<std::string> play_selection{"entity.demo-sphere"};
     const auto play_outliner = nlohmann::json::parse(model.outliner_semantic_ui_document_json(
         noemancer::EditorOutlinerAuthorityView{
@@ -260,7 +294,9 @@ int main() {
         !play_sphere->at("state").value("selected", false) || play_sphere->at("actions").size() != 1U ||
         play_sphere->at("actions").at(0).value("handler", "") != "EditorModel.select_object" ||
         !play_outliner.at("nodes").at(0).at("actions").empty() ||
-        !play_sphere->at("presentation").at("inlineActionIds").empty()) {
+        !play_sphere->at("presentation").at("inlineActionIds").empty() ||
+        play_outliner.dump().find("\"input\"") != std::string::npos ||
+        play_outliner.dump().find("\"confirmation\"") != std::string::npos) {
         std::cerr << "Play World Outliner did not remain a read-only authority projection\n";
         return 40;
     }
@@ -285,6 +321,31 @@ int main() {
         std::cerr << "Large Outliner projection did not publish bounded truncation metadata\n";
         return 41;
     }
+    std::vector<noemancer::EditorObject> boundary_objects;
+    boundary_objects.reserve(4096U);
+    boundary_objects.push_back({.id="entity.boundary.root",.name="Boundary Root",.kind="Entity"});
+    for (std::size_t index=1U;index<4096U;++index) {
+        const auto suffix=std::to_string(10000U+index).substr(1U);
+        boundary_objects.push_back({.id="entity.boundary."+suffix,.name="Boundary "+suffix,
+            .kind="Entity",.parent_id="entity.boundary.root"});
+    }
+    const std::vector<std::string> boundary_selection{"entity.boundary.4095"};
+    const auto boundary_outliner=nlohmann::json::parse(model.outliner_semantic_ui_document_json(
+        noemancer::EditorOutlinerAuthorityView{.authority="edit-world",.simulation_state="edit",.writable=true,
+            .world_revision=4096U,.objects=boundary_objects,.selected_object_ids=boundary_selection,
+            .primary_selected_object_id="entity.boundary.4095"},
+        {.entity_limit=4096U,.selection_limit=1U}));
+    const auto boundary_selected=std::ranges::find_if(boundary_outliner.at("nodes"),[](const auto& node) {
+        return node.value("id",std::string{})=="editor.outliner.entity.entity.boundary.4095";
+    });
+    if(boundary_outliner.at("entities").value("total",0U)!=4096U||
+       boundary_outliner.at("entities").value("truncated",true)||
+       boundary_selected==boundary_outliner.at("nodes").end()||
+       boundary_selected->at("actions").at(4).at("input").at("options").size()!=256U||
+       boundary_selected->at("actions").at(4).at("input").at("options").at(0).value("value","x")!=""||
+       std::ranges::any_of(boundary_selected->at("actions").at(4).at("input").at("options"),[](const auto& option) {
+           return option.value("value",std::string{})=="entity.boundary.4095";
+       })) return 59;
     if(model.inspector_sections().size()<3U||model.semantic_snapshot_json().find("noemancer.inspector-document/0.1")==std::string::npos) {
         std::cerr<<"Editor did not consume the generated declarative Inspector document\n";
         return 11;

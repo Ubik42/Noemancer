@@ -373,9 +373,11 @@ int main() {
     if(!retained_action_world.load_scene(noemancer::make_bootstrap_scene_document()).success)return 57;
     noemancer::AssetRegistry retained_action_assets;
     noemancer::EditorUi retained_action_editor(retained_action_world,retained_action_assets);
-    const auto entity_binding=[](const std::string_view entity_id,const std::uint64_t revision) {
-        return std::string{"{\"kind\":\"editor-entity-action\",\"operation\":\"copy\",\"entityId\":\""}+
-            std::string(entity_id)+"\",\"sourceRevision\":"+std::to_string(revision)+"}";
+    const auto entity_binding=[](const std::string_view operation,const std::string_view entity_id,
+                                 const std::uint64_t revision,const std::uint64_t entity_revision) {
+        return std::string{"{\"kind\":\"editor-entity-action\",\"operation\":\""}+std::string(operation)+
+            "\",\"entityId\":\""+std::string(entity_id)+"\",\"sourceRevision\":"+std::to_string(revision)+
+            ",\"entityRevision\":"+std::to_string(entity_revision)+"}";
     };
     const auto panel_binding=[](const std::string_view kind,const std::uint64_t revision) {
         return std::string{"{\"kind\":\""}+std::string(kind)+"\",\"sourceRevision\":"+
@@ -384,23 +386,95 @@ int main() {
     auto action_context=retained_action_editor.editor_context_snapshot();
     const auto initial_entity=action_context.primary_selected_entity_id;
     const auto initial_revision=retained_action_world.revision();
+    const auto object_revision=[&](const std::string_view entity_id) {
+        const auto objects=retained_action_world.entity_views();
+        const auto found=std::ranges::find(objects,entity_id,&noemancer::WorldEntityView::id);
+        return found==objects.end()?std::uint64_t{}:found->revision;
+    };
+    const auto initial_entity_revision=object_revision(initial_entity);
     const auto stale=retained_action_editor.invoke_retained_authoring_action(
-        "outliner.copy",entity_binding(initial_entity,initial_revision+1U));
+        "outliner.copy",entity_binding("copy",initial_entity,initial_revision+1U,initial_entity_revision));
     const auto mismatch=retained_action_editor.invoke_retained_authoring_action(
-        "outliner.copy",entity_binding("entity.not-selected",initial_revision));
-    const auto dangerous=retained_action_editor.invoke_retained_authoring_action(
-        "outliner.delete",entity_binding(initial_entity,initial_revision));
+        "outliner.copy",entity_binding("copy","entity.not-selected",initial_revision,initial_entity_revision));
+    const auto missing_entity_revision=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.copy",std::string{"{\"kind\":\"editor-entity-action\",\"operation\":\"copy\",\"entityId\":\""}+
+            initial_entity+"\",\"sourceRevision\":"+std::to_string(initial_revision)+"}");
+    const auto wrong_entity_revision_type=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.copy",std::string{"{\"kind\":\"editor-entity-action\",\"operation\":\"copy\",\"entityId\":\""}+
+            initial_entity+"\",\"sourceRevision\":"+std::to_string(initial_revision)+",\"entityRevision\":\"old\"}");
+    const auto stale_entity=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.copy",entity_binding("copy",initial_entity,initial_revision,initial_entity_revision+1U));
+    const auto operation_mismatch=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.copy",entity_binding("rename",initial_entity,initial_revision,initial_entity_revision));
+    const auto unknown=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.unknown",entity_binding("copy",initial_entity,initial_revision,initial_entity_revision));
+    const auto oversized=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.copy",entity_binding("copy",initial_entity,initial_revision,initial_entity_revision),
+        std::string(16U*1024U+1U,'x'));
     const auto copied=retained_action_editor.invoke_retained_authoring_action(
-        "outliner.copy",entity_binding(initial_entity,initial_revision));
+        "outliner.copy",entity_binding("copy",initial_entity,initial_revision,initial_entity_revision));
     if(stale.find("retained-action.stale-source-revision")==std::string::npos||
        mismatch.find("retained-action.selection-mismatch")==std::string::npos||
-       dangerous.find("retained-action.unsupported")==std::string::npos||
+       missing_entity_revision.find("retained-action.entity-revision-required")==std::string::npos||
+       wrong_entity_revision_type.find("retained-action.entity-revision-required")==std::string::npos||
+       stale_entity.find("retained-action.stale-entity-revision")==std::string::npos||
+       operation_mismatch.find("retained-action.operation-mismatch")==std::string::npos||
+       unknown.find("retained-action.unsupported")==std::string::npos||
+       oversized.find("retained-action.payload-too-large")==std::string::npos||
        copied.find(R"("success":true)")==std::string::npos||retained_action_world.revision()!=initial_revision)return 58;
     const auto duplicated=retained_action_editor.invoke_retained_authoring_action(
-        "outliner.duplicate",std::string{"{\"kind\":\"editor-entity-action\",\"operation\":\"duplicate\",\"entityId\":\""}+
-            initial_entity+"\",\"sourceRevision\":"+std::to_string(retained_action_world.revision())+"}");
+        "outliner.duplicate",entity_binding("duplicate",initial_entity,retained_action_world.revision(),
+            object_revision(initial_entity)));
     if(duplicated.find(R"("success":true)")==std::string::npos||duplicated.find(R"("entityId":null)")!=std::string::npos||
        retained_action_world.revision()<=initial_revision)return 59;
+    action_context=retained_action_editor.editor_context_snapshot();
+    const auto duplicate_entity=action_context.primary_selected_entity_id;
+    const auto before_bad_rename=retained_action_world.revision();
+    const auto bad_rename=retained_action_editor.invoke_retained_authoring_action("outliner.rename",
+        entity_binding("rename",duplicate_entity,before_bad_rename,object_revision(duplicate_entity)),R"({"displayName":""})");
+    const auto long_rename=retained_action_editor.invoke_retained_authoring_action("outliner.rename",
+        entity_binding("rename",duplicate_entity,before_bad_rename,object_revision(duplicate_entity)),
+        std::string{"{\"displayName\":\""}+std::string(129U,'n')+"\"}");
+    const auto renamed=retained_action_editor.invoke_retained_authoring_action("outliner.rename",
+        entity_binding("rename",duplicate_entity,retained_action_world.revision(),object_revision(duplicate_entity)),
+        R"({"displayName":"Retained Renamed"})");
+    if(bad_rename.find("retained-action.value-invalid")==std::string::npos||
+       long_rename.find("retained-action.value-invalid")==std::string::npos||
+       retained_action_world.revision()<=before_bad_rename||renamed.find(R"("success":true)")==std::string::npos)return 62;
+    const auto bad_parent_type=retained_action_editor.invoke_retained_authoring_action("outliner.reparent",
+        entity_binding("reparent",duplicate_entity,retained_action_world.revision(),object_revision(duplicate_entity)),
+        R"({"parentEntityId":7})");
+    const auto bad_parent_id=retained_action_editor.invoke_retained_authoring_action("outliner.reparent",
+        entity_binding("reparent",duplicate_entity,retained_action_world.revision(),object_revision(duplicate_entity)),
+        R"({"parentEntityId":"not stable"})");
+    const auto reparented=retained_action_editor.invoke_retained_authoring_action("outliner.reparent",
+        entity_binding("reparent",duplicate_entity,retained_action_world.revision(),object_revision(duplicate_entity)),
+        std::string{"{\"parentEntityId\":\""}+initial_entity+"\"}");
+    if(bad_parent_type.find("retained-action.value-invalid")==std::string::npos||
+       bad_parent_id.find("retained-action.value-invalid")==std::string::npos||
+       reparented.find(R"("success":true)")==std::string::npos)return 63;
+    if(!retained_action_editor.select_entity(initial_entity))return 64;
+    const auto cycle=retained_action_editor.invoke_retained_authoring_action("outliner.reparent",
+        entity_binding("reparent",initial_entity,retained_action_world.revision(),object_revision(initial_entity)),
+        std::string{"{\"parentEntityId\":\""}+duplicate_entity+"\"}");
+    if(cycle.find(R"("success":false)")==std::string::npos||cycle.find("scene.edit-validation-failed")==std::string::npos) {
+        std::cerr<<"Retained reparent cycle was not rejected by the Model: "<<cycle<<'\n';return 65;
+    }
+    const auto count_before_delete=retained_action_world.entity_views().size();
+    const auto delete_binding=entity_binding("delete",initial_entity,retained_action_world.revision(),object_revision(initial_entity));
+    const auto unconfirmed=retained_action_editor.invoke_retained_authoring_action("outliner.delete",delete_binding);
+    const auto declined=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.delete",delete_binding,R"({"confirmed":false})");
+    const auto non_recursive=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.delete",delete_binding,R"({"confirmed":true,"recursive":false})");
+    if(unconfirmed.find("retained-action.confirmation-required")==std::string::npos||
+       declined.find("retained-action.confirmation-required")==std::string::npos||
+       non_recursive.find("retained-action.confirmation-required")==std::string::npos||
+       retained_action_world.entity_views().size()!=count_before_delete)return 66;
+    const auto deleted=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.delete",delete_binding,R"({"confirmed":true})");
+    if(deleted.find(R"("success":true)")==std::string::npos||
+       retained_action_world.entity_views().size()>=count_before_delete)return 67;
     const auto pasted=retained_action_editor.invoke_retained_authoring_action(
         "outliner.paste",panel_binding("editor-entity-paste",retained_action_world.revision()));
     const auto created=retained_action_editor.invoke_retained_authoring_action(

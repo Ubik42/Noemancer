@@ -230,6 +230,98 @@ bool semantic_action_enabled(const Json& action) {
     return enabled==state.end()||(enabled->is_boolean()&&enabled->get<bool>());
 }
 
+struct InlineInputDefinition final {
+    std::string field;
+    std::string control;
+    std::string value;
+    std::string placeholder;
+    std::size_t max_length{256U};
+    std::vector<std::pair<std::string,std::string>> options;
+};
+
+struct InlineConfirmationDefinition final {
+    std::string field;
+    std::string label;
+    bool required{};
+};
+
+std::optional<InlineInputDefinition> inline_input_definition(const Json& action) {
+    const auto found=action.find("input");if(found==action.end()||!found->is_object())return std::nullopt;
+    const auto& source=*found;
+    if(!source.contains("field")||!source.at("field").is_string()||
+       !source.contains("control")||!source.at("control").is_string())return std::nullopt;
+    InlineInputDefinition result;
+    result.field=source.at("field").get<std::string>();result.control=source.at("control").get<std::string>();
+    if(result.field.empty()||result.field.size()>64U||(result.control!="text"&&result.control!="combo"))return std::nullopt;
+    if(source.contains("value")) {
+        if(!source.at("value").is_string())return std::nullopt;
+        result.value=source.at("value").get<std::string>();if(result.value.size()>256U)return std::nullopt;
+    }
+    if(source.contains("placeholder")) {
+        if(!source.at("placeholder").is_string())return std::nullopt;
+        result.placeholder=source.at("placeholder").get<std::string>();if(result.placeholder.size()>256U)return std::nullopt;
+    }
+    if(source.contains("maxLength")) {
+        if(!source.at("maxLength").is_number_unsigned()&&!source.at("maxLength").is_number_integer())return std::nullopt;
+        try { const auto limit=source.at("maxLength").get<std::int64_t>();if(limit<1||limit>256)return std::nullopt;
+            result.max_length=static_cast<std::size_t>(limit); } catch(...) {return std::nullopt;}
+    }
+    if(result.value.size()>result.max_length)return std::nullopt;
+    if(result.control=="combo") {
+        const auto options=source.find("options");
+        if(options==source.end()||!options->is_array()||options->empty()||options->size()>256U)return std::nullopt;
+        for(const auto& option:*options) {
+            if(!option.is_object()||!option.contains("value")||!option.at("value").is_string()||
+               !option.contains("label")||!option.at("label").is_string())return std::nullopt;
+            auto value=option.at("value").get<std::string>();auto label=option.at("label").get<std::string>();
+            if(value.size()>256U||label.size()>256U)return std::nullopt;
+            result.options.emplace_back(std::move(value),std::move(label));
+        }
+        if(!result.value.empty()&&std::ranges::none_of(result.options,[&](const auto& option){return option.first==result.value;}))
+            return std::nullopt;
+        if(result.value.empty())result.value=result.options.front().first;
+    }
+    return result;
+}
+
+std::optional<InlineConfirmationDefinition> inline_confirmation_definition(const Json& action) {
+    const auto found=action.find("confirmation");if(found==action.end()||!found->is_object())return std::nullopt;
+    const auto& source=*found;
+    if(!source.contains("field")||!source.at("field").is_string()||
+       !source.contains("label")||!source.at("label").is_string())return std::nullopt;
+    InlineConfirmationDefinition result{source.at("field").get<std::string>(),source.at("label").get<std::string>(),false};
+    if(result.field.empty()||result.field.size()>64U||result.label.size()>256U)return std::nullopt;
+    if(source.contains("required")) {
+        if(!source.at("required").is_boolean())return std::nullopt;
+        result.required=source.at("required").get<bool>();
+    }
+    return result;
+}
+
+struct InlineFormValue final { bool allowed{true};std::string json{"null"}; };
+
+InlineFormValue inline_form_value(Rml::Element* target) {
+    Rml::Element* form{};
+    for(auto* current=target;current!=nullptr;current=current->GetParentNode())
+        if(current->GetAttribute<Rml::String>("data-inline-action-form","")=="true"){form=current;break;}
+    if(form==nullptr)return {};
+    Json value=Json::object();
+    if(auto* element=form->QuerySelector(".inline-action-input")) {
+        auto* control=rmlui_dynamic_cast<Rml::ElementFormControl*>(element);
+        const auto field=element->GetAttribute<Rml::String>("data-inline-field","");
+        if(control==nullptr||field.empty())return {false,"null"};
+        value[field]=control->GetValue();
+    }
+    if(auto* element=form->QuerySelector(".inline-action-confirmation")) {
+        const auto field=element->GetAttribute<Rml::String>("data-inline-field","");
+        if(field.empty())return {false,"null"};
+        const auto checked=element->HasAttribute("checked");
+        if(element->GetAttribute<Rml::String>("data-required","false")=="true"&&!checked)return {false,"null"};
+        value[field]=checked;
+    }
+    return {true,value.dump()};
+}
+
 Rml::Element* selectable_row(Rml::Element* element) {
     for(auto* current=element;current!=nullptr;current=current->GetParentNode())
         if(selectable_row_role(current->GetAttribute<Rml::String>("data-role","")))return current;
@@ -274,10 +366,13 @@ public:
                static_cast<Rml::Input::KeyIdentifier>(event.GetParameter<int>("key_identifier",0))==Rml::Input::KI_RETURN) {
                 emit_invoke(target);event.StopPropagation();return;
             }
+            if(inherited_attribute(target,"data-inline-action-form")=="true") {
+                event.StopPropagation();return;
+            }
             process_selectable_key(target,event);
             return;
         }
-        if(event==Rml::EventId::Click)
+        if(event==Rml::EventId::Click&&inherited_attribute(target,"data-inline-action-form")!="true")
             if(auto* row=selectable_row(target);row!=nullptr)select(row,true);
         if(event==Rml::EventId::Click&&inherited_attribute(target,"data-local-action")=="toggle-group") {
             auto* group=ancestor_with_role(target,"group");
@@ -289,6 +384,7 @@ public:
                 document==nullptr?std::string{}:std::string(document->GetId()),semantic_id_for_element(group)),expanded);
             return;
         }
+        if(event==Rml::EventId::Change&&inherited_attribute(target,"data-inline-action-form")=="true")return;
         emit_action(target,event==Rml::EventId::Change,event);
     }
 
@@ -319,7 +415,8 @@ private:
         const auto* document=target->GetOwnerDocument();
         const auto binding_source=inherited_attribute(target,"data-binding");
         const auto binding=Json::parse(binding_source,nullptr,false);
-        std::string value_json{"null"};
+        const auto inline_value=inline_form_value(target);if(!inline_value.allowed)return;
+        std::string value_json=inline_value.json;
         std::string control_value;
         if(auto* control=rmlui_dynamic_cast<Rml::ElementFormControl*>(target))control_value=control->GetValue();
         else if(auto* nested_input=target->QuerySelector("input"))
@@ -357,12 +454,13 @@ private:
         const auto* document=target->GetOwnerDocument();
         const auto binding_source=inherited_attribute(target,"data-binding");
         const auto binding=Json::parse(binding_source,nullptr,false);
+        const auto inline_value=inline_form_value(target);if(!inline_value.allowed)return;
         RetainedUiActionEvent action{.sequence=++sequence_,.kind=RetainedUiActionKind::invoke,
             .surface_id=inherited_attribute(target,"data-surface-id"),
             .document_id=document==nullptr?std::string{}:std::string(document->GetId()),
             .node_id=node_id,.action_id=action_id,
             .binding_json=binding.is_discarded()?Json{{"value",binding_source}}.dump():binding.dump(),
-            .value_json="null"};
+            .value_json=inline_value.json};
         if(events_.size()>=maximum_events){events_.pop_front();++dropped_events_;}
         events_.push_back(std::move(action));
     }
@@ -465,6 +563,16 @@ private:
     std::uint64_t dropped_events_{};
 };
 
+void collect_inline_controls(Rml::Element* element,const std::string_view semantic_id,
+                             std::vector<Rml::Element*>& controls) {
+    for(int index=0;index<element->GetNumChildren();++index) {
+        auto* child=element->GetChild(index);
+        if(child->HasAttribute("data-inline-field")&&semantic_id_for_element(child)==semantic_id)
+            controls.push_back(child);
+        collect_inline_controls(child,semantic_id,controls);
+    }
+}
+
 void collect_element_observations(Rml::Element* element, const std::string& semantic_parent, Json& nodes,
                                   Json& overflow_nodes) {
     auto next_parent = semantic_parent;
@@ -507,6 +615,20 @@ void collect_element_observations(Rml::Element* element, const std::string& sema
             observation["state"]["selected"]=element->GetAttribute<Rml::String>("data-selected","false")=="true";
         if(selectable_row_role(element->GetAttribute<Rml::String>("data-role","")))
             observation["state"]["focused"]=element->IsPseudoClassSet("focus");
+        std::vector<Rml::Element*> inline_controls;collect_inline_controls(element,semantic_id,inline_controls);
+        for(auto* inline_control:inline_controls)if(semantic_id_for_element(inline_control)==semantic_id) {
+            auto* control=rmlui_dynamic_cast<Rml::ElementFormControl*>(inline_control);
+            observation["inlineControls"].push_back({
+                {"id",inline_control->GetId()},
+                {"field",inline_control->GetAttribute<Rml::String>("data-inline-field","")},
+                {"type",inline_control->GetAttribute<Rml::String>("type",std::string(inline_control->GetTagName()))},
+                {"value",control==nullptr?std::string{}:control->GetValue()},
+                {"checked",inline_control->HasAttribute("checked")},
+                {"required",inline_control->GetAttribute<Rml::String>("data-required","false")=="true"},
+                {"layout",{{"x",inline_control->GetAbsoluteLeft()},{"y",inline_control->GetAbsoluteTop()},
+                    {"width",inline_control->GetOffsetWidth()},{"height",inline_control->GetOffsetHeight()}}}
+            });
+        }
         if (auto* input = element->QuerySelector("input")) {
             if (auto* control = rmlui_dynamic_cast<Rml::ElementFormControl*>(input))
                 observation["editableValue"] = control->GetValue();
@@ -1306,7 +1428,14 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
               ".collection-card-image{box-sizing:border-box;width:100%;height:48px;background:#0c1118;border-width:1px;border-color:#253143;}"
               ".collection-card-metadata{display:flex;flex-direction:column;width:100%;margin-top:3px;color:#91a0b4;font-size:11px;}"
               ".collection-card-meta{width:100%;overflow:hidden;}"
-              ".inline-actions{box-sizing:border-box;display:flex;flex-direction:row;justify-content:flex-end;width:100%;margin-top:4px;}"
+              ".inline-actions{box-sizing:border-box;display:flex;flex-direction:row;justify-content:flex-end;align-items:flex-end;width:100%;margin-top:4px;}"
+              ".inline-actions.has-forms{flex-direction:column;align-items:stretch;}"
+              ".inline-action-form{box-sizing:border-box;display:flex;flex-direction:row;align-items:flex-end;min-width:0;margin-left:5px;}"
+              ".has-forms .inline-action-form{width:100%;margin:3px 0 0 0;}.has-forms .inline-action-input{flex-grow:1;width:auto;}.has-forms .inline-confirmation-label{flex-grow:1;}.has-forms>.inline-action{align-self:flex-end;}"
+              ".inline-action-input{box-sizing:border-box;width:112px;height:24px;padding:2px 5px;background:#0c1118;color:" << escape_markup(text_color) << ";border-width:1px;border-color:#34445a;}"
+              ".inline-action-input:focus{border-color:" << escape_markup(accent_color) << ";}.inline-confirmation-label{display:flex;flex-direction:row;align-items:center;margin-left:4px;color:#aab6c7;font-size:11px;}"
+              ".inline-action-confirmation{width:18px;height:18px;margin-right:3px;background:#0c1118;border-width:1px;border-color:#4b607b;}"
+              ".inline-action-confirmation:checked{background:" << escape_markup(accent_color) << ";}.inline-required{color:#ffd08a;}"
               ".inline-action{box-sizing:border-box;min-width:28px;min-height:24px;margin-left:4px;padding:3px 7px;background:#202b39;color:" << escape_markup(text_color) << ";border-width:1px;border-color:#3a4a60;pointer-events:auto;}"
               ".inline-action:hover{background:#2a394c;border-color:" << escape_markup(accent_color) << ";}.inline-action:focus{background:#30445c;border-color:" << escape_markup(accent_color) << ";}"
               ".inline-action:disabled{background:#171c24;color:#647083;border-color:#29323f;opacity:0.5;}"
@@ -1501,18 +1630,54 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
                 if(found!=actions.end())inline_actions.push_back(&*found);
             }
             if(!inline_actions.empty()) {
-                output << "<div class=\"inline-actions\">";
+                const auto has_forms=std::ranges::any_of(inline_actions,[](const Json* action) {
+                    return inline_input_definition(*action).has_value()||
+                        inline_confirmation_definition(*action).has_value();
+                });
+                output << "<div class=\"inline-actions" << (has_forms?" has-forms":"") << "\">";
                 for(std::size_t index=0;index<inline_actions.size();++index) {
                     const auto& action=*inline_actions[index];
                     const auto action_id=action.value("id",std::string{});
                     const auto binding=action.contains("binding")?action.at("binding"):Json::object();
                     const auto label=action.contains("label")&&action.at("label").is_string()?
                         action.at("label").get<std::string>():action_id;
-                    output << "<button type=\"button\" id=\"" << escape_markup(id+".inline-action."+std::to_string(index))
+                    const auto input=inline_input_definition(action);
+                    auto confirmation=inline_confirmation_definition(action);
+                    if(input&&confirmation&&input->field==confirmation->field)confirmation.reset();
+                    const auto has_form=input.has_value()||confirmation.has_value();
+                    const auto control_id=id+".inline-action."+std::to_string(index);
+                    if(has_form)output << "<div class=\"inline-action-form\" data-inline-action-form=\"true\">";
+                    if(input) {
+                        if(input->control=="text")
+                            output << "<input type=\"text\" id=\"" << escape_markup(control_id+".input")
+                                   << "\" class=\"inline-action-input inline-action-control\" data-inline-field=\""
+                                   << escape_markup(input->field) << "\" value=\"" << escape_markup(input->value)
+                                   << "\" placeholder=\"" << escape_markup(input->placeholder) << "\" maxlength=\""
+                                   << input->max_length << "\"/>";
+                        else {
+                            output << "<select id=\"" << escape_markup(control_id+".input")
+                                   << "\" class=\"inline-action-input inline-action-control\" data-inline-field=\""
+                                   << escape_markup(input->field) << "\">";
+                            for(const auto& [value,option_label]:input->options)
+                                output << "<option value=\"" << escape_markup(value) << "\""
+                                       << (value==input->value?" selected":"") << ">"
+                                       << escape_markup(option_label) << "</option>";
+                            output << "</select>";
+                        }
+                    }
+                    if(confirmation)
+                        output << "<label class=\"inline-confirmation-label" << (confirmation->required?" inline-required":"")
+                               << "\"><input type=\"checkbox\" id=\"" << escape_markup(control_id+".confirmation")
+                               << "\" class=\"inline-action-confirmation inline-action-control\" data-inline-field=\""
+                               << escape_markup(confirmation->field) << "\" data-required=\""
+                               << (confirmation->required?"true":"false") << "\"/>"
+                               << escape_markup(confirmation->label) << "</label>";
+                    output << "<button type=\"button\" id=\"" << escape_markup(control_id)
                            << "\" class=\"inline-action\" data-inline-action=\"true\" data-inline-action-id=\""
                            << escape_markup(action_id) << "\" data-action=\"" << escape_markup(action_id)
                            << "\" data-binding=\"" << escape_markup(binding.dump()) << "\">"
                            << escape_markup(label) << "</button>";
+                    if(has_form)output << "</div>";
                 }
                 output << "</div>";
             }

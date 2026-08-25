@@ -2249,7 +2249,9 @@ int Application::run_interactive() {
         for(const auto& action:retained_ui.consume_action_events()) {
             const auto retained_authoring_action=action.action_id=="outliner.create-empty"||
                 action.action_id=="outliner.copy"||action.action_id=="outliner.duplicate"||
-                action.action_id=="outliner.paste"||action.action_id=="asset.import"||
+                action.action_id=="outliner.paste"||action.action_id=="outliner.rename"||
+                action.action_id=="outliner.reparent"||action.action_id=="outliner.delete"||
+                action.action_id=="asset.import"||
                 action.action_id=="asset.inspect"||action.action_id=="asset.build-preview"||
                 action.action_id=="asset.cook";
             if(!options_.player_mode&&retained_authoring_action&&

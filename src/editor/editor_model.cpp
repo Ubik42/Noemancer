@@ -245,16 +245,40 @@ std::string EditorModel::outliner_semantic_ui_document_json(
         Json actions = Json::array({action("outliner.select", "EditorModel.select_object",
             entity_binding("editor-entity-selection", "select"), true)});
         if (authority.writable && selected_entity) {
-            actions.push_back(action("outliner.rename", "EditorModel.rename_selected",
-                entity_binding("editor-entity-action", "rename"), true));
+            auto rename_action = action("outliner.rename", "EditorModel.rename_selected",
+                entity_binding("editor-entity-action", "rename"), true);
+            rename_action["input"] = {{"field", "displayName"}, {"control", "text"},
+                {"value", object->name}, {"placeholder", "Display name"}, {"maxLength", 128U}};
+            actions.push_back(std::move(rename_action));
             actions.push_back(action("outliner.copy", "EditorModel.copy_selected",
                 entity_binding("editor-entity-action", "copy"), true));
             actions.push_back(action("outliner.duplicate", "EditorModel.duplicate_selected",
                 entity_binding("editor-entity-action", "duplicate"), true));
-            actions.push_back(action("outliner.reparent", "EditorModel.reparent_entity",
-                entity_binding("editor-entity-action", "reparent"), true));
-            actions.push_back(action("outliner.delete", "EditorModel.delete_selected",
-                entity_binding("editor-entity-action", "delete"), true));
+            auto reparent_action = action("outliner.reparent", "EditorModel.reparent_entity",
+                entity_binding("editor-entity-action", "reparent"), true);
+            Json parent_options = Json::array({Json{{"value", ""}, {"label", "Scene Root"}}});
+            for (const auto* candidate : hierarchy) {
+                if (parent_options.size() >= 256U) break;
+                if (candidate->id == object->id) continue;
+                auto ancestor_id = candidate->parent_id;
+                auto would_create_cycle = false;
+                while (!ancestor_id.empty()) {
+                    if (ancestor_id == object->id) { would_create_cycle = true; break; }
+                    const auto ancestor = by_id.find(ancestor_id);
+                    if (ancestor == by_id.end()) break;
+                    ancestor_id = ancestor->second->parent_id;
+                }
+                if (would_create_cycle) continue;
+                parent_options.push_back({{"value", candidate->id}, {"label", candidate->name}});
+            }
+            reparent_action["input"] = {{"field", "parentEntityId"}, {"control", "combo"},
+                {"value", object->parent_id}, {"options", std::move(parent_options)}};
+            actions.push_back(std::move(reparent_action));
+            auto delete_action = action("outliner.delete", "EditorModel.delete_selected",
+                entity_binding("editor-entity-action", "delete"), true);
+            delete_action["confirmation"] = {{"field", "confirmed"},
+                {"label", "Confirm recursive delete"}, {"required", true}};
+            actions.push_back(std::move(delete_action));
         }
         nodes.push_back({
             {"id", "editor.outliner.entity." + object->id},
@@ -262,7 +286,8 @@ std::string EditorModel::outliner_semantic_ui_document_json(
                 Json("editor.panel.outliner")},
             {"role", "treeitem"}, {"label", object->name},
             {"presentation", {{"inlineActionIds", authority.writable && selected_entity ?
-                Json::array({"outliner.copy", "outliner.duplicate"}) : Json::array()}}},
+                Json::array({"outliner.rename", "outliner.copy", "outliner.duplicate",
+                    "outliner.reparent", "outliner.delete"}) : Json::array()}}},
             {"entity", {{"id", object->id}, {"parentId", object->parent_id.empty() ? Json(nullptr) : Json(object->parent_id)},
                 {"type", object->kind}, {"revision", object->revision}}},
             {"state", {{"visible", true}, {"enabled", true}, {"editable", authority.writable},

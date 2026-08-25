@@ -8,6 +8,7 @@
 #include <iostream>
 
 int main() {
+    try {
     noemancer::World world;
     if (!world.load_scene(noemancer::make_bootstrap_scene_document()).success) return 1;
 
@@ -289,43 +290,102 @@ int main() {
             limit_actions.push_back({{"id",action_id},{"label","Limit "+std::to_string(index)},
                 {"state",{{"enabled",true}}},{"binding",{{"index",index}}}});
         }
+        nlohmann::json excessive_options=nlohmann::json::array();
+        for(std::size_t index=0;index<257U;++index)
+            excessive_options.push_back({{"value",std::to_string(index)},{"label","Option "+std::to_string(index)}});
         const auto multi_action_document=nlohmann::json{{"schemaVersion","noemancer.ui-document/0.1"},
             {"documentId","ui.multi-action"},{"nodes",nlohmann::json::array({
                 {{"id","ui.multi"},{"role","list-item"},{"label","Multiple actions"},
                     {"state",{{"enabled",true}}},
-                    {"presentation",{{"inlineActionIds",{"action.alpha","action.beta","action.disabled","action.unknown",oversized_action_id}}}},
+                    {"presentation",{{"inlineActionIds",{"action.alpha","action.beta","action.text","action.combo","action.disabled","action.unknown",oversized_action_id}}}},
                     {"actions",nlohmann::json::array({
                         {{"id","action.main"},{"binding",{{"scope","main"}}}},
                         {{"id","action.alpha"},{"label","Alpha"},{"state",{{"enabled",true}}},{"binding",{{"scope","alpha"},{"revision",11}}}},
                         {{"id","action.beta"},{"label","Beta"},{"state",{{"enabled",true}}},{"binding",{{"scope","beta"},{"revision",22}}}},
+                        {{"id","action.text"},{"label","Rename"},{"state",{{"enabled",true}}},{"binding",{{"scope","text"}}},
+                            {"input",{{"field","name"},{"control","text"},{"value","draft"},{"placeholder","Name"},{"maxLength",32}}},
+                            {"confirmation",{{"field","confirmed"},{"label","Confirm"},{"required",true}}}},
+                        {{"id","action.combo"},{"label","Mode"},{"state",{{"enabled",true}}},{"binding",{{"scope","combo"}}},
+                            {"input",{{"field","mode"},{"control","combo"},{"value","fast"},
+                                {"options",nlohmann::json::array({{{"value","safe"},{"label","Safe"}},{{"value","fast"},{"label","Fast"}}})}}}},
                         {{"id","action.disabled"},{"label","Disabled"},{"state",{{"enabled",false}}},{"binding",{{"scope","disabled"}}}},
                         {{"id",oversized_action_id},{"state",{{"enabled",true}}}}
                     })}},
                 {{"id","ui.limit"},{"role","list-item"},{"label","Bounded actions"},
-                    {"state",{{"enabled",true}}},{"presentation",{{"inlineActionIds",limit_ids}}},{"actions",limit_actions}}
+                    {"state",{{"enabled",true}}},{"presentation",{{"inlineActionIds",limit_ids}}},{"actions",limit_actions}},
+                {{"id","ui.invalid-form"},{"role","list-item"},{"label","Invalid form"},{"state",{{"enabled",true}}},
+                    {"presentation",{{"inlineActionIds",{"action.invalid-form"}}}},
+                    {"actions",nlohmann::json::array({{{"id","action.invalid-form"},{"state",{{"enabled",true}}},
+                        {"input",{{"field","mode"},{"control","combo"},{"options",excessive_options}}}}})}}
             })}};
         const auto multi_action_rml=noemancer::retained_ui_rml_from_semantic_document(multi_action_document.dump());
         if(multi_action_rml.find("data-action=\"action.main\"")==std::string::npos||
            multi_action_rml.find("data-inline-action-id=\"action.alpha\"")==std::string::npos||
            multi_action_rml.find("data-inline-action-id=\"action.beta\"")==std::string::npos||
+           multi_action_rml.find("id=\"ui.multi.inline-action.2.input\"")==std::string::npos||
+           multi_action_rml.find("id=\"ui.multi.inline-action.2.confirmation\"")==std::string::npos||
+           multi_action_rml.find("<select id=\"ui.multi.inline-action.3.input\"")==std::string::npos||
+           multi_action_rml.find("id=\"ui.invalid-form.inline-action.0.input\"")!=std::string::npos||
            multi_action_rml.find("data-inline-action-id=\"action.disabled\"")!=std::string::npos||
            multi_action_rml.find("action.unknown")!=std::string::npos||
            multi_action_rml.find(oversized_action_id)!=std::string::npos||
            multi_action_rml.find("data-inline-action-id=\"limit.7\"")==std::string::npos||
-           multi_action_rml.find("data-inline-action-id=\"limit.8\"")!=std::string::npos||
-           !binary_runtime.load_document("ui.multi-action",multi_action_rml))return 61;
-        if(!binary_runtime.focus_node("ui.multi-action","ui.multi.inline-action.0"))return 62;
-        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::enter,true));
+           multi_action_rml.find("data-inline-action-id=\"limit.8\"")!=std::string::npos)return 61;
+        constexpr std::string_view form_surface="ui.form-test";
+        if(!binary_runtime.create_surface(form_surface,1280U,720U)||
+           !binary_runtime.load_surface_document(form_surface,"ui.multi-action",multi_action_rml))return 61;
+        if(!binary_runtime.focus_surface_node(form_surface,"ui.multi-action","ui.multi.inline-action.0"))return 62;
+        static_cast<void>(binary_runtime.surface_key(form_surface,noemancer::RetainedUiKey::enter,true));
         const auto alpha_actions=binary_runtime.consume_action_events();
         if(alpha_actions.size()!=1U||alpha_actions.front().node_id!="ui.multi"||
            alpha_actions.front().action_id!="action.alpha"||
+           alpha_actions.front().value_json!="null"||
            nlohmann::json::parse(alpha_actions.front().binding_json)!=nlohmann::json{{"revision",11},{"scope","alpha"}})return 63;
-        if(!binary_runtime.focus_node("ui.multi-action","ui.multi.inline-action.1"))return 64;
-        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::enter,true));
+        if(!binary_runtime.focus_surface_node(form_surface,"ui.multi-action","ui.multi.inline-action.1"))return 64;
+        static_cast<void>(binary_runtime.surface_key(form_surface,noemancer::RetainedUiKey::enter,true));
         const auto beta_actions=binary_runtime.consume_action_events();
         if(beta_actions.size()!=1U||beta_actions.front().node_id!="ui.multi"||
            beta_actions.front().action_id!="action.beta"||
+           beta_actions.front().value_json!="null"||
            nlohmann::json::parse(beta_actions.front().binding_json)!=nlohmann::json{{"revision",22},{"scope","beta"}})return 65;
+        if(!binary_runtime.focus_surface_node(form_surface,"ui.multi-action","ui.multi.inline-action.2"))return 67;
+        static_cast<void>(binary_runtime.surface_key(form_surface,noemancer::RetainedUiKey::enter,true));
+        if(!binary_runtime.consume_action_events().empty())return 68;
+        if(!binary_runtime.focus_surface_node(form_surface,"ui.multi-action","ui.multi.inline-action.2.input"))return 69;
+        static_cast<void>(binary_runtime.surface_text_input(form_surface,"-edited"));
+        static_cast<void>(binary_runtime.surface_key(form_surface,noemancer::RetainedUiKey::enter,true));
+        if(!binary_runtime.update_surface(form_surface)||!binary_runtime.render_surface(form_surface)||
+           !binary_runtime.consume_action_events().empty())return 70;
+        auto multi_observation=nlohmann::json::parse(binary_runtime.surface_observation_json(form_surface,"ui.multi-action"));
+        nlohmann::json confirmation_control;
+        for(const auto& node:multi_observation.at("nodes"))if(node.at("id")=="ui.multi")
+            for(const auto& control:node.at("inlineControls"))
+                if(control.at("id")=="ui.multi.inline-action.2.confirmation")confirmation_control=control;
+        if(confirmation_control.empty()||!confirmation_control.at("required").get<bool>())return 71;
+        const auto confirmation_layout=confirmation_control.at("layout");
+        static_cast<void>(binary_runtime.surface_pointer_move(form_surface,
+            static_cast<int>(confirmation_layout.at("x").get<float>()+confirmation_layout.at("width").get<float>()*0.5F),
+            static_cast<int>(confirmation_layout.at("y").get<float>()+confirmation_layout.at("height").get<float>()*0.5F)));
+        static_cast<void>(binary_runtime.surface_pointer_button(form_surface,0,true));
+        static_cast<void>(binary_runtime.surface_pointer_button(form_surface,0,false));
+        if(!binary_runtime.consume_action_events().empty()||
+           !binary_runtime.focus_surface_node(form_surface,"ui.multi-action","ui.multi.inline-action.2"))return 72;
+        static_cast<void>(binary_runtime.surface_key(form_surface,noemancer::RetainedUiKey::enter,true));
+        const auto text_form_actions=binary_runtime.consume_action_events();
+        const auto text_form_value=text_form_actions.empty()?nlohmann::json{}:
+            nlohmann::json::parse(text_form_actions.front().value_json);
+        if(text_form_actions.size()!=1U||text_form_actions.front().action_id!="action.text"||
+           nlohmann::json::parse(text_form_actions.front().binding_json)!=nlohmann::json{{"scope","text"}}||
+           !text_form_value.value("confirmed",false)||
+           text_form_value.value("name",std::string{}).find("draft")==std::string::npos||
+           text_form_value.value("name",std::string{}).find("edited")==std::string::npos)return 73;
+        if(!binary_runtime.focus_surface_node(form_surface,"ui.multi-action","ui.multi.inline-action.3"))return 74;
+        static_cast<void>(binary_runtime.surface_key(form_surface,noemancer::RetainedUiKey::enter,true));
+        const auto combo_form_actions=binary_runtime.consume_action_events();
+        if(combo_form_actions.size()!=1U||combo_form_actions.front().action_id!="action.combo"||
+           nlohmann::json::parse(combo_form_actions.front().binding_json)!=nlohmann::json{{"scope","combo"}}||
+           nlohmann::json::parse(combo_form_actions.front().value_json)!=nlohmann::json{{"mode","fast"}}||
+           !binary_runtime.destroy_surface(form_surface))return 75;
         if(!binary_runtime.focus_node("ui.grid","item.0"))return 66;
         static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::right,true));
         static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::down,true));
@@ -446,4 +506,8 @@ int main() {
     }
 
     return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "Unhandled retained UI runtime test exception: " << error.what() << '\n';
+        return 99;
+    }
 }

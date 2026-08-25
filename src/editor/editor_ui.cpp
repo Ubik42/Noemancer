@@ -317,7 +317,9 @@ std::string EditorUi::invoke_retained_authoring_action(
     constexpr std::size_t maximum_binding_bytes = 16U * 1024U;
     constexpr std::size_t maximum_value_bytes = 16U * 1024U;
     const auto world_action = action_id == "outliner.create-empty" || action_id == "outliner.copy" ||
-        action_id == "outliner.duplicate" || action_id == "outliner.paste";
+        action_id == "outliner.duplicate" || action_id == "outliner.paste" ||
+        action_id == "outliner.rename" || action_id == "outliner.reparent" ||
+        action_id == "outliner.delete";
     const auto asset_action = action_id == "asset.import" || action_id == "asset.inspect" ||
         action_id == "asset.build-preview" || action_id == "asset.cook";
     const auto source_revision_before = world_action ? model_.world_revision() : [&] {
@@ -367,6 +369,12 @@ std::string EditorUi::invoke_retained_authoring_action(
                 character == '_' || character == '-' || character == ':' || character == '/';
         });
     };
+    const auto string_member = [](const nlohmann::json& object, const std::string_view key)
+        -> std::optional<std::string> {
+        const auto found = object.find(key);
+        if (found == object.end() || !found->is_string()) return std::nullopt;
+        return found->get<std::string>();
+    };
 
     EditorSceneAction result;
     std::string entity_id;
@@ -376,41 +384,83 @@ std::string EditorUi::invoke_retained_authoring_action(
             return fail("retained-action.world-read-only", "Edit World authoring is unavailable while Play or script compilation owns the surface.");
         const auto expected_kind = action_id == "outliner.create-empty" ? "editor-entity-create" :
             action_id == "outliner.paste" ? "editor-entity-paste" : "editor-entity-action";
-        if (binding.value("kind", std::string{}) != expected_kind)
+        const auto binding_kind = string_member(binding, "kind");
+        if (!binding_kind || *binding_kind != expected_kind)
             return fail("retained-action.binding-kind-mismatch", "The binding kind does not match this Outliner action.");
         if (expected_kind == std::string_view("editor-entity-action")) {
-            entity_id = binding.value("entityId", std::string{});
-            if (!stable_id(entity_id))
+            const auto bound_entity_id = string_member(binding, "entityId");
+            if (!bound_entity_id || !stable_id(*bound_entity_id))
                 return fail("retained-action.entity-id-invalid", "The binding must contain a stable entityId.");
-            const auto expected_operation=action_id=="outliner.copy"?"copy":"duplicate";
-            if(binding.value("operation",std::string{})!=expected_operation)
+            entity_id = *bound_entity_id;
+            const auto expected_operation=action_id=="outliner.copy"?"copy":
+                action_id=="outliner.duplicate"?"duplicate":action_id=="outliner.rename"?"rename":
+                action_id=="outliner.reparent"?"reparent":"delete";
+            const auto operation = string_member(binding, "operation");
+            if(!operation || *operation!=expected_operation)
                 return fail("retained-action.operation-mismatch", "The binding operation does not match this Outliner action.");
             if (model_.selected_object_ids().empty() || model_.selected_object().id != entity_id)
                 return fail("retained-action.selection-mismatch", "The bound entity is no longer the primary EditorModel selection.");
+            const auto entity_revision = binding.find("entityRevision");
+            if (entity_revision == binding.end() || !entity_revision->is_number_unsigned())
+                return fail("retained-action.entity-revision-required", "The entity action binding must contain an unsigned entityRevision.");
+            if (entity_revision->get<std::uint64_t>() != model_.selected_object().revision)
+                return fail("retained-action.stale-entity-revision", "The selected entity changed; observe its Outliner node again before invoking this action.");
         }
         if (action_id == "outliner.create-empty") {
-            const auto display_name = value.value("displayName", std::string{"Empty Entity"});
-            const auto parent_id = value.value("parentEntityId", std::string{});
+            const auto display = value.find("displayName");
+            const auto parent = value.find("parentEntityId");
+            if ((display != value.end() && !display->is_string()) ||
+                (parent != value.end() && !parent->is_string()))
+                return fail("retained-action.value-invalid", "Create Empty displayName and parentEntityId must be strings.");
+            const auto display_name = display == value.end() ? std::string{"Empty Entity"} : display->get<std::string>();
+            const auto parent_id = parent == value.end() ? std::string{} : parent->get<std::string>();
             if (display_name.empty() || display_name.size() > 256U ||
                 (!parent_id.empty() && !stable_id(parent_id)))
                 return fail("retained-action.value-invalid", "Create Empty requires a bounded displayName and optional stable parentEntityId.");
             result = model_.create_empty_entity(display_name, parent_id);
         } else if (action_id == "outliner.copy") result = model_.copy_selected();
         else if (action_id == "outliner.duplicate") result = model_.duplicate_selected();
-        else result = model_.paste_copied();
+        else if (action_id == "outliner.paste") result = model_.paste_copied();
+        else if (action_id == "outliner.rename") {
+            const auto display_name = value.find("displayName");
+            if (display_name == value.end() || !display_name->is_string() ||
+                display_name->get_ref<const std::string&>().empty() ||
+                display_name->get_ref<const std::string&>().size() > 128U)
+                return fail("retained-action.value-invalid", "Rename requires a non-empty string displayName of at most 128 bytes.");
+            result = model_.rename_selected(display_name->get_ref<const std::string&>());
+        } else if (action_id == "outliner.reparent") {
+            const auto parent = value.find("parentEntityId");
+            if (parent == value.end() || !parent->is_string())
+                return fail("retained-action.value-invalid", "Reparent requires parentEntityId as a string; an empty string selects the root.");
+            const auto& parent_id = parent->get_ref<const std::string&>();
+            if (!parent_id.empty() && !stable_id(parent_id))
+                return fail("retained-action.value-invalid", "Reparent parentEntityId must be empty or a stable ID.");
+            result = model_.reparent_entity(entity_id, parent_id);
+        } else {
+            const auto confirmed = value.find("confirmed");
+            if (confirmed == value.end() || !confirmed->is_boolean() || !confirmed->get<bool>())
+                return fail("retained-action.confirmation-required", "Delete requires value.confirmed=true.");
+            const auto recursive = value.find("recursive");
+            if (recursive != value.end() && (!recursive->is_boolean() || !recursive->get<bool>()))
+                return fail("retained-action.confirmation-required", "Delete is currently limited to confirmed recursive deletion.");
+            result = model_.delete_selected(true);
+        }
         entity_id = result.entity_id.empty() ? entity_id : result.entity_id;
     } else {
-        if (binding.value("kind", std::string{}) != "editor-asset-action")
+        const auto binding_kind = string_member(binding, "kind");
+        if (!binding_kind || *binding_kind != "editor-asset-action")
             return fail("retained-action.binding-kind-mismatch", "The binding kind does not match this Asset Browser action.");
-        asset_id = binding.value("assetId", std::string{});
-        if (!stable_id(asset_id))
+        const auto bound_asset_id = string_member(binding, "assetId");
+        if (!bound_asset_id || !stable_id(*bound_asset_id))
             return fail("retained-action.asset-id-invalid", "The binding must contain a stable assetId.");
+        asset_id = *bound_asset_id;
         const auto* selected = model_.selected_asset();
         if (selected == nullptr || selected->id != asset_id)
             return fail("retained-action.selection-mismatch", "The bound asset is no longer the EditorModel selection.");
         const auto expected_operation=action_id=="asset.import"?"import":action_id=="asset.inspect"?"inspect":
             action_id=="asset.build-preview"?"build-preview":"cook";
-        if(binding.value("operation",std::string{})!=expected_operation)
+        const auto operation = string_member(binding, "operation");
+        if(!operation || *operation!=expected_operation)
             return fail("retained-action.operation-mismatch", "The binding operation does not match this Asset Browser action.");
         const auto job = nlohmann::json::parse(model_.active_asset_job_json(), nullptr, false);
         const auto job_state = job.is_object() ? job.value("state", std::string{"idle"}) : std::string{"invalid"};
@@ -420,7 +470,11 @@ std::string EditorUi::invoke_retained_authoring_action(
         else if (action_id == "asset.inspect") result = model_.inspect_selected_asset();
         else if (action_id == "asset.build-preview") result = model_.generate_selected_asset_thumbnail();
         else {
-            const auto target = value.value("targetProfile", std::string{"windows-x64-debug"});
+            const auto target_value = value.find("targetProfile");
+            if (target_value != value.end() && !target_value->is_string())
+                return fail("retained-action.value-invalid", "Cook targetProfile must be a string.");
+            const auto target = target_value == value.end() ? std::string{"windows-x64-debug"} :
+                target_value->get<std::string>();
             if (!stable_id(target))
                 return fail("retained-action.value-invalid", "Cook requires a stable targetProfile identifier.");
             result = model_.cook_selected_asset(target);
