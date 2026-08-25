@@ -309,6 +309,127 @@ bool EditorUi::select_asset(const std::string_view asset_id) noexcept {
     return true;
 }
 
+std::string EditorUi::invoke_retained_authoring_action(
+    const std::string_view action_id,
+    const std::string_view binding_json,
+    const std::string_view value_json) {
+    constexpr std::size_t maximum_action_id_bytes = 128U;
+    constexpr std::size_t maximum_binding_bytes = 16U * 1024U;
+    constexpr std::size_t maximum_value_bytes = 16U * 1024U;
+    const auto world_action = action_id == "outliner.create-empty" || action_id == "outliner.copy" ||
+        action_id == "outliner.duplicate" || action_id == "outliner.paste";
+    const auto asset_action = action_id == "asset.import" || action_id == "asset.inspect" ||
+        action_id == "asset.build-preview" || action_id == "asset.cook";
+    const auto source_revision_before = world_action ? model_.world_revision() : [&] {
+        const auto status = nlohmann::json::parse(model_.asset_registry_status_json(), nullptr, false);
+        return status.is_object() ? status.value("revision", std::uint64_t{}) : std::uint64_t{};
+    }();
+    const auto finish = [&](const bool success, std::string code, std::string detail,
+                            const std::uint64_t revision_after,
+                            const std::string_view entity_id = {},
+                            const std::string_view asset_id = {}) {
+        last_action_status_ = std::string(action_id.empty() ? "retained action" : action_id) + ": " + detail;
+        synchronize_editor_context_revision();
+        return nlohmann::json{
+            {"schemaVersion", "noemancer.retained-authoring-action-receipt/0.1"},
+            {"success", success}, {"code", std::move(code)}, {"detail", std::move(detail)},
+            {"actionId", std::string(action_id.substr(0U, maximum_action_id_bytes))},
+            {"sourceRevisionBefore", source_revision_before},
+            {"sourceRevisionAfter", revision_after}, {"revision", revision_after},
+            {"editorContextRevision", editor_context_revision_},
+            {"entityId", entity_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(entity_id)},
+            {"assetId", asset_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(asset_id)}}.dump();
+    };
+    const auto fail = [&](std::string code, std::string detail) {
+        return finish(false, std::move(code), std::move(detail), source_revision_before);
+    };
+    if (action_id.empty() || action_id.size() > maximum_action_id_bytes)
+        return fail("retained-action.action-id-invalid", "The retained action ID must be non-empty and bounded.");
+    if (!world_action && !asset_action)
+        return fail("retained-action.unsupported", "This retained action is unavailable or requires explicit confirmation/input.");
+    if (binding_json.size() > maximum_binding_bytes || value_json.size() > maximum_value_bytes)
+        return fail("retained-action.payload-too-large", "The retained action binding or value exceeds its 16 KiB budget.");
+    const auto binding = nlohmann::json::parse(binding_json, nullptr, false);
+    const auto value = nlohmann::json::parse(value_json, nullptr, false);
+    if (!binding.is_object())
+        return fail("retained-action.binding-invalid", "The retained action binding must be a JSON object.");
+    if (!value.is_object())
+        return fail("retained-action.value-invalid", "The retained action value must be a JSON object.");
+    const auto source_revision = binding.find("sourceRevision");
+    if (source_revision == binding.end() || !source_revision->is_number_unsigned())
+        return fail("retained-action.source-revision-required", "The binding must contain an unsigned sourceRevision.");
+    if (source_revision->get<std::uint64_t>() != source_revision_before)
+        return fail("retained-action.stale-source-revision", "The retained document is stale; observe the surface again before invoking its action.");
+    const auto stable_id = [](const std::string_view id) {
+        if (id.empty() || id.size() > 256U) return false;
+        return std::ranges::all_of(id, [](const unsigned char character) {
+            return character >= 0x80U || std::isalnum(character) != 0 || character == '.' ||
+                character == '_' || character == '-' || character == ':' || character == '/';
+        });
+    };
+
+    EditorSceneAction result;
+    std::string entity_id;
+    std::string asset_id;
+    if (world_action) {
+        if (simulation_state_ != EditorSimulationState::edit || script_compile_busy_)
+            return fail("retained-action.world-read-only", "Edit World authoring is unavailable while Play or script compilation owns the surface.");
+        const auto expected_kind = action_id == "outliner.create-empty" ? "editor-entity-create" :
+            action_id == "outliner.paste" ? "editor-entity-paste" : "editor-entity-action";
+        if (binding.value("kind", std::string{}) != expected_kind)
+            return fail("retained-action.binding-kind-mismatch", "The binding kind does not match this Outliner action.");
+        if (expected_kind == std::string_view("editor-entity-action")) {
+            entity_id = binding.value("entityId", std::string{});
+            if (!stable_id(entity_id))
+                return fail("retained-action.entity-id-invalid", "The binding must contain a stable entityId.");
+            const auto expected_operation=action_id=="outliner.copy"?"copy":"duplicate";
+            if(binding.value("operation",std::string{})!=expected_operation)
+                return fail("retained-action.operation-mismatch", "The binding operation does not match this Outliner action.");
+            if (model_.selected_object_ids().empty() || model_.selected_object().id != entity_id)
+                return fail("retained-action.selection-mismatch", "The bound entity is no longer the primary EditorModel selection.");
+        }
+        if (action_id == "outliner.create-empty") {
+            const auto display_name = value.value("displayName", std::string{"Empty Entity"});
+            const auto parent_id = value.value("parentEntityId", std::string{});
+            if (display_name.empty() || display_name.size() > 256U ||
+                (!parent_id.empty() && !stable_id(parent_id)))
+                return fail("retained-action.value-invalid", "Create Empty requires a bounded displayName and optional stable parentEntityId.");
+            result = model_.create_empty_entity(display_name, parent_id);
+        } else if (action_id == "outliner.copy") result = model_.copy_selected();
+        else if (action_id == "outliner.duplicate") result = model_.duplicate_selected();
+        else result = model_.paste_copied();
+        entity_id = result.entity_id.empty() ? entity_id : result.entity_id;
+    } else {
+        if (binding.value("kind", std::string{}) != "editor-asset-action")
+            return fail("retained-action.binding-kind-mismatch", "The binding kind does not match this Asset Browser action.");
+        asset_id = binding.value("assetId", std::string{});
+        if (!stable_id(asset_id))
+            return fail("retained-action.asset-id-invalid", "The binding must contain a stable assetId.");
+        const auto* selected = model_.selected_asset();
+        if (selected == nullptr || selected->id != asset_id)
+            return fail("retained-action.selection-mismatch", "The bound asset is no longer the EditorModel selection.");
+        const auto expected_operation=action_id=="asset.import"?"import":action_id=="asset.inspect"?"inspect":
+            action_id=="asset.build-preview"?"build-preview":"cook";
+        if(binding.value("operation",std::string{})!=expected_operation)
+            return fail("retained-action.operation-mismatch", "The binding operation does not match this Asset Browser action.");
+        const auto job = nlohmann::json::parse(model_.active_asset_job_json(), nullptr, false);
+        const auto job_state = job.is_object() ? job.value("state", std::string{"idle"}) : std::string{"invalid"};
+        if (job_state == "queued" || job_state == "running" || job_state == "cancelling")
+            return fail("retained-action.asset-job-busy", "Another Asset Job is active; wait, cancel, or reconcile it before invoking another action.");
+        if (action_id == "asset.import") result = model_.import_selected_asset();
+        else if (action_id == "asset.inspect") result = model_.inspect_selected_asset();
+        else if (action_id == "asset.build-preview") result = model_.generate_selected_asset_thumbnail();
+        else {
+            const auto target = value.value("targetProfile", std::string{"windows-x64-debug"});
+            if (!stable_id(target))
+                return fail("retained-action.value-invalid", "Cook requires a stable targetProfile identifier.");
+            result = model_.cook_selected_asset(target);
+        }
+    }
+    if (result.success) refresh_visible_state();
+    return finish(result.success, result.code, result.detail, result.revision, entity_id, asset_id);
+}
+
 void EditorUi::render() {
     poll_script_compile_job();
     ImGuizmo::BeginFrame();

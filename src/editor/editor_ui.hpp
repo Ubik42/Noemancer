@@ -218,6 +218,12 @@ public:
     [[nodiscard]] std::optional<SceneWindowPosition> retained_asset_browser_window_at(std::int32_t surface_x,std::int32_t surface_y) const;
     [[nodiscard]] bool select_entity(std::string_view entity_id);
     [[nodiscard]] bool select_asset(std::string_view asset_id) noexcept;
+    // Revision-bound bridge used by retained surfaces. The binding and value
+    // stay plain JSON; all mutations still execute through EditorModel.
+    [[nodiscard]] std::string invoke_retained_authoring_action(
+        std::string_view action_id,
+        std::string_view binding_json,
+        std::string_view value_json = "{}");
     [[nodiscard]] EditorUiContextSnapshot editor_context_snapshot() const;
     [[nodiscard]] std::string editor_context_snapshot_json() const;
     [[nodiscard]] EditorUiContextApplyReceipt apply_editor_context_intent(

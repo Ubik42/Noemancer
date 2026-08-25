@@ -2247,6 +2247,23 @@ int Application::run_interactive() {
         }
 
         for(const auto& action:retained_ui.consume_action_events()) {
+            const auto retained_authoring_action=action.action_id=="outliner.create-empty"||
+                action.action_id=="outliner.copy"||action.action_id=="outliner.duplicate"||
+                action.action_id=="outliner.paste"||action.action_id=="asset.import"||
+                action.action_id=="asset.inspect"||action.action_id=="asset.build-preview"||
+                action.action_id=="asset.cook";
+            if(!options_.player_mode&&retained_authoring_action&&
+               (action.surface_id=="editor.outliner"||action.surface_id=="editor.asset-browser")) {
+                const auto receipt=editor_ui_.invoke_retained_authoring_action(
+                    action.action_id,action.binding_json,
+                    action.value_json.empty()?std::string_view{"{}"}:std::string_view{action.value_json});
+                const auto parsed=nlohmann::json::parse(receipt,nullptr,false);
+                if(parsed.is_object()&&parsed.value("success",false)) {
+                    retained_outliner_document_cache.clear();retained_asset_browser_document_cache.clear();
+                    logger_.info("ui.retained_authoring_action",receipt);
+                } else logger_.error("ui.retained_authoring_action",receipt);
+                continue;
+            }
             if(!options_.player_mode&&action.surface_id=="editor.asset-browser"&&
                (action.action_id=="asset-browser.previous-page"||action.action_id=="asset-browser.next-page")) {
                 const auto binding=nlohmann::json::parse(action.binding_json,nullptr,false);

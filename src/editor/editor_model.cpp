@@ -210,37 +210,59 @@ std::string EditorModel::outliner_semantic_ui_document_json(
     const auto primary = by_id.contains(authority.primary_selected_object_id) ?
         std::string(authority.primary_selected_object_id) : std::string{};
 
-    const auto action = [](const std::string_view id, const std::string_view handler) {
-        return Json{{"id", id}, {"dispatch", "existing-editor-model"}, {"handler", handler}};
+    const auto action = [](const std::string_view id, const std::string_view handler,
+                           Json binding, const bool enabled, const bool busy = false) {
+        const auto label = id == "outliner.create-empty" ? "Create" :
+            id == "outliner.paste" ? "Paste" : id == "outliner.rename" ? "Rename" :
+            id == "outliner.copy" ? "Copy" : id == "outliner.duplicate" ? "Duplicate" :
+            id == "outliner.reparent" ? "Reparent" : id == "outliner.delete" ? "Delete" :
+            id == "outliner.select" ? "Select" : id;
+        return Json{{"id", id}, {"label", label}, {"dispatch", "existing-editor-model"}, {"handler", handler},
+            {"binding", std::move(binding)}, {"state", {{"enabled", enabled}, {"busy", busy}}}};
     };
     Json panel_actions = Json::array();
     if (authority.writable) {
-        panel_actions.push_back(action("outliner.create-empty", "EditorModel.create_empty_entity"));
-        panel_actions.push_back(action("outliner.paste", "EditorModel.paste_copied"));
+        panel_actions.push_back(action("outliner.create-empty", "EditorModel.create_empty_entity",
+            {{"kind", "editor-entity-create"}, {"parentEntityId", nullptr},
+                {"sourceRevision", authority.world_revision}}, true));
+        panel_actions.push_back(action("outliner.paste", "EditorModel.paste_copied",
+            {{"kind", "editor-entity-paste"}, {"sourceRevision", authority.world_revision}}, can_paste()));
     }
     Json nodes = Json::array({Json{
         {"id", "editor.panel.outliner"}, {"parentId", nullptr}, {"role", "tree"},
         {"label", "World Outliner"},
+        {"presentation", {{"inlineActionIds", authority.writable ?
+            Json::array({"outliner.create-empty", "outliner.paste"}) : Json::array()}}},
         {"state", {{"visible", true}, {"enabled", true}, {"editable", authority.writable}}},
         {"actions", std::move(panel_actions)}}});
     for (const auto* object : hierarchy) {
         const auto parent_is_included = !object->parent_id.empty() && visited.contains(object->parent_id);
-        auto select_action = action("outliner.select", "EditorModel.select_object");
-        select_action["binding"] = {{"kind", "editor-entity-selection"}, {"entityId", object->id}};
-        Json actions = Json::array({std::move(select_action)});
-        if (authority.writable) {
-            actions.push_back(action("outliner.rename", "EditorModel.rename_selected"));
-            actions.push_back(action("outliner.copy", "EditorModel.copy_selected"));
-            actions.push_back(action("outliner.duplicate", "EditorModel.duplicate_selected"));
-            actions.push_back(action("outliner.reparent", "EditorModel.reparent_entity"));
-            actions.push_back(action("outliner.delete", "EditorModel.delete_selected"));
-        }
         const auto selected_entity = selected_set.contains(object->id);
+        const auto entity_binding = [&](const std::string_view kind, const std::string_view operation) {
+            return Json{{"kind", kind}, {"operation", operation}, {"entityId", object->id},
+                {"sourceRevision", authority.world_revision}, {"entityRevision", object->revision}};
+        };
+        Json actions = Json::array({action("outliner.select", "EditorModel.select_object",
+            entity_binding("editor-entity-selection", "select"), true)});
+        if (authority.writable && selected_entity) {
+            actions.push_back(action("outliner.rename", "EditorModel.rename_selected",
+                entity_binding("editor-entity-action", "rename"), true));
+            actions.push_back(action("outliner.copy", "EditorModel.copy_selected",
+                entity_binding("editor-entity-action", "copy"), true));
+            actions.push_back(action("outliner.duplicate", "EditorModel.duplicate_selected",
+                entity_binding("editor-entity-action", "duplicate"), true));
+            actions.push_back(action("outliner.reparent", "EditorModel.reparent_entity",
+                entity_binding("editor-entity-action", "reparent"), true));
+            actions.push_back(action("outliner.delete", "EditorModel.delete_selected",
+                entity_binding("editor-entity-action", "delete"), true));
+        }
         nodes.push_back({
             {"id", "editor.outliner.entity." + object->id},
             {"parentId", parent_is_included ? Json("editor.outliner.entity." + object->parent_id) :
                 Json("editor.panel.outliner")},
             {"role", "treeitem"}, {"label", object->name},
+            {"presentation", {{"inlineActionIds", authority.writable && selected_entity ?
+                Json::array({"outliner.copy", "outliner.duplicate"}) : Json::array()}}},
             {"entity", {{"id", object->id}, {"parentId", object->parent_id.empty() ? Json(nullptr) : Json(object->parent_id)},
                 {"type", object->kind}, {"revision", object->revision}}},
             {"state", {{"visible", true}, {"enabled", true}, {"editable", authority.writable},
@@ -312,24 +334,44 @@ std::string EditorModel::asset_browser_semantic_ui_document_json(
         {"state", {{"visible", true}, {"enabled", true}, {"editable", false}}},
         {"binding", {{"kind", "editor-asset-browser-query"}, {"query", query}}},
         {"actions", std::move(panel_actions)}}});
-    const auto handler_action = [](const std::string_view id, const std::string_view label,
-                                   const std::string_view handler, const std::string& asset_id) {
+    const auto active_job = Json::parse(active_asset_job_json(), nullptr, false);
+    const auto job_state = active_job.is_object() ? active_job.value("state", std::string{}) : std::string{};
+    const auto asset_job_busy = active_job.is_object() && active_job.value("valid", false) &&
+        (job_state == "queued" || job_state == "running");
+    const auto source_revision = asset_registry_.revision();
+    const auto handler_action = [source_revision, asset_job_busy](
+                                   const std::string_view id, const std::string_view label,
+                                   const std::string_view operation, const std::string_view handler,
+                                   const std::string& asset_id) {
         return Json{{"id", id}, {"label", label}, {"dispatch", "existing-editor-model"},
-            {"handler", handler}, {"requiresSelectedAssetId", asset_id}};
+            {"handler", handler}, {"requiresSelectedAssetId", asset_id},
+            {"binding", {{"kind", "editor-asset-action"}, {"operation", operation},
+                {"assetId", asset_id}, {"sourceRevision", source_revision}}},
+            {"state", {{"enabled", !asset_job_busy}, {"busy", asset_job_busy}}}};
     };
     for (auto index = cursor; index < page_end; ++index) {
         const auto& asset = *matched[index];
         Json actions = Json::array();
+        const auto selected_asset = asset.id == selected_asset_id_;
         actions.push_back({
             {"id", "asset.select"}, {"label", "Select"},
             {"dispatch", "existing-editor-model"}, {"handler", "EditorModel.select_asset"},
-            {"binding", {{"kind", "editor-asset-selection"}, {"assetId", asset.id}}}});
-        actions.push_back(handler_action("asset.import", "Import", "EditorModel.import_selected_asset", asset.id));
-        actions.push_back(handler_action("asset.inspect", "Inspect", "EditorModel.inspect_selected_asset", asset.id));
-        actions.push_back(handler_action("asset.build-preview", "Build Preview",
-            "EditorModel.generate_selected_asset_thumbnail", asset.id));
-        actions.push_back(handler_action("asset.cook", "Cook", "EditorModel.cook_selected_asset", asset.id));
-        Json presentation{{"kind", "asset-card"}};
+            {"binding", {{"kind", "editor-asset-selection"}, {"assetId", asset.id},
+                {"sourceRevision", source_revision}}},
+            {"state", {{"enabled", true}, {"busy", false}}}});
+        if (selected_asset) {
+            actions.push_back(handler_action("asset.import", "Import", "import",
+                "EditorModel.import_selected_asset", asset.id));
+            actions.push_back(handler_action("asset.inspect", "Inspect", "inspect",
+                "EditorModel.inspect_selected_asset", asset.id));
+            actions.push_back(handler_action("asset.build-preview", "Build Preview", "build-preview",
+                "EditorModel.generate_selected_asset_thumbnail", asset.id));
+            actions.push_back(handler_action("asset.cook", "Cook", "cook",
+                "EditorModel.cook_selected_asset", asset.id));
+        }
+        Json presentation{{"kind", "asset-card"}, {"primaryActionId", "asset.select"},
+            {"inlineActionIds", selected_asset ?
+                Json::array({"asset.import", "asset.inspect", "asset.build-preview", "asset.cook"}) : Json::array()}};
         if (!asset.thumbnail_uri.empty()) presentation["imageSource"] = asset.thumbnail_uri;
         nodes.push_back({
             {"id", "editor.asset." + asset.id}, {"parentId", "editor.panel.assets"},
@@ -341,7 +383,7 @@ std::string EditorModel::asset_browser_semantic_ui_document_json(
                 {"thumbnail", {{"uri", asset.thumbnail_uri}, {"strategy", asset.thumbnail_strategy},
                     {"cached", asset.thumbnail_cached}}}}},
             {"state", {{"visible", true}, {"enabled", true}, {"editable", false},
-                {"selected", asset.id == selected_asset_id_}}},
+                {"selected", selected_asset}, {"busy", selected_asset && asset_job_busy}}},
             {"actions", std::move(actions)}});
     }
 

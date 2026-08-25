@@ -67,6 +67,12 @@ int main() {
         std::cerr << "Asset Browser did not expose retained next-page navigation\n";
         return 48;
     }
+    const auto unselected_card = std::ranges::find_if(asset_nodes, [](const auto& node) {
+        return node.value("role", std::string{}) == "griditem" &&
+            !node.value("state", nlohmann::json::object()).value("selected", false);
+    });
+    if (unselected_card == asset_nodes.end() || unselected_card->at("actions").size() != 1U ||
+        !unselected_card->at("presentation").at("inlineActionIds").empty()) return 51;
     for (std::size_t index = 2U; index < asset_nodes.size(); ++index) {
         if (asset_nodes.at(index - 1U).at("asset").value("id", "") >=
             asset_nodes.at(index).at("asset").value("id", "")) {
@@ -78,8 +84,9 @@ int main() {
     const auto& first_action = first_card.at("actions").at(0);
     if (first_action.at("binding").value("kind", "") != "editor-asset-selection" ||
         first_action.at("binding").value("assetId", "") != first_card.at("asset").value("id", "") ||
-        first_card.at("actions").at(3).value("handler", "") !=
-            "EditorModel.generate_selected_asset_thumbnail") {
+        first_action.at("binding").value("sourceRevision", 0U) != assets.revision() ||
+        (!first_card.at("state").value("selected", false) &&
+            (!first_card.at("presentation").at("inlineActionIds").empty() || first_card.at("actions").size() != 1U))) {
         std::cerr << "Asset card selection binding or existing action handlers are incomplete\n";
         return 44;
     }
@@ -107,7 +114,16 @@ int main() {
         {.query = selected_asset_id, .page_limit = 8U}));
     if (filtered_browser.at("page").value("matched", 0U) != 1U ||
         !filtered_browser.at("nodes").at(1).at("state").value("selected", false) ||
-        filtered_browser.at("selection").value("assetId", "") != selected_asset_id) {
+        filtered_browser.at("selection").value("assetId", "") != selected_asset_id ||
+        filtered_browser.at("nodes").at(1).at("actions").size() != 5U ||
+        filtered_browser.at("nodes").at(1).at("presentation").at("inlineActionIds") !=
+            nlohmann::json::array({"asset.import","asset.inspect","asset.build-preview","asset.cook"}) ||
+        filtered_browser.at("nodes").at(1).at("actions").at(3).at("binding").value("operation", "") !=
+            "build-preview" ||
+        filtered_browser.at("nodes").at(1).at("actions").at(3).at("binding").value("assetId", "") !=
+            selected_asset_id ||
+        filtered_browser.at("nodes").at(1).at("actions").at(3).at("binding").value("sourceRevision", 0U) !=
+            assets.revision()) {
         std::cerr << "Asset Browser filtering did not retain the authoritative selection\n";
         return 46;
     }
@@ -148,9 +164,14 @@ int main() {
     const auto cook_selected = model.cook_selected_asset();
     const auto cook_elapsed = std::chrono::steady_clock::now() - cook_started;
     const auto queued_observation = model.active_asset_job_json();
+    const auto busy_asset_browser = nlohmann::json::parse(model.asset_browser_semantic_ui_document_json(
+        {.query = model.selected_asset()->id, .page_limit = 1U}));
+    const auto& busy_actions = busy_asset_browser.at("nodes").at(1).at("actions");
     if (!cook_selected.success || cook_selected.code != "asset.job.queued" ||
         cook_elapsed > std::chrono::milliseconds(500) || queued_observation.find(R"("valid":true)") == std::string::npos ||
-        json_string_field(queued_observation, "kind") != "cook") {
+        json_string_field(queued_observation, "kind") != "cook" || busy_actions.size() != 5U ||
+        busy_actions.at(4).at("state").value("enabled", true) ||
+        !busy_actions.at(4).at("state").value("busy", false)) {
         std::cerr << "Cook Selected did not return as a bounded background Job\n";
         return 30;
     }
@@ -201,7 +222,21 @@ int main() {
         !cube_node->at("state").value("selected", false) ||
         cube_node->at("actions").size() != 6U ||
         cube_node->at("actions").at(0).at("binding").value("kind", "") != "editor-entity-selection" ||
-        cube_node->at("actions").at(0).at("binding").value("entityId", "") != "entity.demo-cube") {
+        cube_node->at("actions").at(0).at("binding").value("entityId", "") != "entity.demo-cube" ||
+        cube_node->at("actions").at(0).at("binding").value("sourceRevision", 0U) != world.revision() ||
+        cube_node->at("presentation").at("inlineActionIds") !=
+            nlohmann::json::array({"outliner.copy","outliner.duplicate"}) ||
+        root_node->at("actions").size() != 1U ||
+        !root_node->at("presentation").at("inlineActionIds").empty() ||
+        edit_nodes.at(0).at("presentation").at("inlineActionIds") !=
+            nlohmann::json::array({"outliner.create-empty","outliner.paste"}) ||
+        edit_nodes.at(0).at("actions").at(0).at("binding").value("kind", "") !=
+            "editor-entity-create" ||
+        edit_nodes.at(0).at("actions").at(0).at("binding").value("sourceRevision", 0U) != world.revision() ||
+        !edit_nodes.at(0).at("actions").at(0).at("state").value("enabled", false) ||
+        cube_node->at("actions").at(2).at("binding").value("operation", "") != "copy" ||
+        cube_node->at("actions").at(2).at("binding").value("entityId", "") != "entity.demo-cube" ||
+        edit_nodes.at(0).at("actions").at(1).at("state").value("enabled", true)) {
         std::cerr << "Edit World Outliner semantic hierarchy or selection is incomplete\n";
         return 38;
     }
@@ -223,7 +258,9 @@ int main() {
     if (play_outliner.value("authority", "") != "play-world-read-only" ||
         play_outliner.value("writable", true) || play_sphere == play_outliner.at("nodes").end() ||
         !play_sphere->at("state").value("selected", false) || play_sphere->at("actions").size() != 1U ||
-        play_sphere->at("actions").at(0).value("handler", "") != "EditorModel.select_object") {
+        play_sphere->at("actions").at(0).value("handler", "") != "EditorModel.select_object" ||
+        !play_outliner.at("nodes").at(0).at("actions").empty() ||
+        !play_sphere->at("presentation").at("inlineActionIds").empty()) {
         std::cerr << "Play World Outliner did not remain a read-only authority projection\n";
         return 40;
     }

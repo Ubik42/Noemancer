@@ -355,6 +355,65 @@ int main() {
        normalized_bulk.find(R"("selection":{"assetId":"asset.bulk.0001"})")==std::string::npos) {
         std::cerr<<"Registry revision did not normalize the page while preserving stable selection\n";return 55;
     }
+    const auto bulk_revision=bulk_assets.revision();
+    const auto asset_binding=[&](const std::string_view asset_id,const std::uint64_t revision) {
+        return std::string{"{\"kind\":\"editor-asset-action\",\"operation\":\"inspect\",\"assetId\":\""}+
+            std::string(asset_id)+"\",\"sourceRevision\":"+std::to_string(revision)+"}";
+    };
+    const auto asset_mismatch=bulk_editor.invoke_retained_authoring_action(
+        "asset.inspect",asset_binding("asset.bulk.0002",bulk_revision));
+    const auto asset_danger=bulk_editor.invoke_retained_authoring_action(
+        "asset.delete",asset_binding("asset.bulk.0001",bulk_revision));
+    if(asset_mismatch.find(R"("success":false)")==std::string::npos||
+       asset_mismatch.find("retained-action.selection-mismatch")==std::string::npos||
+       asset_danger.find(R"("success":false)")==std::string::npos||
+       asset_danger.find("retained-action.unsupported")==std::string::npos)return 56;
+
+    noemancer::World retained_action_world;
+    if(!retained_action_world.load_scene(noemancer::make_bootstrap_scene_document()).success)return 57;
+    noemancer::AssetRegistry retained_action_assets;
+    noemancer::EditorUi retained_action_editor(retained_action_world,retained_action_assets);
+    const auto entity_binding=[](const std::string_view entity_id,const std::uint64_t revision) {
+        return std::string{"{\"kind\":\"editor-entity-action\",\"operation\":\"copy\",\"entityId\":\""}+
+            std::string(entity_id)+"\",\"sourceRevision\":"+std::to_string(revision)+"}";
+    };
+    const auto panel_binding=[](const std::string_view kind,const std::uint64_t revision) {
+        return std::string{"{\"kind\":\""}+std::string(kind)+"\",\"sourceRevision\":"+
+            std::to_string(revision)+"}";
+    };
+    auto action_context=retained_action_editor.editor_context_snapshot();
+    const auto initial_entity=action_context.primary_selected_entity_id;
+    const auto initial_revision=retained_action_world.revision();
+    const auto stale=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.copy",entity_binding(initial_entity,initial_revision+1U));
+    const auto mismatch=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.copy",entity_binding("entity.not-selected",initial_revision));
+    const auto dangerous=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.delete",entity_binding(initial_entity,initial_revision));
+    const auto copied=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.copy",entity_binding(initial_entity,initial_revision));
+    if(stale.find("retained-action.stale-source-revision")==std::string::npos||
+       mismatch.find("retained-action.selection-mismatch")==std::string::npos||
+       dangerous.find("retained-action.unsupported")==std::string::npos||
+       copied.find(R"("success":true)")==std::string::npos||retained_action_world.revision()!=initial_revision)return 58;
+    const auto duplicated=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.duplicate",std::string{"{\"kind\":\"editor-entity-action\",\"operation\":\"duplicate\",\"entityId\":\""}+
+            initial_entity+"\",\"sourceRevision\":"+std::to_string(retained_action_world.revision())+"}");
+    if(duplicated.find(R"("success":true)")==std::string::npos||duplicated.find(R"("entityId":null)")!=std::string::npos||
+       retained_action_world.revision()<=initial_revision)return 59;
+    const auto pasted=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.paste",panel_binding("editor-entity-paste",retained_action_world.revision()));
+    const auto created=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.create-empty",panel_binding("editor-entity-create",retained_action_world.revision()),R"({"displayName":"Retained Created"})");
+    if(pasted.find(R"("success":true)")==std::string::npos||created.find(R"("success":true)")==std::string::npos||
+       created.find(R"("actionId":"outliner.create-empty")")==std::string::npos||
+       created.find("\"sourceRevisionAfter\":"+std::to_string(retained_action_world.revision()))==std::string::npos||
+       retained_action_editor.editor_context_snapshot().last_action_status.find("outliner.create-empty")==std::string::npos)return 60;
+    retained_action_editor.set_simulation_state(noemancer::EditorSimulationState::paused);
+    const auto read_only=retained_action_editor.invoke_retained_authoring_action(
+        "outliner.create-empty",panel_binding("editor-entity-create",retained_action_world.revision()));
+    if(read_only.find(R"("success":false)")==std::string::npos||
+       read_only.find("retained-action.world-read-only")==std::string::npos)return 61;
     std::filesystem::remove_all(bulk_root);
     ImGui::DestroyContext();
 

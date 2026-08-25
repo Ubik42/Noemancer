@@ -218,6 +218,18 @@ bool selectable_row_role(const std::string_view role) {
         role=="grid-item"||role=="griditem";
 }
 
+bool bounded_action_id(const std::string_view id) {
+    return !id.empty()&&id.size()<=256U;
+}
+
+bool semantic_action_enabled(const Json& action) {
+    if(!action.is_object()||!bounded_action_id(action.value("id",std::string{})))return false;
+    const auto state=action.value("state",Json::object());
+    if(!state.is_object())return false;
+    const auto enabled=state.find("enabled");
+    return enabled==state.end()||(enabled->is_boolean()&&enabled->get<bool>());
+}
+
 Rml::Element* selectable_row(Rml::Element* element) {
     for(auto* current=element;current!=nullptr;current=current->GetParentNode())
         if(selectable_row_role(current->GetAttribute<Rml::String>("data-role","")))return current;
@@ -258,6 +270,10 @@ public:
         auto* target=event.GetTargetElement();
         if(target==nullptr)return;
         if(event==Rml::EventId::Keydown) {
+            if(inherited_attribute(target,"data-inline-action")=="true"&&
+               static_cast<Rml::Input::KeyIdentifier>(event.GetParameter<int>("key_identifier",0))==Rml::Input::KI_RETURN) {
+                emit_invoke(target);event.StopPropagation();return;
+            }
             process_selectable_key(target,event);
             return;
         }
@@ -328,7 +344,7 @@ private:
             .surface_id=inherited_attribute(target,"data-surface-id"),
             .document_id=document==nullptr?std::string{}:std::string(document->GetId()),
             .node_id=node_id,.action_id=action_id,
-            .binding_json=binding.is_object()?binding.dump():Json{{"value",binding_source}}.dump(),
+            .binding_json=binding.is_discarded()?Json{{"value",binding_source}}.dump():binding.dump(),
             .value_json=std::move(value_json)};
         if(events_.size()>=maximum_events){events_.pop_front();++dropped_events_;}
         events_.push_back(std::move(action));
@@ -345,7 +361,7 @@ private:
             .surface_id=inherited_attribute(target,"data-surface-id"),
             .document_id=document==nullptr?std::string{}:std::string(document->GetId()),
             .node_id=node_id,.action_id=action_id,
-            .binding_json=binding.is_object()?binding.dump():Json{{"value",binding_source}}.dump(),
+            .binding_json=binding.is_discarded()?Json{{"value",binding_source}}.dump():binding.dump(),
             .value_json="null"};
         if(events_.size()>=maximum_events){events_.pop_front();++dropped_events_;}
         events_.push_back(std::move(action));
@@ -1290,6 +1306,10 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
               ".collection-card-image{box-sizing:border-box;width:100%;height:48px;background:#0c1118;border-width:1px;border-color:#253143;}"
               ".collection-card-metadata{display:flex;flex-direction:column;width:100%;margin-top:3px;color:#91a0b4;font-size:11px;}"
               ".collection-card-meta{width:100%;overflow:hidden;}"
+              ".inline-actions{box-sizing:border-box;display:flex;flex-direction:row;justify-content:flex-end;width:100%;margin-top:4px;}"
+              ".inline-action{box-sizing:border-box;min-width:28px;min-height:24px;margin-left:4px;padding:3px 7px;background:#202b39;color:" << escape_markup(text_color) << ";border-width:1px;border-color:#3a4a60;pointer-events:auto;}"
+              ".inline-action:hover{background:#2a394c;border-color:" << escape_markup(accent_color) << ";}.inline-action:focus{background:#30445c;border-color:" << escape_markup(accent_color) << ";}"
+              ".inline-action:disabled{background:#171c24;color:#647083;border-color:#29323f;opacity:0.5;}"
               ".tree-row{flex-direction:column;align-items:stretch;min-height:0;padding:0;background:transparent;}"
               ".tree-row>.label{box-sizing:border-box;width:100%;min-height:28px;padding:5px 8px;pointer-events:auto;}"
               ".tree-row:hover,.tree-row:focus,.tree-row.selected{background:transparent;outline-width:0;}"
@@ -1359,9 +1379,22 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
         if(role=="group"&&!expanded)classes+=" collapsed";
         if(selectable&&selected)classes+=" selected";
         const auto actions=node.value("actions",Json::array());
-        const auto has_action=actions.is_array()&&!actions.empty()&&actions.front().is_object();
+        const auto has_action=actions.is_array()&&!actions.empty()&&semantic_action_enabled(actions.front());
         const auto action_binding=has_action&&actions.front().contains("binding")?
             actions.front().at("binding"):node.value("binding",Json::object());
+        std::vector<std::string> inline_action_ids;
+        if(presentation.is_object()) {
+            const auto configured=presentation.value("inlineActionIds",Json::array());
+            if(configured.is_array()) {
+                std::unordered_set<std::string> seen;
+                for(const auto& candidate:configured) {
+                    if(inline_action_ids.size()>=8U)break;
+                    if(!candidate.is_string())continue;
+                    const auto action_id=candidate.get<std::string>();
+                    if(bounded_action_id(action_id)&&seen.insert(action_id).second)inline_action_ids.push_back(action_id);
+                }
+            }
+        }
         const auto action_button=role=="button";
         output << (action_button?"<button type=\"button\"":"<div") << " id=\"" << escape_markup(id) << "\" data-semantic-id=\"" << escape_markup(id)
                << "\" data-role=\"" << escape_markup(role) << "\" data-enabled=\"" << (enabled?"true":"false")
@@ -1458,6 +1491,31 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
                        << escape_markup(value) << "</span>";
             }
             output << "</div>";
+        }
+        if(!action_button&&!inline_action_ids.empty()&&actions.is_array()) {
+            std::vector<const Json*> inline_actions;
+            for(const auto& allowed:inline_action_ids) {
+                const auto found=std::ranges::find_if(actions,[&](const Json& action) {
+                    return semantic_action_enabled(action)&&action.value("id",std::string{})==allowed;
+                });
+                if(found!=actions.end())inline_actions.push_back(&*found);
+            }
+            if(!inline_actions.empty()) {
+                output << "<div class=\"inline-actions\">";
+                for(std::size_t index=0;index<inline_actions.size();++index) {
+                    const auto& action=*inline_actions[index];
+                    const auto action_id=action.value("id",std::string{});
+                    const auto binding=action.contains("binding")?action.at("binding"):Json::object();
+                    const auto label=action.contains("label")&&action.at("label").is_string()?
+                        action.at("label").get<std::string>():action_id;
+                    output << "<button type=\"button\" id=\"" << escape_markup(id+".inline-action."+std::to_string(index))
+                           << "\" class=\"inline-action\" data-inline-action=\"true\" data-inline-action-id=\""
+                           << escape_markup(action_id) << "\" data-action=\"" << escape_markup(action_id)
+                           << "\" data-binding=\"" << escape_markup(binding.dump()) << "\">"
+                           << escape_markup(label) << "</button>";
+                }
+                output << "</div>";
+            }
         }
         if(role=="grid") {
             if(const auto found=children.find(id);found!=children.end()) {

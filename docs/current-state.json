@@ -3,7 +3,7 @@
   "updated": "2026-08-24",
   "status": "active-development",
   "currentSlice": "editor.retained-authoring-actions",
-  "currentStep": "route-outliner-and-asset-browser-authoring-actions-through-shared-authority",
+  "currentStep": "complete-retained-rename-reparent-delete-input-and-confirmation",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -38,7 +38,8 @@
     "production.vfs-project-and-cooked-asset-migration",
     "editor.retained-outliner",
     "editor.retained-asset-browser-collection",
-    "editor.retained-asset-browser"
+    "editor.retained-asset-browser",
+    "editor.retained-safe-authoring-actions"
   ],
   "closedExperiments": [
     {

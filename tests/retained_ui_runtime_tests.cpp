@@ -280,6 +280,53 @@ int main() {
         }
         const auto image_count_exceeded=image_budget_runtime.register_image_rgba8("budget://overflow",1U,1U,one_pixel);
         if(image_count_exceeded.success||image_count_exceeded.code!="ui.image-count-exceeded")return 60;
+        const auto oversized_action_id=std::string(257U,'x');
+        nlohmann::json limit_actions=nlohmann::json::array();
+        nlohmann::json limit_ids=nlohmann::json::array();
+        for(std::size_t index=0;index<9U;++index) {
+            const auto action_id="limit."+std::to_string(index);
+            limit_ids.push_back(action_id);
+            limit_actions.push_back({{"id",action_id},{"label","Limit "+std::to_string(index)},
+                {"state",{{"enabled",true}}},{"binding",{{"index",index}}}});
+        }
+        const auto multi_action_document=nlohmann::json{{"schemaVersion","noemancer.ui-document/0.1"},
+            {"documentId","ui.multi-action"},{"nodes",nlohmann::json::array({
+                {{"id","ui.multi"},{"role","list-item"},{"label","Multiple actions"},
+                    {"state",{{"enabled",true}}},
+                    {"presentation",{{"inlineActionIds",{"action.alpha","action.beta","action.disabled","action.unknown",oversized_action_id}}}},
+                    {"actions",nlohmann::json::array({
+                        {{"id","action.main"},{"binding",{{"scope","main"}}}},
+                        {{"id","action.alpha"},{"label","Alpha"},{"state",{{"enabled",true}}},{"binding",{{"scope","alpha"},{"revision",11}}}},
+                        {{"id","action.beta"},{"label","Beta"},{"state",{{"enabled",true}}},{"binding",{{"scope","beta"},{"revision",22}}}},
+                        {{"id","action.disabled"},{"label","Disabled"},{"state",{{"enabled",false}}},{"binding",{{"scope","disabled"}}}},
+                        {{"id",oversized_action_id},{"state",{{"enabled",true}}}}
+                    })}},
+                {{"id","ui.limit"},{"role","list-item"},{"label","Bounded actions"},
+                    {"state",{{"enabled",true}}},{"presentation",{{"inlineActionIds",limit_ids}}},{"actions",limit_actions}}
+            })}};
+        const auto multi_action_rml=noemancer::retained_ui_rml_from_semantic_document(multi_action_document.dump());
+        if(multi_action_rml.find("data-action=\"action.main\"")==std::string::npos||
+           multi_action_rml.find("data-inline-action-id=\"action.alpha\"")==std::string::npos||
+           multi_action_rml.find("data-inline-action-id=\"action.beta\"")==std::string::npos||
+           multi_action_rml.find("data-inline-action-id=\"action.disabled\"")!=std::string::npos||
+           multi_action_rml.find("action.unknown")!=std::string::npos||
+           multi_action_rml.find(oversized_action_id)!=std::string::npos||
+           multi_action_rml.find("data-inline-action-id=\"limit.7\"")==std::string::npos||
+           multi_action_rml.find("data-inline-action-id=\"limit.8\"")!=std::string::npos||
+           !binary_runtime.load_document("ui.multi-action",multi_action_rml))return 61;
+        if(!binary_runtime.focus_node("ui.multi-action","ui.multi.inline-action.0"))return 62;
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::enter,true));
+        const auto alpha_actions=binary_runtime.consume_action_events();
+        if(alpha_actions.size()!=1U||alpha_actions.front().node_id!="ui.multi"||
+           alpha_actions.front().action_id!="action.alpha"||
+           nlohmann::json::parse(alpha_actions.front().binding_json)!=nlohmann::json{{"revision",11},{"scope","alpha"}})return 63;
+        if(!binary_runtime.focus_node("ui.multi-action","ui.multi.inline-action.1"))return 64;
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::enter,true));
+        const auto beta_actions=binary_runtime.consume_action_events();
+        if(beta_actions.size()!=1U||beta_actions.front().node_id!="ui.multi"||
+           beta_actions.front().action_id!="action.beta"||
+           nlohmann::json::parse(beta_actions.front().binding_json)!=nlohmann::json{{"revision",22},{"scope","beta"}})return 65;
+        if(!binary_runtime.focus_node("ui.grid","item.0"))return 66;
         static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::right,true));
         static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::down,true));
         auto grid_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.grid"));
