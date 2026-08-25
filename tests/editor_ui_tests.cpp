@@ -209,6 +209,7 @@ int main() {
     editor.set_exposure(2.0F);
     editor.set_render_surface(1, 960, 540);
     editor.set_retained_outliner_surface(2,320,640);
+    editor.set_retained_asset_browser_surface(3,960,320);
     editor.set_render_status(R"({"passes":["shadow-depth","opaque-lit"]})");
     editor.set_managed_debug_context(
         R"({"schemaVersion":"noemancer.managed-debug-session-events/0.1","success":true,"events":[{"kind":"event","event":"stopped","body":{"reason":"breakpoint","threadId":1}}]})",
@@ -227,6 +228,18 @@ int main() {
         outliner_pointer->x>=0&&outliner_pointer->x<320&&outliner_pointer->y>=0&&outliner_pointer->y<640&&
         !editor.retained_outliner_window_at(-1,0)&&editor.requested_outliner_width()>=192&&
         editor.requested_outliner_height()>=160;
+    const auto retained_asset_browser=editor.retained_asset_browser_document_json();
+    const auto asset_browser_origin=editor.retained_asset_browser_window_at(0,0);
+    const auto asset_browser_pointer=asset_browser_origin?editor.retained_asset_browser_pointer_at(
+        static_cast<float>(asset_browser_origin->x),static_cast<float>(asset_browser_origin->y)):std::nullopt;
+    const bool has_retained_asset_browser=retained_asset_browser.find(
+            R"("documentId":"editor.asset-browser")")!=std::string::npos&&
+        retained_asset_browser.find(R"("role":"griditem")")!=std::string::npos&&
+        retained_asset_browser.find(R"("requestedLimit":256)")!=std::string::npos&&
+        asset_browser_origin&&asset_browser_pointer&&asset_browser_pointer->x>=0&&asset_browser_pointer->x<960&&
+        asset_browser_pointer->y>=0&&asset_browser_pointer->y<320&&
+        !editor.retained_asset_browser_window_at(-1,0)&&editor.requested_asset_browser_width()>=320&&
+        editor.requested_asset_browser_height()>=96;
     const bool has_live_selection = snapshot.find("entity.demo-cube") != std::string::npos;
     const bool has_gizmo_contract=snapshot.find(R"("transformTool":"translate")")!=std::string::npos &&
         snapshot.find("ImGuizmo 1.10 + Noemancer transaction adapter")!=std::string::npos;
@@ -259,6 +272,8 @@ int main() {
         snapshot.find("noemancer.editor-retained-panels/0.1")!=std::string::npos&&
         snapshot.find(R"("outlinerSurface":{"controls":["search","tree","multi-selection","context-menu","drag-drop"],"coordinateRoute":"dock-window-to-surface","height":640)")!=std::string::npos&&
         snapshot.find(R"("surfaceId":"editor.world-outliner")")!=std::string::npos&&
+        snapshot.find(R"("assetBrowserSurface":{"controls":["grid","asset-card","single-selection","thumbnail","scroll"])")!=std::string::npos&&
+        snapshot.find(R"("surfaceId":"editor.asset-browser.collection")")!=std::string::npos&&
         snapshot.find("noemancer.retained-ui-actions/0.1")!=std::string::npos&&
         snapshot.find(R"("dispatch":"runtime-adapter-to-domain-plan-apply-receipt")")!=std::string::npos&&
         snapshot.find(R"("role":"main-workspace")")!=std::string::npos&&
@@ -291,7 +306,7 @@ int main() {
     const bool produced_draw_data = ImGui::GetDrawData() != nullptr;
     ImGui::DestroyContext();
 
-    if (!has_live_selection || !has_gizmo_contract || !has_tile_brush_contract || !has_palette_rule_contract || !has_editor_camera || !has_project_context || !has_hybrid_profile_authoring || !has_editor_chrome || !has_retained_outliner || !has_scene_lifecycle || !has_scripting_context || !has_play_state || !produced_draw_data || editor.requested_exposure() != 2.0F ||
+    if (!has_live_selection || !has_gizmo_contract || !has_tile_brush_contract || !has_palette_rule_contract || !has_editor_camera || !has_project_context || !has_hybrid_profile_authoring || !has_editor_chrome || !has_retained_outliner || !has_retained_asset_browser || !has_scene_lifecycle || !has_scripting_context || !has_play_state || !produced_draw_data || editor.requested_exposure() != 2.0F ||
         editor.requested_scene_width() < 64 || editor.requested_scene_height() < 64) {
         std::cerr << "Editor UI did not render a semantic frame from the live World\n";
         return 2;

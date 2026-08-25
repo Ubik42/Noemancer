@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -260,6 +261,87 @@ std::string EditorModel::outliner_semantic_ui_document_json(
             {"limit", selection_limit}, {"truncated", selected.size() < authority.selected_object_ids.size()}}},
         {"entities", {{"total", ordered.size()}, {"included", hierarchy.size()},
             {"limit", entity_limit}, {"truncated", hierarchy.size() < ordered.size()}}},
+        {"nodes", std::move(nodes)}}.dump();
+}
+
+std::string EditorModel::asset_browser_semantic_ui_document_json(
+    const EditorAssetBrowserSemanticQuery request) const {
+    constexpr std::size_t hard_page_limit = 256U;
+    constexpr std::size_t hard_query_bytes = 256U;
+    const auto query_bytes = std::min(request.query.size(), hard_query_bytes);
+    auto query = std::string(request.query.substr(0U, query_bytes));
+    std::ranges::transform(query, query.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    const auto matches_query = [&query](const EditorAsset& asset) {
+        if (query.empty()) return true;
+        const auto contains = [&query](std::string value) {
+            std::ranges::transform(value, value.begin(), [](const unsigned char character) {
+                return static_cast<char>(std::tolower(character));
+            });
+            return value.find(query) != std::string::npos;
+        };
+        return contains(asset.id) || contains(asset.name) || contains(asset.kind) ||
+            contains(asset.source) || contains(asset.import_state) || contains(asset.license);
+    };
+
+    std::vector<const EditorAsset*> matched;
+    matched.reserve(assets_.size());
+    for (const auto& asset : assets_) if (matches_query(asset)) matched.push_back(&asset);
+    std::ranges::sort(matched, {}, [](const EditorAsset* asset) { return asset->id; });
+    const auto cursor = std::min(request.cursor, matched.size());
+    const auto page_limit = std::min(request.page_limit, hard_page_limit);
+    const auto returned = std::min(page_limit, matched.size() - cursor);
+    const auto page_end = cursor + returned;
+    const auto has_more = page_end < matched.size();
+
+    Json nodes = Json::array({Json{
+        {"id", "editor.panel.assets"}, {"parentId", nullptr}, {"role", "grid"},
+        {"label", "Asset Browser"},
+        {"state", {{"visible", true}, {"enabled", true}, {"editable", false}}},
+        {"actions", Json::array()}}});
+    const auto handler_action = [](const std::string_view id, const std::string_view label,
+                                   const std::string_view handler, const std::string& asset_id) {
+        return Json{{"id", id}, {"label", label}, {"dispatch", "existing-editor-model"},
+            {"handler", handler}, {"requiresSelectedAssetId", asset_id}};
+    };
+    for (auto index = cursor; index < page_end; ++index) {
+        const auto& asset = *matched[index];
+        Json actions = Json::array();
+        actions.push_back({
+            {"id", "asset.select"}, {"label", "Select"},
+            {"dispatch", "existing-editor-model"}, {"handler", "EditorModel.select_asset"},
+            {"binding", {{"kind", "editor-asset-selection"}, {"assetId", asset.id}}}});
+        actions.push_back(handler_action("asset.import", "Import", "EditorModel.import_selected_asset", asset.id));
+        actions.push_back(handler_action("asset.inspect", "Inspect", "EditorModel.inspect_selected_asset", asset.id));
+        actions.push_back(handler_action("asset.build-preview", "Build Preview",
+            "EditorModel.generate_selected_asset_thumbnail", asset.id));
+        actions.push_back(handler_action("asset.cook", "Cook", "EditorModel.cook_selected_asset", asset.id));
+        nodes.push_back({
+            {"id", "editor.asset." + asset.id}, {"parentId", "editor.panel.assets"},
+            {"role", "griditem"}, {"label", asset.name},
+            {"presentation", {{"kind", "asset-card"}}},
+            {"asset", {{"id", asset.id}, {"kind", asset.kind}, {"source", asset.source},
+                {"available", asset.available}, {"importState", asset.import_state},
+                {"license", asset.license},
+                {"thumbnail", {{"uri", asset.thumbnail_uri}, {"strategy", asset.thumbnail_strategy},
+                    {"cached", asset.thumbnail_cached}}}}},
+            {"state", {{"visible", true}, {"enabled", true}, {"editable", false},
+                {"selected", asset.id == selected_asset_id_}}},
+            {"actions", std::move(actions)}});
+    }
+
+    return Json{
+        {"schemaVersion", "noemancer.ui-document/0.1"},
+        {"documentId", "editor.asset-browser"}, {"valid", true}, {"code", "ok"},
+        {"revision", asset_registry_.revision()},
+        {"selection", {{"assetId", selected_asset_id_.empty() ? Json(nullptr) : Json(selected_asset_id_)}}},
+        {"query", {{"text", query}, {"sourceBytes", request.query.size()},
+            {"byteLimit", hard_query_bytes}, {"truncated", request.query.size() > query_bytes}}},
+        {"page", {{"total", assets_.size()}, {"matched", matched.size()}, {"returned", returned},
+            {"cursor", cursor}, {"requestedCursor", request.cursor},
+            {"limit", page_limit}, {"requestedLimit", request.page_limit}, {"hardLimit", hard_page_limit},
+            {"nextCursor", has_more ? Json(page_end) : Json(nullptr)}, {"truncated", has_more}}},
         {"nodes", std::move(nodes)}}.dump();
 }
 

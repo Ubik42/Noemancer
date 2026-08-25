@@ -106,6 +106,12 @@ struct EditorOutlinerSemanticOptions final {
     std::size_t selection_limit{64U};
 };
 
+struct EditorAssetBrowserSemanticQuery final {
+    std::string_view query;
+    std::size_t cursor{};
+    std::size_t page_limit{64U};
+};
+
 class EditorModel final {
 public:
     EditorModel(World& world, AssetRegistry& assets);
@@ -120,6 +126,8 @@ public:
     [[nodiscard]] std::string outliner_semantic_ui_document_json(
         const EditorOutlinerAuthorityView& authority,
         EditorOutlinerSemanticOptions options = {}) const;
+    [[nodiscard]] std::string asset_browser_semantic_ui_document_json(
+        EditorAssetBrowserSemanticQuery query = {}) const;
     [[nodiscard]] std::size_t selected_object_index() const noexcept;
     [[nodiscard]] const EditorObject& selected_object() const;
     [[nodiscard]] const std::vector<std::string>& selected_object_ids() const noexcept;

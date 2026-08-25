@@ -425,9 +425,18 @@ Application::Application(RunOptions options)
     // explicit content; the normal Project Hub must never surprise the user
     // with debug particles or make them look like project content.
     editor_ui_.refresh_world_model();
-    if(!options_.editor_selected_asset_id.empty()&&!editor_ui_.select_asset(options_.editor_selected_asset_id))
-        startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.editor-startup/0.1"},{"success",false},
-            {"code","editor.asset-selection-not-found"},{"assetId",options_.editor_selected_asset_id}}.dump();
+    if(!options_.editor_selected_asset_id.empty()) {
+        if(!editor_ui_.select_asset(options_.editor_selected_asset_id))
+            startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.editor-startup/0.1"},{"success",false},
+                {"code","editor.asset-selection-not-found"},{"assetId",options_.editor_selected_asset_id}}.dump();
+        else {
+            const auto context=editor_ui_.editor_context_snapshot();
+            static_cast<void>(editor_ui_.apply_editor_context_intent(EditorUiContextIntent{
+                .expected_revision=context.revision,
+                .focused_panel_id=std::string{"editor.panel.assets"},
+                .active_tab_id=std::string{"editor.panel.assets"}}));
+        }
+    }
     editor_ui_.set_project_settings_open(options_.editor_project_settings);
     startup_telemetry_->finish_phase();
 }
@@ -1757,12 +1766,16 @@ int Application::run_interactive() {
     RetainedUiGpuAdapter retained_ui_gpu(device,texture_resources,"ui.game");
     RetainedUiGpuAdapter retained_inspector_gpu(device,texture_resources,"ui.editor.inspector");
     RetainedUiGpuAdapter retained_outliner_gpu(device,texture_resources,"ui.editor.outliner");
+    RetainedUiGpuAdapter retained_asset_browser_gpu(device,texture_resources,"ui.editor.asset-browser");
     SDL_GPUTexture* retained_inspector_texture{};
     TextureResourceHandle retained_inspector_texture_handle{};
     std::uint32_t retained_inspector_width{384},retained_inspector_height{640};
     SDL_GPUTexture* retained_outliner_texture{};
     TextureResourceHandle retained_outliner_texture_handle{};
     std::uint32_t retained_outliner_width{320},retained_outliner_height{640};
+    SDL_GPUTexture* retained_asset_browser_texture{};
+    TextureResourceHandle retained_asset_browser_texture_handle{};
+    std::uint32_t retained_asset_browser_width{960},retained_asset_browser_height{320};
     SDL_GPUTexture* editor_capture_texture{};
     std::uint32_t editor_capture_width{},editor_capture_height{};
     const auto editor_capture_format=SDL_GetGPUSwapchainTextureFormat(device,window);
@@ -1800,9 +1813,13 @@ int Application::run_interactive() {
         !retained_ui.create_surface("editor.outliner",retained_outliner_width,retained_outliner_height)||
         !retained_ui.load_surface_document("editor.outliner","ui.editor-outliner",retained_ui_rml_from_semantic_document(
             editor_ui_.retained_outliner_document_json()))||
-        !retained_outliner_gpu.initialize(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)))) {
+        !retained_outliner_gpu.initialize(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)||
+        !retained_ui.create_surface("editor.asset-browser",retained_asset_browser_width,retained_asset_browser_height)||
+        !retained_ui.load_surface_document("editor.asset-browser","ui.editor-asset-browser",retained_ui_rml_from_semantic_document(
+            editor_ui_.retained_asset_browser_document_json()))||
+        !retained_asset_browser_gpu.initialize(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)))) {
         logger_.error("ui.retained_gpu_initialize",retained_ui.last_error().empty()?retained_ui_gpu.last_error():std::string(retained_ui.last_error()));
-        retained_outliner_gpu.shutdown();retained_inspector_gpu.shutdown();retained_ui_gpu.shutdown(); scene_renderer.reset(); ImGui_ImplSDLGPU3_Shutdown(); ImGui_ImplSDL3_Shutdown(); ImGui::DestroyContext();
+        retained_asset_browser_gpu.shutdown();retained_outliner_gpu.shutdown();retained_inspector_gpu.shutdown();retained_ui_gpu.shutdown(); scene_renderer.reset(); ImGui_ImplSDLGPU3_Shutdown(); ImGui_ImplSDL3_Shutdown(); ImGui::DestroyContext();
         SDL_ReleaseWindowFromGPUDevice(device,window); SDL_DestroyGPUDevice(device); SDL_DestroyWindow(window); SDL_Quit(); return 17;
     }
     const auto ensure_inspector_texture=[&](const std::uint32_t width,const std::uint32_t height) {
@@ -1861,8 +1878,37 @@ int Application::run_interactive() {
         editor_ui_.set_retained_outliner_surface(reinterpret_cast<std::uintptr_t>(retained_outliner_texture),width,height);
         return true;
     };
+    const auto ensure_asset_browser_texture=[&](const std::uint32_t width,const std::uint32_t height) {
+        if(options_.player_mode)return true;
+        if(retained_asset_browser_texture&&retained_asset_browser_width==width&&retained_asset_browser_height==height)return true;
+        retained_asset_browser_width=width;retained_asset_browser_height=height;
+        SDL_GPUTextureCreateInfo info{};info.type=SDL_GPU_TEXTURETYPE_2D;info.format=SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        info.usage=SDL_GPU_TEXTUREUSAGE_COLOR_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER;info.width=width;info.height=height;
+        info.layer_count_or_depth=1;info.num_levels=1;info.sample_count=SDL_GPU_SAMPLECOUNT_1;
+        auto* next_texture=SDL_CreateGPUTexture(device,&info);
+        if(!next_texture)return false;
+        const TextureResourceMetadata metadata{width,height,1U,0U,static_cast<std::uint64_t>(width)*height*4U};
+        if(retained_asset_browser_texture_handle.valid()) {
+            if(!texture_resources.stage_replacement(retained_asset_browser_texture_handle,next_texture,metadata)) {
+                SDL_ReleaseGPUTexture(device,next_texture);return false;
+            }
+            if(auto* previous=texture_resources.commit_replacement(retained_asset_browser_texture_handle))
+                SDL_ReleaseGPUTexture(device,previous);
+        } else {
+            retained_asset_browser_texture_handle=texture_resources.acquire({.stable_id="ui.target.editor.asset-browser",
+                .semantic="ui-render-target",.owner="ui.editor.asset-browser",.source="editor-dock-surface",
+                .residency="resident",.metadata=metadata},next_texture);
+            if(!retained_asset_browser_texture_handle.valid()) {
+                SDL_ReleaseGPUTexture(device,next_texture);return false;
+            }
+        }
+        retained_asset_browser_texture=texture_resources.resolve(retained_asset_browser_texture_handle);
+        editor_ui_.set_retained_asset_browser_surface(
+            reinterpret_cast<std::uintptr_t>(retained_asset_browser_texture),width,height);
+        return true;
+    };
     if(!ensure_inspector_texture(retained_inspector_width,retained_inspector_height)) {
-        logger_.error("ui.inspector_texture",SDL_GetError());retained_outliner_gpu.shutdown();retained_inspector_gpu.shutdown();retained_ui_gpu.shutdown();
+        logger_.error("ui.inspector_texture",SDL_GetError());retained_asset_browser_gpu.shutdown();retained_outliner_gpu.shutdown();retained_inspector_gpu.shutdown();retained_ui_gpu.shutdown();
         scene_renderer.reset();ImGui_ImplSDLGPU3_Shutdown();ImGui_ImplSDL3_Shutdown();ImGui::DestroyContext();
         SDL_ReleaseWindowFromGPUDevice(device,window);SDL_DestroyGPUDevice(device);SDL_DestroyWindow(window);SDL_Quit();return 17;
     }
@@ -1891,7 +1937,13 @@ int Application::run_interactive() {
         audio_sources.push_back({asset.id,mounted->uri,asset.content_hash,storage});
     }
     if(!ensure_outliner_texture(retained_outliner_width,retained_outliner_height)) {
-        logger_.error("ui.outliner_texture",SDL_GetError());retained_outliner_gpu.shutdown();retained_inspector_gpu.shutdown();retained_ui_gpu.shutdown();
+        logger_.error("ui.outliner_texture",SDL_GetError());retained_asset_browser_gpu.shutdown();retained_outliner_gpu.shutdown();retained_inspector_gpu.shutdown();retained_ui_gpu.shutdown();
+        scene_renderer.reset();ImGui_ImplSDLGPU3_Shutdown();ImGui_ImplSDL3_Shutdown();ImGui::DestroyContext();
+        SDL_ReleaseWindowFromGPUDevice(device,window);SDL_DestroyGPUDevice(device);SDL_DestroyWindow(window);SDL_Quit();return 17;
+    }
+    if(!ensure_asset_browser_texture(retained_asset_browser_width,retained_asset_browser_height)) {
+        logger_.error("ui.asset_browser_texture",SDL_GetError());retained_asset_browser_gpu.shutdown();
+        retained_outliner_gpu.shutdown();retained_inspector_gpu.shutdown();retained_ui_gpu.shutdown();
         scene_renderer.reset();ImGui_ImplSDLGPU3_Shutdown();ImGui_ImplSDL3_Shutdown();ImGui::DestroyContext();
         SDL_ReleaseWindowFromGPUDevice(device,window);SDL_DestroyGPUDevice(device);SDL_DestroyWindow(window);SDL_Quit();return 17;
     }
@@ -1928,12 +1980,13 @@ int Application::run_interactive() {
 
     bool running = true;
     bool retained_pointer_captured = false;
-    enum class RetainedInputSurface : std::uint8_t { scene, inspector, outliner };
+    enum class RetainedInputSurface : std::uint8_t { scene, inspector, outliner, asset_browser };
     RetainedInputSurface retained_input_surface=RetainedInputSurface::scene;
     bool retained_text_input_active = false;
     std::uint64_t retained_keyboard_revision = 0;
     std::string retained_inspector_document_cache;
     std::string retained_outliner_document_cache;
+    std::string retained_asset_browser_document_cache;
     const auto sync_retained_keyboard=[&] {
         const auto request=retained_ui.keyboard_request();
         if(request.revision==retained_keyboard_revision) return;
@@ -1944,6 +1997,8 @@ int Application::run_interactive() {
                 editor_ui_.retained_inspector_window_at(request.caret_x,request.caret_y):
                 retained_input_surface==RetainedInputSurface::outliner?
                     editor_ui_.retained_outliner_window_at(request.caret_x,request.caret_y):
+                retained_input_surface==RetainedInputSurface::asset_browser?
+                    editor_ui_.retained_asset_browser_window_at(request.caret_x,request.caret_y):
                     editor_ui_.scene_window_at(request.caret_x,request.caret_y)) {
                 area.x=position->x; area.y=position->y;
                 area.h=std::max(1,static_cast<int>(std::lround(request.line_height*position->scale_y)));
@@ -2017,25 +2072,37 @@ int Application::run_interactive() {
                     editor_ui_.retained_inspector_pointer_at(event.motion.x,event.motion.y);
                 const auto outliner_pointer=options_.player_mode?std::optional<ScenePointerPosition>{}:
                     editor_ui_.retained_outliner_pointer_at(event.motion.x,event.motion.y);
+                const auto asset_browser_pointer=options_.player_mode?std::optional<ScenePointerPosition>{}:
+                    editor_ui_.retained_asset_browser_pointer_at(event.motion.x,event.motion.y);
                 std::optional<ScenePointerPosition> pointer;
                 if(options_.player_mode) {
                     int width{},height{};SDL_GetWindowSize(window,&width,&height);
                     if(width>0&&height>0)pointer=ScenePointerPosition{static_cast<std::int32_t>(event.motion.x*scene_renderer->width()/width),
                         static_cast<std::int32_t>(event.motion.y*scene_renderer->height()/height)};
                 } else pointer=editor_ui_.scene_pointer_at(event.motion.x,event.motion.y);
-                if(outliner_pointer) {
+                if(asset_browser_pointer) {
                     static_cast<void>(retained_ui.pointer_leave());
                     static_cast<void>(retained_ui.surface_pointer_leave("editor.inspector"));
+                    static_cast<void>(retained_ui.surface_pointer_leave("editor.outliner"));
+                    retained_pointer_captured=!retained_ui.surface_pointer_move(
+                        "editor.asset-browser",asset_browser_pointer->x,asset_browser_pointer->y);
+                    retained_input_surface=RetainedInputSurface::asset_browser;
+                } else if(outliner_pointer) {
+                    static_cast<void>(retained_ui.pointer_leave());
+                    static_cast<void>(retained_ui.surface_pointer_leave("editor.inspector"));
+                    static_cast<void>(retained_ui.surface_pointer_leave("editor.asset-browser"));
                     retained_pointer_captured=!retained_ui.surface_pointer_move("editor.outliner",outliner_pointer->x,outliner_pointer->y);
                     retained_input_surface=RetainedInputSurface::outliner;
                 } else if(inspector_pointer) {
                     static_cast<void>(retained_ui.pointer_leave());
                     static_cast<void>(retained_ui.surface_pointer_leave("editor.outliner"));
+                    static_cast<void>(retained_ui.surface_pointer_leave("editor.asset-browser"));
                     retained_pointer_captured=!retained_ui.surface_pointer_move("editor.inspector",inspector_pointer->x,inspector_pointer->y);
                     retained_input_surface=RetainedInputSurface::inspector;
                 } else if (pointer) {
                     static_cast<void>(retained_ui.surface_pointer_leave("editor.inspector"));
                     static_cast<void>(retained_ui.surface_pointer_leave("editor.outliner"));
+                    static_cast<void>(retained_ui.surface_pointer_leave("editor.asset-browser"));
                     retained_pointer_captured = !retained_ui.pointer_move(pointer->x, pointer->y);
                     retained_input_surface=RetainedInputSurface::scene;
                 } else {
@@ -2043,6 +2110,7 @@ int Application::run_interactive() {
                     if(!options_.player_mode) {
                         static_cast<void>(retained_ui.surface_pointer_leave("editor.inspector"));
                         static_cast<void>(retained_ui.surface_pointer_leave("editor.outliner"));
+                        static_cast<void>(retained_ui.surface_pointer_leave("editor.asset-browser"));
                     }
                     retained_pointer_captured = false;
                 }
@@ -2058,18 +2126,26 @@ int Application::run_interactive() {
                     editor_ui_.retained_inspector_pointer_at(event.button.x,event.button.y);
                 const auto outliner_pointer=options_.player_mode?std::optional<ScenePointerPosition>{}:
                     editor_ui_.retained_outliner_pointer_at(event.button.x,event.button.y);
+                const auto asset_browser_pointer=options_.player_mode?std::optional<ScenePointerPosition>{}:
+                    editor_ui_.retained_asset_browser_pointer_at(event.button.x,event.button.y);
                 std::optional<ScenePointerPosition> pointer;
                 if(options_.player_mode) {
                     int width{},height{};SDL_GetWindowSize(window,&width,&height);
                     if(width>0&&height>0)pointer=ScenePointerPosition{static_cast<std::int32_t>(event.button.x*scene_renderer->width()/width),
                         static_cast<std::int32_t>(event.button.y*scene_renderer->height()/height)};
                 } else pointer=editor_ui_.scene_pointer_at(event.button.x,event.button.y);
-                if (outliner_pointer||inspector_pointer||pointer) {
+                if (asset_browser_pointer||outliner_pointer||inspector_pointer||pointer) {
                     std::uint32_t button = 3;
                     if (event.button.button == SDL_BUTTON_LEFT) button = 0;
                     else if (event.button.button == SDL_BUTTON_RIGHT) button = 1;
                     else if (event.button.button == SDL_BUTTON_MIDDLE) button = 2;
-                    if(outliner_pointer) {
+                    if(asset_browser_pointer) {
+                        static_cast<void>(retained_ui.surface_pointer_move(
+                            "editor.asset-browser",asset_browser_pointer->x,asset_browser_pointer->y));
+                        if(button<=2)retained_pointer_captured=!retained_ui.surface_pointer_button(
+                            "editor.asset-browser",button,event.type==SDL_EVENT_MOUSE_BUTTON_DOWN);
+                        retained_input_surface=RetainedInputSurface::asset_browser;
+                    } else if(outliner_pointer) {
                         static_cast<void>(retained_ui.surface_pointer_move("editor.outliner",outliner_pointer->x,outliner_pointer->y));
                         if(button<=2)retained_pointer_captured=!retained_ui.surface_pointer_button(
                             "editor.outliner",button,event.type==SDL_EVENT_MOUSE_BUTTON_DOWN);
@@ -2095,6 +2171,8 @@ int Application::run_interactive() {
                     retained_ui.surface_key("editor.inspector",retained_key,pressed,modifiers):
                     retained_input_surface==RetainedInputSurface::outliner?
                         retained_ui.surface_key("editor.outliner",retained_key,pressed,modifiers):
+                    retained_input_surface==RetainedInputSurface::asset_browser?
+                        retained_ui.surface_key("editor.asset-browser",retained_key,pressed,modifiers):
                         retained_ui.key(retained_key,pressed,modifiers);
                 InputSample input_sample{InputPhysicalKind::keyboard_scancode,
                     static_cast<std::uint32_t>(event.key.scancode),event.type==SDL_EVENT_KEY_DOWN?1.0F:0.0F,
@@ -2135,6 +2213,7 @@ int Application::run_interactive() {
             if(event.type==SDL_EVENT_TEXT_INPUT) {
                 if(retained_input_surface==RetainedInputSurface::inspector)static_cast<void>(retained_ui.surface_text_input("editor.inspector",event.text.text));
                 else if(retained_input_surface==RetainedInputSurface::outliner)static_cast<void>(retained_ui.surface_text_input("editor.outliner",event.text.text));
+                else if(retained_input_surface==RetainedInputSurface::asset_browser)static_cast<void>(retained_ui.surface_text_input("editor.asset-browser",event.text.text));
                 else static_cast<void>(retained_ui.text_input(event.text.text));
                 sync_retained_keyboard();
             }
@@ -2143,6 +2222,8 @@ int Application::run_interactive() {
                     "editor.inspector",event.edit.text,event.edit.start,event.edit.length));
                 else if(retained_input_surface==RetainedInputSurface::outliner)static_cast<void>(retained_ui.surface_text_composition(
                     "editor.outliner",event.edit.text,event.edit.start,event.edit.length));
+                else if(retained_input_surface==RetainedInputSurface::asset_browser)static_cast<void>(retained_ui.surface_text_composition(
+                    "editor.asset-browser",event.edit.text,event.edit.start,event.edit.length));
                 else static_cast<void>(retained_ui.text_composition(event.edit.text,event.edit.start,event.edit.length));
                 sync_retained_keyboard();
             }
@@ -2162,6 +2243,17 @@ int Application::run_interactive() {
         }
 
         for(const auto& action:retained_ui.consume_action_events()) {
+            if(!options_.player_mode&&action.surface_id=="editor.asset-browser"&&action.action_id=="asset.select") {
+                const auto binding=nlohmann::json::parse(action.binding_json,nullptr,false);
+                if(!binding.is_object()||binding.value("kind",std::string{})!="editor-asset-selection"||
+                   !editor_ui_.select_asset(binding.value("assetId",std::string{}))) {
+                    logger_.error("ui.asset_browser_action",std::string("Invalid or unavailable asset selection binding for ")+action.node_id);
+                } else {
+                    editor_ui_.set_last_action_status("Selected asset from the retained Asset Browser.");
+                    logger_.info("ui.asset_browser_action",action.binding_json);
+                }
+                continue;
+            }
             if(!options_.player_mode&&action.surface_id=="editor.outliner"&&action.action_id=="outliner.select") {
                 const auto binding=nlohmann::json::parse(action.binding_json,nullptr,false);
                 if(!binding.is_object()||binding.value("kind",std::string{})!="editor-entity-selection"||
@@ -2261,10 +2353,14 @@ int Application::run_interactive() {
             const auto inspector_height=editor_ui_.requested_inspector_height();
             const auto outliner_width=editor_ui_.requested_outliner_width();
             const auto outliner_height=editor_ui_.requested_outliner_height();
+            const auto asset_browser_width=editor_ui_.requested_asset_browser_width();
+            const auto asset_browser_height=editor_ui_.requested_asset_browser_height();
             if(!ensure_inspector_texture(inspector_width,inspector_height)||
                !retained_ui.resize_surface("editor.inspector",inspector_width,inspector_height,1.0F)||
                !ensure_outliner_texture(outliner_width,outliner_height)||
-               !retained_ui.resize_surface("editor.outliner",outliner_width,outliner_height,1.0F)) {
+               !retained_ui.resize_surface("editor.outliner",outliner_width,outliner_height,1.0F)||
+               !ensure_asset_browser_texture(asset_browser_width,asset_browser_height)||
+               !retained_ui.resize_surface("editor.asset-browser",asset_browser_width,asset_browser_height,1.0F)) {
                 logger_.error("ui.inspector_surface",retained_ui.last_error().empty()?SDL_GetError():std::string(retained_ui.last_error()));break;
             }
             auto inspector_document=nlohmann::json::parse(editor_ui_.retained_inspector_document_json(),nullptr,false);
@@ -2306,6 +2402,28 @@ int Application::run_interactive() {
             }
             if(!retained_ui.render_surface("editor.outliner")) {
                 logger_.error("ui.outliner_render",retained_ui.last_error());break;
+            }
+            auto asset_browser_document=nlohmann::json::parse(
+                editor_ui_.retained_asset_browser_document_json(),nullptr,false);
+            if(asset_browser_document.is_object()) {
+                asset_browser_document["designTokens"]["surfaceWidthPx"]=asset_browser_width;
+                asset_browser_document["designTokens"]["surfaceColor"]="#0b111b";
+                asset_browser_document["designTokens"]["groupColor"]="#111b29";
+                asset_browser_document["designTokens"]["textColor"]="#dce5f1";
+                asset_browser_document["designTokens"]["accentColor"]="#77b7ff";
+                asset_browser_document["designTokens"]["embeddedSurface"]=true;
+                asset_browser_document["designTokens"]["gridColumns"]=std::clamp(asset_browser_width/176U,1U,8U);
+                const auto document_source=asset_browser_document.dump();
+                if(document_source!=retained_asset_browser_document_cache) {
+                    if(!retained_ui.reload_surface_document("editor.asset-browser","ui.editor-asset-browser",
+                        retained_ui_rml_from_semantic_document(document_source))) {
+                        logger_.error("ui.asset_browser_reload",retained_ui.last_error());break;
+                    }
+                    retained_asset_browser_document_cache=document_source;
+                }
+            }
+            if(!retained_ui.render_surface("editor.asset-browser")) {
+                logger_.error("ui.asset_browser_render",retained_ui.last_error());break;
             }
         }
         sync_retained_keyboard();
@@ -2372,6 +2490,13 @@ int Application::run_interactive() {
             editor_ui_.set_managed_debug_context(std::move(debug_events),managed_debug_last_action_json_);
             editor_ui_.set_input_status(input_sources.observe_json());
             editor_ui_.set_project_input_capture(input_capture_observation());
+            if(frame==1U&&!options_.editor_selected_asset_id.empty()) {
+                const auto context=editor_ui_.editor_context_snapshot();
+                static_cast<void>(editor_ui_.apply_editor_context_intent(EditorUiContextIntent{
+                    .expected_revision=context.revision,
+                    .focused_panel_id=std::string{"editor.panel.assets"},
+                    .active_tab_id=std::string{"editor.panel.assets"}}));
+            }
             poll_package_job();editor_ui_.render();
             if (const auto request = editor_ui_.consume_project_input_request()) {
                 if (request->kind == ProjectSettingsInputMapPanelRequestKind::begin_capture) {
@@ -2416,7 +2541,7 @@ int Application::run_interactive() {
                 nullptr)) {
             logger_.error("render.swapchain", SDL_GetError());
             scene_renderer->rollback_texture_streaming_frame();
-            thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();
+            thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
             SDL_CancelGPUCommandBuffer(command_buffer);
             break;
         }
@@ -2471,10 +2596,10 @@ int Application::run_interactive() {
                 logger_.error("ui.retained_upload",retained_ui_gpu.last_error());
                 if(SDL_SubmitGPUCommandBuffer(command_buffer)) {
                     scene_renderer->commit_texture_streaming_frame();thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();
-                    retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();
+                    retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();retained_asset_browser_gpu.commit_uploads();
                 } else {
                     logger_.error("render.submit_after_ui_failure",SDL_GetError());scene_renderer->rollback_texture_streaming_frame();
-                    thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();
+                    thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
                 }
                 running=false;break;
             }
@@ -2484,10 +2609,10 @@ int Application::run_interactive() {
                     logger_.error("ui.inspector_upload",retained_inspector_gpu.last_error());
                     if(SDL_SubmitGPUCommandBuffer(command_buffer)) {
                         scene_renderer->commit_texture_streaming_frame();thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();
-                        retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();
+                        retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();retained_asset_browser_gpu.commit_uploads();
                     } else {
                         logger_.error("render.submit_after_inspector_failure",SDL_GetError());scene_renderer->rollback_texture_streaming_frame();
-                        thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();
+                        thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
                     }
                     running=false;break;
                 }
@@ -2499,21 +2624,38 @@ int Application::run_interactive() {
                     logger_.error("ui.outliner_upload",retained_outliner_gpu.last_error());
                     if(SDL_SubmitGPUCommandBuffer(command_buffer)) {
                         scene_renderer->commit_texture_streaming_frame();thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();
-                        retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();
+                        retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();retained_asset_browser_gpu.commit_uploads();
                     } else {
                         logger_.error("render.submit_after_outliner_failure",SDL_GetError());scene_renderer->rollback_texture_streaming_frame();
-                        thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();
+                        thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
                     }
                     running=false;break;
                 }
                 retained_outliner_gpu.render(command_buffer,retained_outliner_texture,
                     retained_outliner_width,retained_outliner_height,true);
             }
+            if(!runtime_surface_mode&&retained_asset_browser_texture) {
+                if(!retained_asset_browser_gpu.upload(command_buffer,
+                    retained_ui.surface_render_packet("editor.asset-browser"))) {
+                    logger_.error("ui.asset_browser_upload",retained_asset_browser_gpu.last_error());
+                    if(SDL_SubmitGPUCommandBuffer(command_buffer)) {
+                        scene_renderer->commit_texture_streaming_frame();thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();
+                        retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();retained_asset_browser_gpu.commit_uploads();
+                    } else {
+                        logger_.error("render.submit_after_asset_browser_failure",SDL_GetError());scene_renderer->rollback_texture_streaming_frame();
+                        thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
+                    }
+                    running=false;break;
+                }
+                retained_asset_browser_gpu.render(command_buffer,retained_asset_browser_texture,
+                    retained_asset_browser_width,retained_asset_browser_height,true);
+            }
             if (frame == 0) {
                 logger_.info("ui.retained_gpu",retained_ui_gpu.status_json());
                 if(!runtime_surface_mode) {
                     logger_.info("ui.retained_inspector_gpu",retained_inspector_gpu.status_json());
                     logger_.info("ui.retained_outliner_gpu",retained_outliner_gpu.status_json());
+                    logger_.info("ui.retained_asset_browser_gpu",retained_asset_browser_gpu.status_json());
                 }
             }
             const bool capture_this_frame = !options_.capture_frame_path.empty() && frame + 1 == requested_frames;
@@ -2557,21 +2699,21 @@ int Application::run_interactive() {
             if (!readback_fence) {
                 logger_.error(scene_pick_request?"render.pick_submit":"render.gpu_visibility_readback_submit", SDL_GetError());
                 scene_renderer->rollback_texture_streaming_frame();
-                thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();
+                thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
                 break;
             }
             scene_renderer->commit_texture_streaming_frame();
-            thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();
+            thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();retained_asset_browser_gpu.commit_uploads();
             if(scene_pick_request)scene_renderer->attach_pick_fence(readback_fence);
             else scene_renderer->attach_gpu_visibility_readback_fence(readback_fence);
         } else if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
             logger_.error("render.submit", SDL_GetError());
             scene_renderer->rollback_texture_streaming_frame();
-            thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();
+            thumbnail_gpu_cache.rollback_uploads();retained_ui_gpu.rollback_uploads();retained_inspector_gpu.rollback_uploads();retained_outliner_gpu.rollback_uploads();retained_asset_browser_gpu.rollback_uploads();
             break;
         } else {
             scene_renderer->commit_texture_streaming_frame();
-            thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();
+            thumbnail_gpu_cache.commit_uploads();retained_ui_gpu.commit_uploads();retained_inspector_gpu.commit_uploads();retained_outliner_gpu.commit_uploads();retained_asset_browser_gpu.commit_uploads();
         }
         if(frame==0)logger_.info("render.scene",scene_renderer->status_json());
         performance_submit_wait=std::chrono::duration<double,std::milli>(
@@ -2653,6 +2795,9 @@ int Application::run_interactive() {
         if(auto* texture=texture_resources.remove(retained_inspector_texture_handle))SDL_ReleaseGPUTexture(device,texture);
     if(retained_outliner_texture_handle.valid())
         if(auto* texture=texture_resources.remove(retained_outliner_texture_handle))SDL_ReleaseGPUTexture(device,texture);
+    if(retained_asset_browser_texture_handle.valid())
+        if(auto* texture=texture_resources.remove(retained_asset_browser_texture_handle))SDL_ReleaseGPUTexture(device,texture);
+    retained_asset_browser_gpu.shutdown();
     retained_outliner_gpu.shutdown();
     retained_inspector_gpu.shutdown();
     retained_ui_gpu.shutdown();

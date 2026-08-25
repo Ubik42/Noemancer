@@ -178,8 +178,10 @@ std::string role_class(const std::string_view role) {
     if (role == "property") return "property-row";
     if (role == "button") return "action-button";
     if (role == "tree" || role == "list") return "selectable-collection";
+    if (role == "grid") return "selectable-collection grid-collection";
     if (role == "tree-item" || role == "treeitem") return "selectable-row tree-row";
     if (role == "list-item" || role == "listitem") return "selectable-row list-row";
+    if (role == "grid-item" || role == "griditem") return "selectable-card";
     if (role == "meter" || role == "status" || role == "ability-slot") return "property-row " + std::string(role);
     return "node";
 }
@@ -204,8 +206,16 @@ Rml::Element* ancestor_with_role(Rml::Element* element,const std::string_view ro
     return nullptr;
 }
 
+std::size_t bounded_grid_columns(const Json& source,const std::size_t fallback=4U) {
+    if(!source.is_number_integer()&&!source.is_number_unsigned())
+        return std::clamp(fallback,std::size_t{1U},std::size_t{12U});
+    try{return static_cast<std::size_t>(std::clamp(source.get<std::int64_t>(),INT64_C(1),INT64_C(12)));}
+    catch(...){return std::clamp(fallback,std::size_t{1U},std::size_t{12U});}
+}
+
 bool selectable_row_role(const std::string_view role) {
-    return role=="tree-item"||role=="treeitem"||role=="list-item"||role=="listitem";
+    return role=="tree-item"||role=="treeitem"||role=="list-item"||role=="listitem"||
+        role=="grid-item"||role=="griditem";
 }
 
 Rml::Element* selectable_row(Rml::Element* element) {
@@ -217,7 +227,7 @@ Rml::Element* selectable_row(Rml::Element* element) {
 Rml::Element* selectable_collection(Rml::Element* element) {
     for(auto* current=element;current!=nullptr;current=current->GetParentNode()) {
         const auto role=current->GetAttribute<Rml::String>("data-role","");
-        if(role=="tree"||role=="list")return current;
+        if(role=="tree"||role=="list"||role=="grid")return current;
     }
     return nullptr;
 }
@@ -363,15 +373,26 @@ private:
         if(row==nullptr||collection==nullptr)return;
         const auto key=static_cast<Rml::Input::KeyIdentifier>(event.GetParameter<int>("key_identifier",0));
         if(key==Rml::Input::KI_RETURN) {emit_invoke(row);event.StopPropagation();return;}
-        if(key!=Rml::Input::KI_UP&&key!=Rml::Input::KI_DOWN&&key!=Rml::Input::KI_HOME&&key!=Rml::Input::KI_END)return;
+        const auto collection_role=collection->GetAttribute<Rml::String>("data-role","");
+        const auto grid=collection_role=="grid";
+        if(key!=Rml::Input::KI_UP&&key!=Rml::Input::KI_DOWN&&key!=Rml::Input::KI_HOME&&key!=Rml::Input::KI_END&&
+           (!grid||(key!=Rml::Input::KI_LEFT&&key!=Rml::Input::KI_RIGHT)))return;
         std::vector<Rml::Element*> rows;collect_selectable_rows(collection,rows);
         if(rows.empty())return;
         const auto found=std::ranges::find(rows,row);
         std::size_t index=found==rows.end()?0U:static_cast<std::size_t>(std::distance(rows.begin(),found));
+        std::size_t columns=1U;
+        if(grid) {
+            try { columns=static_cast<std::size_t>(std::clamp(
+                std::stoi(collection->GetAttribute<Rml::String>("data-grid-columns","1")),1,12)); }
+            catch(...) { columns=1U; }
+        }
         if(key==Rml::Input::KI_HOME)index=0U;
         else if(key==Rml::Input::KI_END)index=rows.size()-1U;
-        else if(key==Rml::Input::KI_UP&&index>0U)--index;
-        else if(key==Rml::Input::KI_DOWN&&index+1U<rows.size())++index;
+        else if(grid&&key==Rml::Input::KI_LEFT&&index>0U)--index;
+        else if(grid&&key==Rml::Input::KI_RIGHT&&index+1U<rows.size())++index;
+        else if(key==Rml::Input::KI_UP&&index>=(grid?columns:1U))index-=grid?columns:1U;
+        else if(key==Rml::Input::KI_DOWN&&index+(grid?columns:1U)<rows.size())index+=grid?columns:1U;
         select(rows[index],true);event.StopPropagation();
     }
 
@@ -402,7 +423,7 @@ private:
             if(found!=expansion_state_.end())apply_expansion(element,found->second);
         }
         const auto role=element->GetAttribute<Rml::String>("data-role","");
-        if(role=="tree"||role=="list") {
+        if(role=="tree"||role=="list"||role=="grid") {
             const auto found=selection_state_.find(local_state_key(surface_id,document_id,semantic_id_for_element(element)));
             if(found!=selection_state_.end()) {
                 std::vector<Rml::Element*> rows;collect_selectable_rows(element,rows,false);
@@ -450,6 +471,14 @@ void collect_element_observations(Rml::Element* element, const std::string& sema
             observation["binding"] = element->GetAttribute<Rml::String>("data-binding", "");
         if (element->HasAttribute("data-action"))
             observation["action"] = element->GetAttribute<Rml::String>("data-action", "");
+        if(element->HasAttribute("data-grid-columns"))
+            observation["collection"]["gridColumns"]=element->GetAttribute<int>("data-grid-columns",1);
+        if(element->HasAttribute("data-image-source"))
+            observation["presentation"]["imageSource"]=element->GetAttribute<Rml::String>("data-image-source","");
+        if(element->HasAttribute("data-metadata")) {
+            const auto metadata=Json::parse(element->GetAttribute<Rml::String>("data-metadata","{}"),nullptr,false);
+            if(metadata.is_object())observation["metadata"]=metadata;
+        }
         if(element->HasAttribute("data-expanded"))
             observation["state"]["expanded"]=element->GetAttribute<Rml::String>("data-expanded","true")=="true";
         if(element->HasAttribute("data-enabled"))
@@ -1136,6 +1165,13 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
         else roots.push_back(node);
     }
     const auto tokens=source.value("designTokens",Json::object());
+    const auto default_grid_columns=bounded_grid_columns(tokens.value("gridColumns",Json(4)),4U);
+    std::unordered_map<std::string,std::size_t> grid_columns;
+    for(const auto& node:nodes)if(node.value("role",std::string{})=="grid") {
+        const auto presentation=node.value("presentation",Json::object());
+        grid_columns[node.value("id",std::string{})]=bounded_grid_columns(
+            presentation.value("gridColumns",Json(default_grid_columns)),default_grid_columns);
+    }
     const auto surface_color=tokens.value("surfaceColor",std::string("#11151cee"));
     const auto group_color=tokens.value("groupColor",std::string("#1a202a"));
     const auto text_color=tokens.value("textColor",std::string("#e8edf5"));
@@ -1160,6 +1196,17 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
               ".selectable-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;align-items:center;width:100%;min-height:28px;padding:4px 8px;pointer-events:auto;}"
               ".selectable-row:hover{background:#222b38;}.selectable-row:focus{background:#28384c;outline:1px " << escape_markup(accent_color) << ";}"
               ".selectable-row.selected{background:#294461;color:#ffffff;}.selectable-row.disabled{opacity:0.48;}"
+              ".grid-collection{flex-direction:column;padding:4px;overflow-y:auto;}"
+              ".grid-collection>.label{width:100%;padding:4px 5px;color:#91a0b4;}"
+              ".grid-row{box-sizing:border-box;display:flex;flex-direction:row;flex-shrink:0;width:100%;}"
+              ".selectable-card{box-sizing:border-box;display:flex;flex-direction:column;flex-shrink:0;min-width:0;min-height:92px;padding:7px;pointer-events:auto;background:#171e28;border-width:2px;border-color:transparent;}"
+              ".selectable-card:hover{background:#202b39;}.selectable-card:focus{background:#223247;border-color:" << escape_markup(accent_color) << ";}"
+              ".selectable-card.selected{background:#294461;border-color:" << escape_markup(accent_color) << ";color:#ffffff;}.selectable-card.disabled{opacity:0.48;}"
+              ".selectable-card>.label{width:100%;margin-top:4px;color:" << escape_markup(text_color) << ";overflow:hidden;}"
+              ".selectable-card>.value{width:100%;margin-top:2px;overflow:hidden;}"
+              ".collection-card-image{box-sizing:border-box;width:100%;height:48px;padding:15px 4px;background:#0c1118;color:#66768b;text-align:center;font-size:11px;border-width:1px;border-color:#253143;}"
+              ".collection-card-metadata{display:flex;flex-direction:column;width:100%;margin-top:3px;color:#91a0b4;font-size:11px;}"
+              ".collection-card-meta{width:100%;overflow:hidden;}"
               ".tree-row{flex-direction:column;align-items:stretch;min-height:0;padding:0;background:transparent;}"
               ".tree-row>.label{box-sizing:border-box;width:100%;min-height:28px;padding:5px 8px;pointer-events:auto;}"
               ".tree-row:hover,.tree-row:focus,.tree-row.selected{background:transparent;outline-width:0;}"
@@ -1204,6 +1251,23 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
         const auto expanded=state.value("expanded",true);
         const auto selected=state.value("selected",false);
         const auto selectable=selectable_row_role(role);
+        const auto grid_item=role=="grid-item"||role=="griditem";
+        const auto parent_id=node.contains("parentId")&&node.at("parentId").is_string()?
+            node.at("parentId").get<std::string>():std::string{};
+        const auto grid_column_count=grid_columns.contains(parent_id)?grid_columns.at(parent_id):default_grid_columns;
+        const auto presentation=node.value("presentation",Json::object());
+        auto image_source=presentation.value("imageSource",std::string{});
+        if(image_source.size()>1024U)image_source.clear();
+        Json compact_metadata=Json::object();
+        if(const auto metadata=node.find("metadata");metadata!=node.end()&&metadata->is_object()) {
+            std::size_t count{};
+            for(auto field=metadata->begin();field!=metadata->end()&&count<8U;++field) {
+                if(field.value().is_string())compact_metadata[field.key()]=field.value().get<std::string>().substr(0U,256U);
+                else if(field.value().is_boolean()||field.value().is_number()||field.value().is_null())compact_metadata[field.key()]=field.value();
+                else continue;
+                ++count;
+            }
+        }
         std::string error;
         if(state.contains("error"))error=state.at("error").is_string()?state.at("error").get<std::string>():state.at("error").dump();
         auto classes=role_class(role);
@@ -1221,9 +1285,13 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
                << "\" data-editable=\"" << (editable?"true":"false") << "\"";
         if(action_button&&!enabled)output << " disabled";
         if(role=="group")output << " data-expanded=\"" << (expanded?"true":"false") << "\"";
+        if(role=="grid")output << " data-grid-columns=\"" << grid_columns.at(id) << "\"";
         if(selectable)output << " data-selected=\"" << (selected?"true":"false")
                              << "\" aria-selected=\"" << (selected?"true":"false")
                              << "\" tabindex=\"0\"";
+        if(grid_item)output << " style=\"width:" << compact_number(100.0/static_cast<double>(grid_column_count)) << "%\"";
+        if(!image_source.empty())output << " data-image-source=\"" << escape_markup(image_source) << "\"";
+        if(!compact_metadata.empty())output << " data-metadata=\"" << escape_markup(compact_metadata.dump()) << "\"";
         if(!error.empty())output << " data-error=\"" << escape_markup(error) << "\"";
         if(action_binding.is_object()&&!action_binding.empty())
             output << " data-binding=\"" << escape_markup(action_binding.dump()) << "\"";
@@ -1237,6 +1305,9 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
             output << "</div></div>";
             return;
         }
+        if(grid_item&&!image_source.empty())
+            output << "<div class=\"collection-card-image\" data-image-source=\"" << escape_markup(image_source)
+                   << "\">image</div>";
         if(!(embedded_surface&&role=="inspector"))
             output << "<span class=\"label\">" << escape_markup(node.value("label", id)) << "</span>";
         if (role=="meter" && node.contains("value") && node.at("value").is_object()) {
@@ -1258,9 +1329,9 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
             output << "<span class=\"value\">" << (cooldown>0.0?std::to_string(cooldown)+"s":"Ready") << "</span>";
         } else if (node.contains("value") && !node.at("value").is_null()) {
             const auto value_type=node.value("binding",Json::object()).value("valueType",std::string{});
-            const auto presentation=node.value("presentation",Json::object());
-            const auto control=presentation.value("control",std::string{});
-            const auto constraints=presentation.value("constraints",Json::object());
+            const auto value_presentation=node.value("presentation",Json::object());
+            const auto control=value_presentation.value("control",std::string{});
+            const auto constraints=value_presentation.value("constraints",Json::object());
             const auto value=node.at("value").is_string()?node.at("value").get<std::string>():
                 node.at("value").is_number()?compact_number(node.at("value").get<double>()):node.at("value").dump();
             if(editable&&control=="checkbox"&&node.at("value").is_boolean())
@@ -1294,6 +1365,26 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
                 output << "<input id=\"" << escape_markup(id+".editor") << "\" class=\"value-editor\" type=\"text\" value=\""
                        << escape_markup(value) << "\" data-owner-semantic-id=\"" << escape_markup(id) << "\"" << (!enabled?" disabled":"") << "/>";
             else output << "<span class=\"value\">" << escape_markup(value) << "</span>";
+        }
+        if(grid_item&&!compact_metadata.empty()) {
+            output << "<div class=\"collection-card-metadata\">";
+            for(auto field=compact_metadata.begin();field!=compact_metadata.end();++field) {
+                const auto value=field.value().is_string()?field.value().get<std::string>():field.value().dump();
+                output << "<span class=\"collection-card-meta\">" << escape_markup(field.key()) << ": "
+                       << escape_markup(value) << "</span>";
+            }
+            output << "</div>";
+        }
+        if(role=="grid") {
+            if(const auto found=children.find(id);found!=children.end()) {
+                for(std::size_t index=0;index<found->second.size();++index) {
+                    if(index%grid_columns.at(id)==0U)output << "<div class=\"grid-row\">";
+                    self(self,found->second[index]);
+                    if(index%grid_columns.at(id)+1U==grid_columns.at(id)||index+1U==found->second.size())output << "</div>";
+                }
+            }
+            output << "</div>";
+            return;
         }
         if (const auto found = children.find(id); found != children.end()) for (const auto& child : found->second) self(self, child);
         output << (action_button?"</button>":"</div>");

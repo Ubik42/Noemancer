@@ -3,7 +3,7 @@
   "updated": "2026-08-24",
   "status": "active-development",
   "currentSlice": "editor.retained-outliner-and-asset-browser",
-  "currentStep": "migrate-asset-browser-to-retained-semantic-ui",
+  "currentStep": "complete-retained-asset-browser-images-and-large-library-navigation",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -36,7 +36,8 @@
     "agent.open-editor-live-session-transport",
     "production.virtual-filesystem-and-package-mount",
     "production.vfs-project-and-cooked-asset-migration",
-    "editor.retained-outliner"
+    "editor.retained-outliner",
+    "editor.retained-asset-browser-collection"
   ],
   "closedExperiments": [
     {

@@ -47,6 +47,66 @@ int main() {
         std::cerr << "Editor Asset Browser did not select inspectable imported metadata\n";
         return 9;
     }
+    const auto asset_browser_source = model.asset_browser_semantic_ui_document_json({.page_limit = 5U});
+    const auto asset_browser = nlohmann::json::parse(asset_browser_source);
+    const auto asset_browser_validation = nlohmann::json::parse(
+        noemancer::semantic_ui_validation_json(asset_browser_source));
+    if (!asset_browser.value("valid", false) || !asset_browser_validation.value("valid", false) ||
+        asset_browser.value("revision", 0U) != assets.revision() ||
+        asset_browser.at("page").value("total", 0U) != model.assets().size() ||
+        asset_browser.at("page").value("returned", 0U) != 5U ||
+        !asset_browser.at("page").value("truncated", false)) {
+        std::cerr << "Asset Browser semantic document is not valid or bounded\n";
+        return 42;
+    }
+    const auto& asset_nodes = asset_browser.at("nodes");
+    for (std::size_t index = 2U; index < asset_nodes.size(); ++index) {
+        if (asset_nodes.at(index - 1U).at("asset").value("id", "") >=
+            asset_nodes.at(index).at("asset").value("id", "")) {
+            std::cerr << "Asset Browser cards are not stably sorted by Asset ID\n";
+            return 43;
+        }
+    }
+    const auto& first_card = asset_nodes.at(1);
+    const auto& first_action = first_card.at("actions").at(0);
+    if (first_action.at("binding").value("kind", "") != "editor-asset-selection" ||
+        first_action.at("binding").value("assetId", "") != first_card.at("asset").value("id", "") ||
+        first_card.at("actions").at(3).value("handler", "") !=
+            "EditorModel.generate_selected_asset_thumbnail") {
+        std::cerr << "Asset card selection binding or existing action handlers are incomplete\n";
+        return 44;
+    }
+    const auto next_cursor = asset_browser.at("page").at("nextCursor").get<std::size_t>();
+    const auto second_page_source = model.asset_browser_semantic_ui_document_json(
+        {.cursor = next_cursor, .page_limit = 5U});
+    const auto second_page = nlohmann::json::parse(second_page_source);
+    if (second_page.at("nodes").at(1).at("asset").value("id", "") <=
+            asset_nodes.back().at("asset").value("id", "") ||
+        model.asset_browser_semantic_ui_document_json({.cursor = next_cursor, .page_limit = 5U}) !=
+            second_page_source) {
+        std::cerr << "Asset Browser pagination is overlapping or non-deterministic\n";
+        return 45;
+    }
+    const auto selected_asset_id = model.selected_asset()->id;
+    const auto filtered_browser = nlohmann::json::parse(model.asset_browser_semantic_ui_document_json(
+        {.query = selected_asset_id, .page_limit = 8U}));
+    if (filtered_browser.at("page").value("matched", 0U) != 1U ||
+        !filtered_browser.at("nodes").at(1).at("state").value("selected", false) ||
+        filtered_browser.at("selection").value("assetId", "") != selected_asset_id) {
+        std::cerr << "Asset Browser filtering did not retain the authoritative selection\n";
+        return 46;
+    }
+    const auto past_end = nlohmann::json::parse(model.asset_browser_semantic_ui_document_json(
+        {.cursor = model.assets().size() + 100U, .page_limit = 8U}));
+    const auto hard_limited = nlohmann::json::parse(model.asset_browser_semantic_ui_document_json(
+        {.page_limit = 10000U}));
+    if (past_end.at("page").value("returned", 1U) != 0U ||
+        !past_end.at("page").at("nextCursor").is_null() || past_end.at("nodes").size() != 1U ||
+        hard_limited.at("page").value("limit", 0U) != 256U ||
+        hard_limited.at("page").value("returned", 0U) > 256U) {
+        std::cerr << "Asset Browser cursor boundary or hard page limit is invalid\n";
+        return 47;
+    }
 
     const auto json_string_field = [](const std::string& document, const std::string_view key) {
         const auto marker = "\"" + std::string(key) + "\":\"";

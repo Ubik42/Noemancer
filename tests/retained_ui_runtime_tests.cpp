@@ -205,6 +205,67 @@ int main() {
            nlohmann::json::parse(collection_actions.front().binding_json).at("assetId")!="asset.alpha") {
             std::cerr<<"Selectable tree Enter did not emit stable bounded semantic intent\n";return 46;
         }
+        nlohmann::json grid_nodes=nlohmann::json::array({
+            {{"id","ui.grid"},{"role","grid"},{"label","Items"},
+                {"presentation",{{"gridColumns",3}}},{"state",{{"enabled",true}}}}
+        });
+        for(std::size_t index=0;index<6U;++index) {
+            nlohmann::json item{{"id","item."+std::to_string(index)},{"parentId","ui.grid"},
+                {"role",index==5U?"griditem":"grid-item"},{"label","Item "+std::to_string(index)},
+                {"state",{{"enabled",true}}},{"binding",{{"itemId","item."+std::to_string(index)}}},
+                {"actions",nlohmann::json::array({{{"id","item.open"}}})}};
+            if(index==0U) {
+                item["presentation"]={{"imageSource","preview://item/0"}};
+                item["metadata"]={{"status","Ready"},{"revision",7}};
+            }
+            grid_nodes.push_back(std::move(item));
+        }
+        const auto grid_document=nlohmann::json{{"schemaVersion","noemancer.ui-document/0.1"},
+            {"documentId","ui.grid"},{"designTokens",{{"gridColumns",2}}},{"nodes",std::move(grid_nodes)}};
+        const auto grid_rml=noemancer::retained_ui_rml_from_semantic_document(grid_document.dump());
+        if(grid_rml.find("data-grid-columns=\"3\"")==std::string::npos||
+           grid_rml.find("style=\"width:33.3333%\"")==std::string::npos||
+           grid_rml.find("data-image-source=\"preview://item/0\"")==std::string::npos||
+           grid_rml.find("status: Ready")==std::string::npos||
+           !binary_runtime.load_document("ui.grid",grid_rml)||!binary_runtime.render()||
+           !binary_runtime.focus_node("ui.grid","item.0"))return 49;
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::right,true));
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::down,true));
+        auto grid_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.grid"));
+        const auto grid_node=[&](const std::string_view id) {
+            for(const auto& node:grid_observation.at("nodes"))
+                if(node.at("id").get<std::string>()==id)return node;
+            return nlohmann::json{};
+        };
+        if(!grid_node("item.4").at("state").value("selected",false)||
+           !grid_node("item.4").at("state").value("focused",false)||
+           grid_node("ui.grid").at("collection").at("gridColumns")!=3||
+           grid_node("item.0").at("presentation").at("imageSource")!="preview://item/0"||
+           grid_node("item.0").at("metadata").at("revision")!=7) {
+            std::cerr<<"Grid keyboard navigation or plain-data card projection failed\n";return 50;
+        }
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::left,true));
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::up,true));
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::end,true));
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::home,true));
+        grid_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.grid"));
+        if(!grid_node("item.0").at("state").value("selected",false))return 51;
+        const auto item_two_layout=grid_node("item.2").at("layout");
+        static_cast<void>(binary_runtime.pointer_move(
+            static_cast<int>(item_two_layout.at("x").get<float>()+item_two_layout.at("width").get<float>()*0.5F),
+            static_cast<int>(item_two_layout.at("y").get<float>()+item_two_layout.at("height").get<float>()*0.5F)));
+        static_cast<void>(binary_runtime.pointer_button(0,true));
+        static_cast<void>(binary_runtime.pointer_button(0,false));
+        grid_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.grid"));
+        const auto clicked_grid_actions=binary_runtime.consume_action_events();
+        if(!grid_node("item.2").at("state").value("selected",false)||clicked_grid_actions.size()!=1U||
+           clicked_grid_actions.front().node_id!="item.2"||clicked_grid_actions.front().action_id!="item.open") {
+            std::cerr<<"Grid pointer selection did not preserve semantic action identity\n";return 52;
+        }
+        static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::enter,true));
+        const auto grid_enter_actions=binary_runtime.consume_action_events();
+        if(grid_enter_actions.size()!=1U||grid_enter_actions.front().node_id!="item.2"||
+           nlohmann::json::parse(grid_enter_actions.front().binding_json).at("itemId")!="item.2")return 53;
         for(std::size_t index=0;index<132U;++index)
             static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::enter,true));
         const auto bounded_actions=binary_runtime.consume_action_events();

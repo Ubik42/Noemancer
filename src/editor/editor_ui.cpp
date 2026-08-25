@@ -386,6 +386,17 @@ void EditorUi::set_retained_outliner_surface(const std::uintptr_t texture_id,con
     }
 }
 
+void EditorUi::set_retained_asset_browser_surface(const std::uintptr_t texture_id,const std::uint32_t width,
+                                                   const std::uint32_t height) {
+    retained_asset_browser_texture_id_=texture_id;
+    retained_asset_browser_texture_width_=width;
+    retained_asset_browser_texture_height_=height;
+    if(texture_id==0U) {
+        retained_asset_browser_canvas_width_=0.0F;
+        retained_asset_browser_canvas_height_=0.0F;
+    }
+}
+
 void EditorUi::set_render_status(std::string status_json) {
     render_status_json_ = std::move(status_json);
 }
@@ -729,6 +740,12 @@ std::string EditorUi::retained_outliner_document_json() const {
         .writable=false,.world_revision=observation.is_object()?observation.value("revision",0ULL):0ULL,
         .objects=objects,.selected_object_ids=selection,.primary_selected_object_id=play_world_selected_entity_id_});
 }
+std::uint32_t EditorUi::requested_asset_browser_width() const noexcept {return requested_asset_browser_width_;}
+std::uint32_t EditorUi::requested_asset_browser_height() const noexcept {return requested_asset_browser_height_;}
+std::string EditorUi::retained_asset_browser_document_json() const {
+    return model_.asset_browser_semantic_ui_document_json({
+        .query=std::string_view(asset_browser_filter_.data()),.cursor=0U,.page_limit=256U});
+}
 float EditorUi::requested_exposure() const { return requested_exposure_; }
 void EditorUi::set_exposure(const float exposure) { requested_exposure_=std::clamp(exposure,0.125F,8.0F); }
 std::optional<RenderCameraSnapshot> EditorUi::render_camera_override() const {
@@ -830,6 +847,23 @@ std::optional<ScenePointerPosition> EditorUi::retained_outliner_pointer_at(const
             retained_outliner_canvas_height_),0,static_cast<std::int32_t>(retained_outliner_texture_height_-1U))};
 }
 
+std::optional<ScenePointerPosition> EditorUi::retained_asset_browser_pointer_at(const float window_x,
+                                                                                const float window_y) const {
+    if(retained_asset_browser_texture_id_==0||retained_asset_browser_texture_width_==0||
+       retained_asset_browser_texture_height_==0||retained_asset_browser_canvas_width_<=0.0F||
+       retained_asset_browser_canvas_height_<=0.0F||window_x<retained_asset_browser_canvas_x_||
+       window_y<retained_asset_browser_canvas_y_||
+       window_x>=retained_asset_browser_canvas_x_+retained_asset_browser_canvas_width_||
+       window_y>=retained_asset_browser_canvas_y_+retained_asset_browser_canvas_height_)return std::nullopt;
+    return ScenePointerPosition{
+        std::clamp(static_cast<std::int32_t>((window_x-retained_asset_browser_canvas_x_)*
+            retained_asset_browser_texture_width_/retained_asset_browser_canvas_width_),0,
+            static_cast<std::int32_t>(retained_asset_browser_texture_width_-1U)),
+        std::clamp(static_cast<std::int32_t>((window_y-retained_asset_browser_canvas_y_)*
+            retained_asset_browser_texture_height_/retained_asset_browser_canvas_height_),0,
+            static_cast<std::int32_t>(retained_asset_browser_texture_height_-1U))};
+}
+
 std::optional<SceneWindowPosition> EditorUi::scene_window_at(const std::int32_t scene_x, const std::int32_t scene_y) const {
     if (scene_canvas_width_ <= 0.0F || scene_canvas_height_ <= 0.0F ||
         scene_texture_width_ == 0 || scene_texture_height_ == 0) return std::nullopt;
@@ -865,6 +899,21 @@ std::optional<SceneWindowPosition> EditorUi::retained_outliner_window_at(const s
         static_cast<std::int32_t>(std::lround(retained_outliner_canvas_y_+surface_y*retained_outliner_canvas_height_/
             retained_outliner_texture_height_)),
         retained_outliner_canvas_height_/retained_outliner_texture_height_};
+}
+
+std::optional<SceneWindowPosition> EditorUi::retained_asset_browser_window_at(const std::int32_t surface_x,
+                                                                              const std::int32_t surface_y) const {
+    if(retained_asset_browser_texture_id_==0||retained_asset_browser_texture_width_==0||
+       retained_asset_browser_texture_height_==0||retained_asset_browser_canvas_width_<=0.0F||
+       retained_asset_browser_canvas_height_<=0.0F||surface_x<0||surface_y<0||
+       surface_x>=static_cast<std::int32_t>(retained_asset_browser_texture_width_)||
+       surface_y>=static_cast<std::int32_t>(retained_asset_browser_texture_height_))return std::nullopt;
+    return SceneWindowPosition{
+        static_cast<std::int32_t>(std::lround(retained_asset_browser_canvas_x_+surface_x*
+            retained_asset_browser_canvas_width_/retained_asset_browser_texture_width_)),
+        static_cast<std::int32_t>(std::lround(retained_asset_browser_canvas_y_+surface_y*
+            retained_asset_browser_canvas_height_/retained_asset_browser_texture_height_)),
+        retained_asset_browser_canvas_height_/retained_asset_browser_texture_height_};
 }
 
 bool EditorUi::select_entity(const std::string_view entity_id) {
@@ -1336,6 +1385,7 @@ std::string EditorUi::semantic_snapshot_json() const {
     const auto retained_inspector=edit_authority?model_.inspector_semantic_ui_document_json():
         semantic_ui_document_from_inspector(play_world_inspector_json_);
     const auto retained_outliner=retained_outliner_document_json();
+    const auto retained_asset_browser=retained_asset_browser_document_json();
     snapshot["editorChrome"]["retainedPanels"]={{"schemaVersion","noemancer.editor-retained-panels/0.1"},
         {"outliner",nlohmann::json::parse(retained_outliner,nullptr,false)},
         {"outlinerSurface",{{"surfaceId","editor.world-outliner"},
@@ -1345,6 +1395,14 @@ std::string EditorUi::semantic_snapshot_json() const {
             {"height",retained_outliner_texture_height_},{"coordinateRoute","dock-window-to-surface"},
             {"input",nlohmann::json::array({"pointer","keyboard","text","ime"})},
             {"controls",nlohmann::json::array({"search","tree","multi-selection","context-menu","drag-drop"})}}},
+        {"assetBrowser",nlohmann::json::parse(retained_asset_browser,nullptr,false)},
+        {"assetBrowserSurface",{{"surfaceId","editor.asset-browser.collection"},
+            {"visible",retained_asset_browser_texture_id_!=0&&retained_asset_browser_texture_width_>0&&
+                retained_asset_browser_texture_height_>0},
+            {"renderer","RmlUi/SDL_GPU"},{"width",retained_asset_browser_texture_width_},
+            {"height",retained_asset_browser_texture_height_},{"coordinateRoute","dock-window-to-surface"},
+            {"input",nlohmann::json::array({"pointer","keyboard"})},
+            {"controls",nlohmann::json::array({"grid","asset-card","single-selection","thumbnail","scroll"})}}},
         {"inspector",nlohmann::json::parse(retained_inspector,nullptr,false)},
         {"inspectorSurface",{{"surfaceId","editor.inspector"},{"visible",retained_inspector_texture_id_!=0},
             {"renderer","RmlUi/SDL_GPU"},{"width",retained_inspector_texture_width_},{"height",retained_inspector_texture_height_},
@@ -2763,6 +2821,24 @@ void EditorUi::draw_asset_browser() {
     }
     ImGui::Separator();
 
+    if(retained_asset_browser_texture_id_!=0&&retained_asset_browser_texture_width_>0&&
+       retained_asset_browser_texture_height_>0) {
+        const auto available=ImGui::GetContentRegionAvail();
+        const auto draw_width=std::max(1.0F,available.x);
+        const auto preferred_height=std::clamp(available.y*0.45F,120.0F,360.0F);
+        const auto draw_height=std::max(1.0F,std::min(available.y,preferred_height));
+        const auto origin=ImGui::GetCursorScreenPos();
+        retained_asset_browser_canvas_x_=origin.x;retained_asset_browser_canvas_y_=origin.y;
+        retained_asset_browser_canvas_width_=draw_width;retained_asset_browser_canvas_height_=draw_height;
+        const auto scale=ImGui::GetIO().DisplayFramebufferScale;
+        requested_asset_browser_width_=static_cast<std::uint32_t>(
+            std::clamp(std::lround(draw_width*scale.x),320L,4096L));
+        requested_asset_browser_height_=static_cast<std::uint32_t>(
+            std::clamp(std::lround(draw_height*scale.y),96L,2048L));
+        ImGui::Image(static_cast<ImTextureID>(retained_asset_browser_texture_id_),{draw_width,draw_height});
+    } else {
+    retained_asset_browser_canvas_width_=0.0F;
+    retained_asset_browser_canvas_height_=0.0F;
     constexpr float card_width=144.0F;
     std::vector<std::size_t> visible_assets;
     const std::string_view search{asset_browser_filter_.data()};
@@ -2812,6 +2888,7 @@ void EditorUi::draw_asset_browser() {
         ImGui::PopID();
     }
     ImGui::EndTable();
+    }
     }
     if(const auto* selected=model_.selected_asset()) {
         ImGui::Separator();ImGui::Text("Selected: %s",selected->name.c_str());ImGui::SameLine();
