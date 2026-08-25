@@ -3,7 +3,7 @@
   "updated": "2026-08-24",
   "status": "active-development",
   "currentSlice": "production.vfs-project-and-cooked-asset-migration",
-  "currentStep": "migrate-project-and-cooked-artifact-readers-to-vfs",
+  "currentStep": "migrate-source-project-and-registry-authority-to-vfs",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",

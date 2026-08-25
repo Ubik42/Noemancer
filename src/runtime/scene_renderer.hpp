@@ -14,12 +14,14 @@
 #include "engine/texture_streaming_demand.hpp"
 #include "engine/vfx_gpu_residency.hpp"
 #include "runtime/runtime_texture_upload.hpp"
+#include "runtime/asset_vfs_catalog.hpp"
 #include "runtime/texture_resource_table.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -31,6 +33,8 @@ namespace noemancer {
 class SceneRenderer final {
 public:
     SceneRenderer(SDL_GPUDevice* device, const AssetRegistry& asset_registry,
+                  std::shared_ptr<VirtualFileSystem> virtual_file_system,
+                  const AssetVfsCatalog& asset_vfs_catalog,
                   TextureResourceTable& texture_resources, bool gpu_debug = false);
     ~SceneRenderer();
 
@@ -138,6 +142,8 @@ private:
 
     SDL_GPUDevice* device_{nullptr};
     const AssetRegistry& asset_registry_;
+    std::shared_ptr<VirtualFileSystem> virtual_file_system_;
+    const AssetVfsCatalog& asset_vfs_catalog_;
     TextureResourceTable& texture_resources_;
     std::string gpu_backend_;
     bool gpu_debug_{};

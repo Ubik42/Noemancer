@@ -471,6 +471,25 @@ target_include_directories(noemancer_miniaudio_vfs_adapter_tests PRIVATE ${PROJE
 target_link_libraries(noemancer_miniaudio_vfs_adapter_tests PRIVATE noemancer::engine noemancer_miniaudio)
 add_test(NAME noemancer.miniaudio_vfs_adapter COMMAND noemancer_miniaudio_vfs_adapter_tests)
 
+add_executable(noemancer_vfs_document_reader_tests vfs_document_reader_tests.cpp)
+target_link_libraries(noemancer_vfs_document_reader_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.vfs_document_reader COMMAND noemancer_vfs_document_reader_tests)
+
+add_executable(noemancer_vfs_asset_reader_tests
+    vfs_asset_reader_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/asset_vfs_catalog.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/vfs_asset_reader.cpp)
+target_include_directories(noemancer_vfs_asset_reader_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_vfs_asset_reader_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.vfs_asset_reader COMMAND noemancer_vfs_asset_reader_tests)
+
+add_executable(noemancer_package_vfs_bootstrap_tests
+    package_vfs_bootstrap_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/package_vfs_bootstrap.cpp)
+target_include_directories(noemancer_package_vfs_bootstrap_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_package_vfs_bootstrap_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.package_vfs_bootstrap COMMAND noemancer_package_vfs_bootstrap_tests)
+
 # Install the Windows error-mode/Debug-CRT guard into every native test before
 # main().  This keeps unattended CTest runs machine-readable even when a test
 # that has not yet opted into process_diagnostics fails during startup.

@@ -70,6 +70,7 @@ add_library(noemancer_engine STATIC
     vfx_gpu_residency.cpp
     vfx_runtime.cpp
     virtual_file_system.cpp
+    vfs_document_reader.cpp
     world.cpp
 )
 

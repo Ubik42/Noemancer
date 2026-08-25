@@ -168,6 +168,7 @@ private:
     std::chrono::steady_clock::time_point live_editor_next_heartbeat_{};
     bool live_editor_session_active_{};
     std::string project_hud_document_json_;
+    std::string player_profile_document_json_;
     std::optional<HybridPixelProfile> hybrid_pixel_profile_;
     std::uint64_t hybrid_pixel_profile_revision_{1U};
     std::unique_ptr<GamePersistenceStore> persistence_store_;

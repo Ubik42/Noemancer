@@ -8,6 +8,7 @@
 #include "runtime/input_source_adapter.hpp"
 #include "runtime/live_editor_transport.hpp"
 #include "runtime/performance_evidence.hpp"
+#include "runtime/package_vfs_bootstrap.hpp"
 
 #include "engine/fbx_asset.hpp"
 #include "engine/gltf_mesh.hpp"
@@ -29,6 +30,7 @@
 #include "runtime/source_editor_service.hpp"
 #include "runtime/windows_package_service.hpp"
 #include "runtime/windows_runtime_dependencies.hpp"
+#include "runtime/vfs_asset_reader.hpp"
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -140,13 +142,6 @@ private:
 
 namespace {
 
-bool supported_game_profile_schema(const nlohmann::json& profile) {
-    if(!profile.is_object())return false;
-    const auto schema=profile.value("schema",std::string{});
-    return schema=="noemancer.game-profile/0.1"||schema=="noemancer.game-profile/0.2"||
-        schema=="noemancer.game-profile/0.3"||schema=="noemancer.game-profile/0.4";
-}
-
 std::optional<HybridPixelProfile> hybrid_pixel_profile_from_game_profile(
     const nlohmann::json& profile, bool& valid) {
     valid = true;
@@ -193,28 +188,6 @@ std::optional<std::vector<InputActionDefinition>> input_actions_from_profile(con
     }
     InputActionRuntime validator;if(!validator.configure(result))return std::nullopt;
     return result;
-}
-
-std::optional<std::string> hud_document_from_profile(const std::filesystem::path& profile_path,
-                                                      const nlohmann::json& profile,std::string& error_json) {
-    const auto relative=std::filesystem::path(profile.value("hudDocument",std::string{})).lexically_normal();
-    if(relative.empty())return std::string{};
-    if(relative.is_absolute()||*relative.begin()==std::filesystem::path("..")) {
-        error_json=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.hud-document-invalid"}}.dump();return std::nullopt;
-    }
-    const auto package_root=profile_path.parent_path().parent_path();const auto path=(package_root/"content"/relative).lexically_normal();
-    std::ifstream stream(path,std::ios::binary);if(!stream) {
-        error_json=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.hud-document-missing"},{"hudDocument",path.generic_string()}}.dump();return std::nullopt;
-    }
-    const std::string source{std::istreambuf_iterator<char>(stream),std::istreambuf_iterator<char>()};
-    const auto validation=nlohmann::json::parse(semantic_ui_validation_json(source),nullptr,false);
-    if(!validation.is_object()||!validation.value("valid",false)) {
-        error_json=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.hud-document-invalid"},{"hudDocument",path.generic_string()}}.dump();return std::nullopt;
-    }
-    return source;
 }
 
 float normalized_gamepad_axis(const Sint16 value) {
@@ -294,47 +267,6 @@ std::optional<std::filesystem::path> resolve_thumbnail_artifact(
     return path;
 }
 
-std::optional<SceneDocument> load_player_scene(const std::filesystem::path& profile_path,
-                                               std::string& display_name,std::string& error_json) {
-    std::ifstream profile_stream(profile_path,std::ios::binary);
-    if(!profile_stream) {
-        error_json=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.profile-missing"},{"profile",profile_path.generic_string()}}.dump();return std::nullopt;
-    }
-    const std::string profile_text{std::istreambuf_iterator<char>(profile_stream),std::istreambuf_iterator<char>()};
-    const auto profile=nlohmann::json::parse(profile_text,nullptr,false);
-    if(!supported_game_profile_schema(profile)) {
-        error_json=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.profile-invalid"},{"profile",profile_path.generic_string()}}.dump();return std::nullopt;
-    }
-    const auto relative=std::filesystem::path(profile.value("startupScene",std::string{})).lexically_normal();
-    if(relative.empty()||relative.is_absolute()||*relative.begin()==std::filesystem::path("..")) {
-        error_json=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.startup-scene-invalid"}}.dump();return std::nullopt;
-    }
-    const auto package_root=profile_path.parent_path().parent_path();
-    const auto scene_path=(package_root/"content"/relative).lexically_normal();
-    std::ifstream scene_stream(scene_path,std::ios::binary);
-    if(!scene_stream) {
-        error_json=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.startup-scene-missing"},{"scene",scene_path.generic_string()}}.dump();return std::nullopt;
-    }
-    const std::string scene_text{std::istreambuf_iterator<char>(scene_stream),std::istreambuf_iterator<char>()};
-    auto parsed=SceneDocumentCodec::parse_json(scene_text,scene_path.generic_string());
-    if(!parsed) {
-        error_json=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},{"success",false},
-            {"code","player.startup-scene-invalid"},{"scene",scene_path.generic_string()}}.dump();return std::nullopt;
-    }
-    display_name=profile.value("displayName",std::string{"Noemancer Player"});
-    return std::move(*parsed.document);
-}
-
-nlohmann::json load_player_profile_document(const std::filesystem::path& profile_path) {
-    std::ifstream stream(profile_path,std::ios::binary);if(!stream)return nlohmann::json();
-    const std::string text{std::istreambuf_iterator<char>(stream),std::istreambuf_iterator<char>()};
-    return nlohmann::json::parse(text,nullptr,false);
-}
-
 std::filesystem::path default_user_data_root() {
 #ifdef _WIN32
     const auto required=GetEnvironmentVariableW(L"LOCALAPPDATA",nullptr,0);
@@ -371,9 +303,14 @@ Application::Application(RunOptions options)
         startup_telemetry_->begin_phase("scene.bootstrap");
     }
     if(options_.player_mode) {
-        const auto scene=load_player_scene(options_.player_profile_path,options_.player_display_name,startup_error_json_);
-        if(scene) {
-            const auto profile=load_player_profile_document(options_.player_profile_path);
+        auto bootstrap=bootstrap_package_vfs(options_.player_profile_path);
+        if(!bootstrap)startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.player-load/0.1"},
+            {"success",false},{"code",bootstrap.receipt.code},{"detail",bootstrap.receipt.detail},
+            {"packageVfs",nlohmann::json::parse(bootstrap.receipt.json())}}.dump();
+        else {
+            virtual_file_system_=bootstrap.vfs;options_.player_display_name=bootstrap.display_name;
+            player_profile_document_json_=bootstrap.profile_text;
+            const auto& profile=bootstrap.profile;
             if(profile.is_object())configure_persistence_store(profile.value("projectId",std::string{}));
             bool hybrid_profile_valid{};
             hybrid_pixel_profile_=hybrid_pixel_profile_from_game_profile(profile,hybrid_profile_valid);
@@ -383,14 +320,16 @@ Application::Application(RunOptions options)
             if(const auto registry_relative=std::filesystem::path(profile.value("assetRegistry",std::string{})).lexically_normal();
                 !registry_relative.empty()&&!registry_relative.is_absolute()&&*registry_relative.begin()!=std::filesystem::path("..")) {
                 startup_telemetry_->begin_phase("asset.registry");
-                const auto package_root=std::filesystem::path(options_.player_profile_path).parent_path().parent_path();
-                const auto registry_path=(package_root/registry_relative).lexically_normal();
+                const auto registry_path=(bootstrap.package_root/registry_relative).lexically_normal();
                 asset_registry_=AssetRegistry(registry_path.parent_path());
                 if(startup_error_json_.empty()&&!asset_registry_.errors().empty())startup_error_json_=nlohmann::json{
                     {"schemaVersion","noemancer.player-load/0.1"},{"success",false},
                     {"code","player.asset-registry-invalid"},{"registry",registry_path.generic_string()},
                     {"errors",asset_registry_.errors()}}.dump();
             }
+            if(startup_error_json_.empty()&&!rebuild_asset_vfs_catalog())startup_error_json_=nlohmann::json{
+                {"schemaVersion","noemancer.player-load/0.1"},{"success",false},
+                {"code",asset_vfs_catalog_.code},{"detail",asset_vfs_catalog_.detail}}.dump();
             if(startup_error_json_.empty()&&options_.headless)
                 static_cast<void>(register_cooked_geometry_assets());
             if(startup_error_json_.empty()) {
@@ -401,15 +340,14 @@ Application::Application(RunOptions options)
                 else project_input_actions_=*input_actions;
             }
             if(startup_error_json_.empty()) {
-                const auto hud_document=hud_document_from_profile(options_.player_profile_path,profile,startup_error_json_);
-                if(hud_document) {project_hud_document_json_=*hud_document;
-                    if(!world_.configure_project_hud(project_hud_document_json_))startup_error_json_=nlohmann::json{
-                        {"schemaVersion","noemancer.player-load/0.1"},{"success",false},{"code","player.hud-document-invalid"}}.dump();}
+                project_hud_document_json_=bootstrap.hud_document;
+                if(!world_.configure_project_hud(project_hud_document_json_))startup_error_json_=nlohmann::json{
+                    {"schemaVersion","noemancer.player-load/0.1"},{"success",false},{"code","player.hud-document-invalid"}}.dump();
             }
             const auto assembly_relative=profile.value("managedAssembly",std::string{});
             if(startup_error_json_.empty()&&!assembly_relative.empty()) {
                 startup_telemetry_->begin_phase("managed.load");
-                const auto assembly=(std::filesystem::path(options_.player_profile_path).parent_path().parent_path()/assembly_relative).lexically_normal();
+                const auto assembly=(bootstrap.package_root/assembly_relative).lexically_normal();
                 const auto load=nlohmann::json::parse(world_.scripting_project_load_assembly_json(
                     assembly,profile.value("managedConfiguration",std::string{"Release"})),nullptr,false);
                 if(!load.is_object()||!load.value("success",false))startup_error_json_=load.dump();
@@ -422,7 +360,7 @@ Application::Application(RunOptions options)
                     {"code","player.debug-wait-failed"}}.dump();
             if(startup_error_json_.empty()) {
                 startup_telemetry_->begin_phase("scene.load");
-                static_cast<void>(world_.load_scene(*scene));
+                static_cast<void>(world_.load_scene(bootstrap.scene));
             }
         }
     } else if (!options_.project_path.empty()) {
@@ -443,7 +381,7 @@ Application::Application(RunOptions options)
         startup_telemetry_->begin_phase("scene.load");
         static_cast<void>(world_.load_scene(scene));
     }
-    if(startup_error_json_.empty()&&!rebuild_asset_vfs_catalog()) {
+    if(startup_error_json_.empty()&&!asset_vfs_catalog_.success&&!rebuild_asset_vfs_catalog()) {
         startup_error_json_=nlohmann::json{{"schemaVersion","noemancer.vfs-startup/0.1"},{"success",false},
             {"code",asset_vfs_catalog_.code.empty()?"vfs.mount-failed":asset_vfs_catalog_.code},
             {"detail",asset_vfs_catalog_.detail}}.dump();
@@ -1053,17 +991,17 @@ void Application::register_sprite_assets(World& world) {
     // source Sprite contract.
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.kind!="Sprite"&&!asset.relative_path.ends_with(".sprite.json")))continue;
-        std::ifstream input(asset_registry_.source_path(asset),std::ios::binary);
-        if(!input)continue;
-        const std::string source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+        const auto bytes=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=64U*1024U*1024U});if(!bytes.success)continue;
+        const std::string source(reinterpret_cast<const char*>(bytes.bytes.data()),bytes.bytes.size());
         auto parsed=SpriteAssetCodec::parse_json(source);
         if(parsed)static_cast<void>(world.register_sprite_asset(std::move(*parsed.document)));
     }
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||asset.kind!="SpriteAtlas")continue;
-        std::ifstream input(asset_registry_.source_path(asset),std::ios::binary);
-        if(!input)continue;
-        const std::string source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+        const auto bytes=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=16U*1024U*1024U});if(!bytes.success)continue;
+        const std::string source(reinterpret_cast<const char*>(bytes.bytes.data()),bytes.bytes.size());
         const auto manifest=nlohmann::json::parse(source,nullptr,false);
         if(!manifest.is_object()||!manifest.contains("authoringDocument")||
             !manifest.at("authoringDocument").is_object())continue;
@@ -1087,7 +1025,6 @@ bool Application::register_cooked_geometry_assets() {
     constexpr std::uintmax_t maximum_artifact_bytes = 512U * 1024U * 1024U;
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||asset.extension!=".meshbin")continue;
-        const auto path=asset_registry_.source_path(asset);
         const auto fail=[&](const std::string_view code,const std::string_view detail,
                             const std::uintmax_t bytes=0U,const std::string_view payload_hash=std::string_view{}) {
             const auto artifact=nlohmann::json{{"schemaVersion","noemancer.player-geometry-loading/0.1"},
@@ -1100,22 +1037,15 @@ bool Application::register_cooked_geometry_assets() {
                 {"bytes",bytes},{"payloadHash",payload_hash}}.dump();
             return false;
         };
-        std::error_code size_error;
-        const auto bytes=std::filesystem::file_size(path,size_error);
-        if(size_error||bytes==0U||bytes>maximum_artifact_bytes)
-            return fail("geometry.artifact-source-invalid",
-                "Cooked mesh payload is unavailable or exceeds the Runtime byte budget.",
-                size_error?0U:bytes);
-        std::ifstream input(path,std::ios::binary);
-        if(!input)return fail("geometry.artifact-source-unavailable","Cooked mesh payload could not be opened.",bytes);
-        const std::vector<char> payload{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
-        if(static_cast<std::uintmax_t>(payload.size())!=bytes)
-            return fail("geometry.artifact-source-changed","Cooked mesh payload changed while it was being read.",bytes);
+        const auto payload=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=maximum_artifact_bytes});
+        if(!payload.success||payload.bytes.empty())
+            return fail(payload.code,payload.detail,payload.total_bytes,payload.observed_content_hash);
         const auto result=load_mesh_runtime_artifact(
-            std::span<const std::byte>(reinterpret_cast<const std::byte*>(payload.data()),payload.size()),
+            payload.bytes,
             asset.id,{},asset.content_hash);
         if(!result.success)
-            return fail(result.code,result.detail,bytes,result.payload_hash);
+            return fail(result.code,result.detail,payload.total_bytes,result.payload_hash);
         ++cooked_geometry_load_count_;
         logger_.info("geometry.artifact",nlohmann::json{{"assetId",asset.id},{"code","ok"},
             {"payloadHash",result.payload_hash},{"lodCount",result.lod_count},
@@ -1129,28 +1059,15 @@ bool Application::register_animation_clip_assets(World& world) {
     constexpr std::uintmax_t maximum_artifact_bytes = 256U * 1024U * 1024U;
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||asset.extension!=".animbin")continue;
-        const auto path=asset_registry_.source_path(asset);
-        std::error_code size_error;
-        const auto bytes=std::filesystem::file_size(path,size_error);
-        if(size_error||bytes==0U||bytes>maximum_artifact_bytes) {
+        const auto source=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=maximum_artifact_bytes});
+        if(!source.success||source.bytes.empty()) {
             logger_.error("animation.artifact",nlohmann::json{{"assetId",asset.id},
-                {"code","animation.artifact-source-invalid"},{"bytes",size_error?0U:bytes}}.dump());
-            return false;
-        }
-        std::ifstream input(path,std::ios::binary);
-        if(!input) {
-            logger_.error("animation.artifact",nlohmann::json{{"assetId",asset.id},
-                {"code","animation.artifact-source-unavailable"}}.dump());
-            return false;
-        }
-        const std::vector<char> source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
-        if(source.size()!=bytes) {
-            logger_.error("animation.artifact",nlohmann::json{{"assetId",asset.id},
-                {"code","animation.artifact-source-changed"}}.dump());
+                {"code",source.code},{"detail",source.detail},{"bytes",source.total_bytes}}.dump());
             return false;
         }
         const auto result=world.register_cooked_animation(
-            std::span<const std::byte>(reinterpret_cast<const std::byte*>(source.data()),source.size()),
+            source.bytes,
             asset.id,{},asset.content_hash);
         if(!result.success) {
             logger_.error("animation.artifact",nlohmann::json{{"assetId",asset.id},{"code",result.code},
@@ -1167,30 +1084,25 @@ bool Application::register_animation_clip_assets(World& world) {
     if(options_.player_mode)return true;
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||!asset.relative_path.ends_with(".animation-clip.json"))continue;
-        const auto descriptor_path=asset_registry_.source_path(asset);
-        std::error_code descriptor_size_error;
-        const auto descriptor_bytes=std::filesystem::file_size(descriptor_path,descriptor_size_error);
-        if(descriptor_size_error||descriptor_bytes>animation_clip_asset_max_source_bytes)return false;
-        std::ifstream descriptor_input(descriptor_path,std::ios::binary);
-        if(!descriptor_input)return false;
-        const std::string descriptor_source{std::istreambuf_iterator<char>(descriptor_input),
-            std::istreambuf_iterator<char>()};
-        if(descriptor_source.size()>animation_clip_asset_max_source_bytes)return false;
-        const auto descriptor=AnimationClipAssetCodec::parse_json(descriptor_source);
-        if(!descriptor||descriptor.document->asset_id!=asset.id)return false;
-        const auto* source_asset=asset_registry_.find(descriptor.document->source_asset);
+        const auto descriptor=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=animation_clip_asset_max_source_bytes});if(!descriptor.success)return false;
+        const std::string descriptor_source(reinterpret_cast<const char*>(descriptor.bytes.data()),
+            descriptor.bytes.size());
+        const auto parsed_descriptor=AnimationClipAssetCodec::parse_json(descriptor_source);
+        if(!parsed_descriptor||parsed_descriptor.document->asset_id!=asset.id)return false;
+        const auto* source_asset=asset_registry_.find(parsed_descriptor.document->source_asset);
         if(source_asset==nullptr||!source_asset->available||
             (source_asset->extension!=".fbx"&&source_asset->extension!=".glb"))return false;
         const auto source_path=asset_registry_.source_path(*source_asset);
         const auto decoded=source_asset->extension==".fbx"?decode_fbx_asset(source_path):decode_glb_mesh(source_path);
         ++source_animation_decode_count_;
         if(!decoded.valid)return false;
-        const auto compression=descriptor.document->compression=="ozz_hierarchical_key_reduction"?
+        const auto compression=parsed_descriptor.document->compression=="ozz_hierarchical_key_reduction"?
             AnimationCompressionMode::ozz_hierarchical_key_reduction:AnimationCompressionMode::ozz_runtime_baseline;
         AnimationRuntime cooker;
         ++offline_animation_compile_count_;
         const auto cooked=cooker.cook_gltf_animation_artifact(asset.id,source_asset->content_hash,decoded,
-            descriptor.document->skin_index,descriptor.document->animation_index,compression);
+            parsed_descriptor.document->skin_index,parsed_descriptor.document->animation_index,compression);
         if(!cooked.success)return false;
         const auto loaded=world.register_cooked_animation(cooked.payload,asset.id,source_asset->content_hash,
             cooked.payload_hash);
@@ -1208,8 +1120,9 @@ void Application::register_animation_state_machine_assets(World& world) {
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.kind!="AnimationStateMachine"&&
            !asset.relative_path.ends_with(".animation-state-machine.json")))continue;
-        std::ifstream input(asset_registry_.source_path(asset),std::ios::binary);if(!input)continue;
-        const std::string source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+        const auto bytes=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=16U*1024U*1024U});if(!bytes.success)continue;
+        const std::string source(reinterpret_cast<const char*>(bytes.bytes.data()),bytes.bytes.size());
         auto parsed=AnimationStateMachineCodec::parse_json(source);
         if(parsed)static_cast<void>(world.register_animation_state_machine(std::move(*parsed.document)));
     }
@@ -1219,8 +1132,9 @@ void Application::register_animation_graph_assets(World& world) {
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.kind!="AnimationGraph"&&
            !asset.relative_path.ends_with(".animation-graph.json")))continue;
-        std::ifstream input(asset_registry_.source_path(asset),std::ios::binary);if(!input)continue;
-        const std::string source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+        const auto bytes=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=16U*1024U*1024U});if(!bytes.success)continue;
+        const std::string source(reinterpret_cast<const char*>(bytes.bytes.data()),bytes.bytes.size());
         auto parsed=AnimationGraphCodec::parse_json(source);
         if(parsed)static_cast<void>(world.register_animation_graph(std::move(*parsed.document)));
     }
@@ -1229,14 +1143,16 @@ void Application::register_animation_graph_assets(World& world) {
 void Application::register_tilemap_assets(World& world) {
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.kind!="TilePalette"&&!asset.relative_path.ends_with(".tile-palette.json")))continue;
-        std::ifstream input(asset_registry_.source_path(asset),std::ios::binary);if(!input)continue;
-        const std::string source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+        const auto bytes=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=16U*1024U*1024U});if(!bytes.success)continue;
+        const std::string source(reinterpret_cast<const char*>(bytes.bytes.data()),bytes.bytes.size());
         auto parsed=TilemapAssetCodec::parse_palette_json(source);if(parsed)static_cast<void>(world.register_tile_palette(std::move(*parsed.document)));
     }
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.kind!="Tilemap"&&!asset.relative_path.ends_with(".tilemap.json")))continue;
-        std::ifstream input(asset_registry_.source_path(asset),std::ios::binary);if(!input)continue;
-        const std::string source{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+        const auto bytes=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=64U*1024U*1024U});if(!bytes.success)continue;
+        const std::string source(reinterpret_cast<const char*>(bytes.bytes.data()),bytes.bytes.size());
         auto parsed=TilemapAssetCodec::parse_tilemap_json(source);if(parsed)static_cast<void>(world.register_tilemap_asset(std::move(*parsed.document)));
     }
 }
@@ -1255,7 +1171,8 @@ bool Application::rebuild_asset_vfs_catalog() {
         .mount_identity=options_.player_mode?"package.assets":"project.assets",
         .mount_kind=options_.player_mode?VfsMountKind::package_directory:VfsMountKind::directory});
     if(!next_catalog.success) { asset_vfs_catalog_=std::move(next_catalog);return false; }
-    auto next_vfs=std::make_shared<VirtualFileSystem>();
+    auto next_vfs=options_.player_mode&&virtual_file_system_
+        ?virtual_file_system_:std::make_shared<VirtualFileSystem>();
     for(const auto& mount:next_catalog.mounts) {
         const auto receipt=next_vfs->mount(mount);
         if(!receipt.success) {
@@ -1458,12 +1375,13 @@ void Application::apply_managed_debug_request(const EditorManagedDebugRequest& r
         Json stages=Json::array();
         const auto package_root=std::filesystem::path(request.package_output_path).lexically_normal();
         const auto profile_path=package_root/"config"/"game-profile.json";
-        const auto profile=load_player_profile_document(profile_path);
+        const auto package_bootstrap=bootstrap_package_vfs(profile_path);
+        const auto profile=package_bootstrap?package_bootstrap.profile:Json::object();
         const auto executable_name=profile.value("executable",std::string{});
         const auto player_executable=(package_root/"bin"/executable_name).lexically_normal();
         const auto executable_relative=player_executable.lexically_relative(package_root/"bin");
         std::error_code player_error;
-        const auto valid_target=supported_game_profile_schema(profile)&&
+        const auto valid_target=static_cast<bool>(package_bootstrap)&&
             !executable_name.empty()&&!executable_relative.empty()&&*executable_relative.begin()!=std::filesystem::path("..")&&
             std::filesystem::is_regular_file(player_executable,player_error);
         if(!valid_target) {
@@ -1762,7 +1680,8 @@ int Application::run_interactive() {
     }
 
     TextureResourceTable texture_resources;
-    auto scene_renderer = std::make_unique<SceneRenderer>(device, asset_registry_, texture_resources, options_.gpu_debug);
+    auto scene_renderer = std::make_unique<SceneRenderer>(device, asset_registry_, virtual_file_system_,
+        asset_vfs_catalog_, texture_resources, options_.gpu_debug);
     if (!scene_renderer->set_hybrid_pixel_profile(hybrid_pixel_profile_)) {
         logger_.error("render.hybrid_pixel_profile", scene_renderer->last_error());
         scene_renderer.reset();
@@ -2554,7 +2473,7 @@ int Application::run_interactive() {
     if (has_gpu_probe) logger_.info("render.scene.final", scene_renderer->status_json());
     bool performance_evidence_written=true;
     if(performance_run) {
-        const auto profile=options_.player_mode?load_player_profile_document(options_.player_profile_path):nlohmann::json::object();
+        const auto profile=options_.player_mode?nlohmann::json::parse(player_profile_document_json_,nullptr,false):nlohmann::json::object();
         std::string evidence_error;
         const PerformanceEvidenceInput evidence{
             .workload_id=options_.performance_workload_id,

@@ -1,4 +1,5 @@
 #include "runtime/scene_renderer.hpp"
+#include "runtime/vfs_asset_reader.hpp"
 
 #include "engine/cascaded_shadow.hpp"
 #include "engine/fbx_asset.hpp"
@@ -546,8 +547,11 @@ constexpr std::uint32_t vfx_counter_bytes=16U;
 } // namespace
 
 SceneRenderer::SceneRenderer(SDL_GPUDevice* device, const AssetRegistry& asset_registry,
+                             std::shared_ptr<VirtualFileSystem> virtual_file_system,
+                             const AssetVfsCatalog& asset_vfs_catalog,
                              TextureResourceTable& texture_resources, const bool gpu_debug)
-    : device_(device), asset_registry_(asset_registry), texture_resources_(texture_resources),
+    : device_(device), asset_registry_(asset_registry), virtual_file_system_(std::move(virtual_file_system)),
+      asset_vfs_catalog_(asset_vfs_catalog), texture_resources_(texture_resources),
       gpu_debug_(gpu_debug), render_graph_(make_forward_render_graph()) {
     gpu_backend_=SDL_GetGPUDeviceDriver(device_);
     const auto properties=SDL_GetGPUDeviceProperties(device_);
@@ -919,10 +923,10 @@ bool SceneRenderer::create_environment_resources() {
     std::string source_fingerprint="builtin:procedural-sky/2";
     for (const auto& asset:asset_registry_.records()) {
         if (!asset.available || asset.kind!="Environment" || asset.extension!=".hdr") continue;
-        std::ifstream stream(asset_registry_.source_path(asset),std::ios::binary);
-        if (!stream) continue;
-        std::vector<char> file((std::istreambuf_iterator<char>(stream)),std::istreambuf_iterator<char>());
-        hdr=decode_radiance_hdr(std::span<const std::byte>(reinterpret_cast<const std::byte*>(file.data()),file.size()));
+        const auto file=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=256U*1024U*1024U});
+        if (!file.success) continue;
+        hdr=decode_radiance_hdr(file.bytes);
         if (hdr.valid) {
             environment_source_id_=asset.id; environment_source_width_=hdr.width; environment_source_height_=hdr.height;
             source_fingerprint=asset.content_hash.empty()?asset.id+":"+std::to_string(asset.source_bytes):asset.content_hash;
@@ -1127,9 +1131,10 @@ bool SceneRenderer::create_sprite_resources() {
     std::unordered_set<std::string> linear_assets;
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.kind!="Sprite"&&!asset.relative_path.ends_with(".sprite.json")))continue;
-        const auto source=read_binary(asset_registry_.source_path(asset));if(source.empty())continue;
+        const auto source=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=16U*1024U*1024U});if(!source.success)continue;
         const auto parsed=SpriteAssetCodec::parse_json(std::string_view(
-            reinterpret_cast<const char*>(source.data()),source.size()));
+            reinterpret_cast<const char*>(source.bytes.data()),source.bytes.size()));
         if(!parsed)continue;
         srgb_assets.insert(parsed.document->texture_asset);
         if(parsed.document->material) {
@@ -1142,10 +1147,11 @@ bool SceneRenderer::create_sprite_resources() {
         if(asset.kind!="SpriteAtlas")continue;
         count_atlas_status(sprite_atlas_manifests_discovered_);
         if(!asset.available){count_atlas_status(sprite_atlas_manifests_invalid_);continue;}
-        const auto source=read_binary(asset_registry_.source_path(asset));
-        if(source.empty()){count_atlas_status(sprite_atlas_manifests_invalid_);continue;}
+        const auto source=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=64U*1024U*1024U});
+        if(!source.success){count_atlas_status(sprite_atlas_manifests_invalid_);continue;}
         const auto manifest=nlohmann::json::parse(std::string_view(
-            reinterpret_cast<const char*>(source.data()),source.size()),nullptr,false);
+            reinterpret_cast<const char*>(source.bytes.data()),source.bytes.size()),nullptr,false);
         if(manifest.is_object()&&manifest.contains("authoringDocument")&&
             manifest.at("authoringDocument").is_object()) {
             const auto authoring=SpriteAssetCodec::parse_json(manifest.at("authoringDocument").dump());
@@ -1157,7 +1163,7 @@ bool SceneRenderer::create_sprite_resources() {
             }
         }
         const auto parsed=parse_sprite_atlas_artifact_json(std::string_view(
-            reinterpret_cast<const char*>(source.data()),source.size()));
+            reinterpret_cast<const char*>(source.bytes.data()),source.bytes.size()));
         if(!parsed||!parsed.artifact){count_atlas_status(sprite_atlas_manifests_invalid_);continue;}
         count_atlas_status(sprite_atlas_manifests_valid_);
         for(const auto& page:parsed.artifact->pages) {
@@ -1178,8 +1184,9 @@ bool SceneRenderer::create_sprite_resources() {
         const bool is_atlas_page=atlas_page_asset(asset.id);
         const bool needs_srgb=srgb_assets.contains(asset.id);const bool needs_linear=linear_assets.contains(asset.id);
         if(!asset.available||(asset.extension!=".png"&&asset.extension!=".ktx2")||(!needs_srgb&&!needs_linear))continue;
-        const auto bytes=read_binary(asset_registry_.source_path(asset));
-        if(bytes.empty())continue;
+        const auto bytes=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+            {.byte_budget=512U*1024U*1024U});
+        if(!bytes.success)continue;
         std::uint32_t width{},height{};std::vector<std::byte> rgba8;
         SDL_GPUTexture* texture=nullptr;SDL_GPUTexture* linear_texture=nullptr;
         if(asset.extension==".ktx2") {
@@ -1187,7 +1194,7 @@ bool SceneRenderer::create_sprite_resources() {
                 const auto initial_tail=asset.streaming_mode=="resident"
                     ?std::numeric_limits<std::uint32_t>::max():4U;
                 auto result=create_ktx2_texture_stream(device_,std::span<const std::byte>(
-                     reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),srgb,initial_tail);
+                     bytes.bytes.data(),bytes.bytes.size()),srgb,initial_tail);
                 if(!result.valid){last_error_=asset.id+": "+result.code+" - "+result.detail;return false;}
                 result.asset_id=asset.id;result.linear_semantic=!srgb;result.streaming_enabled=asset.streaming_mode=="stream";
                 result.authored_priority=asset.streaming_priority;
@@ -1220,8 +1227,7 @@ bool SceneRenderer::create_sprite_resources() {
                 finalize_atlas_status();return false;
             }
         } else {
-            const auto decoded=decode_png_rgba8(std::span<const std::byte>(
-                reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()));
+            const auto decoded=decode_png_rgba8(bytes.bytes);
             if(!decoded.valid)continue;width=decoded.width;height=decoded.height;
             rgba8.assign(reinterpret_cast<const std::byte*>(decoded.rgba8.data()),
                 reinterpret_cast<const std::byte*>(decoded.rgba8.data()+decoded.rgba8.size()));
@@ -1406,23 +1412,17 @@ bool SceneRenderer::create_imported_geometry() {
     for (const auto& asset : asset_registry_.records()) {
         if (!asset.available || (asset.extension != ".meshbin" && asset.extension != ".glb" &&
             asset.extension != ".fbx")) continue;
-        const auto asset_path = asset_registry_.source_path(asset);
         GltfMeshData decoded;
         if (asset.extension == ".meshbin") {
-            std::error_code size_error;
-            const auto payload_size = std::filesystem::file_size(asset_path, size_error);
             constexpr std::uintmax_t maximum_mesh_artifact_bytes = 512U * 1024U * 1024U;
-            if (size_error || payload_size == 0U || payload_size > maximum_mesh_artifact_bytes) {
-                last_error_ = asset.id + ": cooked mesh payload is unavailable or exceeds the runtime budget";
-                return false;
-            }
-            const auto bytes = read_binary(asset_path);
-            if (bytes.size() != payload_size) {
-                last_error_ = asset.id + ": cooked mesh payload changed or could not be read completely";
+            const auto bytes=read_vfs_asset(*virtual_file_system_,asset_vfs_catalog_,asset.id,
+                {.byte_budget=maximum_mesh_artifact_bytes});
+            if(!bytes.success||bytes.bytes.empty()) {
+                last_error_=asset.id+": "+bytes.code+" - "+bytes.detail;
                 return false;
             }
             const auto loaded = load_mesh_runtime_artifact(
-                std::span<const std::byte>(reinterpret_cast<const std::byte*>(bytes.data()), bytes.size()),
+                bytes.bytes,
                 asset.id, {}, asset.content_hash);
             if (!loaded.success) {
                 last_error_ = asset.id + ": " + loaded.code + " - " + loaded.detail;
@@ -1431,6 +1431,7 @@ bool SceneRenderer::create_imported_geometry() {
             decoded = loaded.mesh;
             ++cooked_geometry_loads_;
         } else {
+            const auto asset_path = asset_registry_.source_path(asset);
             decoded = asset.extension == ".fbx" ? decode_fbx_asset(asset_path) : decode_glb_mesh(asset_path);
             ++source_geometry_decodes_;
         }

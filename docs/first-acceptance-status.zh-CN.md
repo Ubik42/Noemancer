@@ -28,7 +28,7 @@
 
 ## 当前可靠证据
 
-- VFS/Package Mount 首批基底在当前 Debug 树完成 99/99 全量 CTest：核心测试覆盖规范 URI、目录/Package Directory、最长根/优先级、range/EOF、取消、预算、SHA-256、并发和穿越拒绝；Registry bridge 实际挂载源码/包体并读取相同字节；miniaudio Adapter 通过 `ma_decoder_init_vfs` 真实解码 resident/stream WAV，并覆盖句柄预算、并发、seek 与稳定错误。普通 Headless Runtime 同时成功发布有界 `virtualFileSystem` 与 `assetVfsCatalog` production state；本批没有修改渲染或 Agent 命令 ABI，因此没有重复 GPU/MCP 门禁。
+- VFS/Package Mount 及首批 Runtime 迁移在当前 Debug 树完成 102/102 全量 CTest：核心测试覆盖规范 URI、目录/Package Directory、最长根/优先级、range/EOF、取消、预算、SHA-256、并发和穿越拒绝；Registry bridge 实际挂载源码/包体并读取相同字节；miniaudio Adapter 通过 `ma_decoder_init_vfs` 真实解码 resident/stream WAV。新增严格 UTF-8/JSON 文档读取、Asset ID 全量哈希校验与 Package Bootstrap 测试。当前 Runtime 使用现存正式 Game Profile 0.4 包完成 3 帧 Headless Player 探针，22 个实体、项目 C#、Semantic HUD 与 16 个资源身份均正常；`virtualFileSystem` 同时观测到 `package://` 和 `asset://` 两类挂载。另用现存 Cooked Animation/Geometry 正式包运行当前二进制，分别得到 `cookedArtifactLoads=1` 与 `cookedGeometryLoads=1`、Source Decode/Offline Compile 均为 0。探针还实际发现并修复了把正式 `packagedAssets[]` 错当布尔值的 Fixture 偏差。本批只改变渲染资源的读取来源，没有改变 Shader/GPU 行为或 Agent 命令 ABI，因此没有重复 GPU/MCP 门禁。
 - 前一轮 P0 生产后端批次通过 Debug 全量 CTest 40/40；覆盖音频 resident/stream 生命周期、fastgltf 兼容 Fixture、KTX2 双压缩路径、meshoptimizer Cook 与 Registry `meshbin` 缓存闭环。
 - P1 首个生产闭环批次通过 Debug 全量 CTest 43/43；新增覆盖后台 Asset Job、Play World Apply Back、Package 计划、长寿命 DAP Transport 和无模态弹窗的音频回归。
 - Asset Browser 收口批次通过 Debug 全量 CTest 46/46；D3D12 隐藏运行探针实际上传 1 张 160×96 RGBA8 缩略图（61,440 bytes），GPU Cache failure 为 0。
@@ -91,7 +91,7 @@
 ## 下一阶段边界
 
 1. `production.cooked-animation-artifact` 与 `production.cooked-geometry-runtime` 均已用真实 Package→Player 闭环退出；Editor 源资产成功不再替代包内 Runtime 证据。
-2. 已完成项以 `docs/current-state.json.completedMilestones` 为准；其中 live Editor transport/context 与 `production.virtual-filesystem-and-package-mount` 首批基底均已退出。`hybrid-pixel.semantic-2d-character-rig-prototype` 已因缺少直接帧方案之外的量化收益关闭。当前前沿是 `production.vfs-project-and-cooked-asset-migration`：把项目文档与 Cooked 纹理/几何/动画读取逐步迁移到已经成立的同一 VFS Authority。
+2. 已完成项以 `docs/current-state.json.completedMilestones` 为准；其中 live Editor transport/context 与 `production.virtual-filesystem-and-package-mount` 首批基底均已退出。`hybrid-pixel.semantic-2d-character-rig-prototype` 已因缺少直接帧方案之外的量化收益关闭。当前前沿仍是 `production.vfs-project-and-cooked-asset-migration`：Player Profile/Scene/HUD 与主要 Runtime/Cooked 资源已迁移，下一步迁移 Source Project 文档和 Registry bootstrap；managed assembly 与离线 FBX/GLB 仍是明确的私有物理边界，不冒充已完成。
 3. Project-attached Agent transport 已成立；对另一个已打开 Editor 的远程会话、跨进程共享 durable journal、独立机器矩阵、签名和安装器仍是独立后续工作，不混入当前 VFS 迁移批次。
 
 ## 游戏迁移节奏

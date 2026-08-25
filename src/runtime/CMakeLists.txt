@@ -9,6 +9,7 @@ add_executable(noemancer
     audio_output_backend.cpp
     miniaudio_render_graph.cpp
     miniaudio_vfs_adapter.cpp
+    package_vfs_bootstrap.cpp
     main.cpp
     performance_evidence.cpp
     runtime_texture_upload.cpp
@@ -19,6 +20,7 @@ add_executable(noemancer
     source_editor_service.cpp
     windows_package_service.cpp
     windows_runtime_dependencies.cpp
+    vfs_asset_reader.cpp
 )
 target_link_libraries(noemancer PRIVATE noemancer::editor noemancer::engine noemancer_imgui noemancer_miniaudio nlohmann_json::nlohmann_json)
 if(TARGET noemancer_managed_host)
