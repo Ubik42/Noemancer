@@ -102,6 +102,51 @@ struct EditorScriptBuildCompletion final {
     std::string result_json;
 };
 
+// Plain-data bridge for the live Editor context.  The EditorModel remains the
+// sole selection/focus authority; this value is a bounded projection for the
+// live Agent adapter and never contains ImGui/RmlUi handles.
+struct EditorUiContextSnapshot final {
+    std::string schema_version{"noemancer.editor-context/0.1"};
+    std::uint64_t revision{1};
+    std::uint64_t world_revision{};
+    std::string authority;
+    std::string simulation_state;
+    bool writable{};
+    std::string project_id;
+    std::string project_name;
+    std::string project_root;
+    std::string scene_source;
+    bool scene_dirty{};
+    std::vector<std::string> selected_entity_ids;
+    std::string primary_selected_entity_id;
+    std::string selected_asset_id;
+    std::string focused_panel_id;
+    std::optional<std::string> active_tab_id;
+    std::string last_action_status;
+    std::vector<std::string> selected_play_world_change_ids;
+    bool scene_can_undo{};
+    bool scene_can_redo{};
+    bool script_build_busy{};
+};
+
+struct EditorUiContextIntent final {
+    std::uint64_t expected_revision{};
+    bool dry_run{};
+    std::optional<std::vector<std::string>> selected_entity_ids;
+    std::optional<std::string> primary_selected_entity_id;
+    std::optional<std::string> selected_asset_id;
+    std::optional<std::string> focused_panel_id;
+    std::optional<std::string> active_tab_id;
+};
+
+struct EditorUiContextApplyReceipt final {
+    bool success{};
+    std::string code;
+    std::string detail;
+    std::uint64_t revision_before{};
+    std::uint64_t revision_after{};
+};
+
 class EditorUi final {
 public:
     EditorUi(World& world, AssetRegistry& assets);
@@ -119,6 +164,10 @@ public:
     void set_project_ui_document(std::string document_json,std::uint64_t revision,
                                  std::string fingerprint,bool can_undo,bool can_redo);
     void set_project_settings_open(bool open) noexcept { project_settings_open_ = open; }
+    // Refreshes the visible Editor projection after an Agent/domain apply.
+    // It deliberately refreshes the existing EditorModel instead of copying
+    // selection or inspector state into a second context database.
+    void refresh_visible_state();
     [[nodiscard]] std::optional<ProjectSettingsInputMapPanelRequest> consume_project_input_request();
     [[nodiscard]] std::optional<HybridPixelProfilePanelRequest> consume_hybrid_pixel_profile_request();
     [[nodiscard]] std::optional<ProjectUiAuthoringPanelRequest> consume_project_ui_request();
@@ -150,6 +199,12 @@ public:
     [[nodiscard]] std::optional<SceneWindowPosition> retained_inspector_window_at(std::int32_t surface_x,std::int32_t surface_y) const;
     [[nodiscard]] bool select_entity(std::string_view entity_id);
     [[nodiscard]] bool select_asset(std::string_view asset_id) noexcept;
+    [[nodiscard]] EditorUiContextSnapshot editor_context_snapshot() const;
+    [[nodiscard]] std::string editor_context_snapshot_json() const;
+    [[nodiscard]] EditorUiContextApplyReceipt apply_editor_context_intent(
+        const EditorUiContextIntent& intent);
+    [[nodiscard]] std::string apply_editor_context_intent_json(std::string_view request_json);
+    [[nodiscard]] std::uint64_t editor_context_revision() const noexcept { return editor_context_revision_; }
     void set_simulation_state(EditorSimulationState state) noexcept;
     void set_play_world_context(std::string observation_json,std::string inspector_json,std::string apply_plan_json);
     [[nodiscard]] const std::string& play_world_selected_entity_id() const noexcept;
@@ -184,6 +239,14 @@ private:
     void handle_tilemap_brush(float x,float y,float width,float height,bool hovered);
     void poll_script_compile_job();
     void evaluate_auto_compile();
+    void set_focused_panel(std::string_view panel_id);
+    void prepare_panel_window(std::string_view panel_id);
+    void mark_editor_context_changed() noexcept;
+    void synchronize_editor_context_revision();
+    [[nodiscard]] std::string editor_context_signature() const;
+    [[nodiscard]] bool apply_entity_selection(const std::vector<std::string>& entity_ids,
+                                              std::string_view primary_entity_id);
+    [[nodiscard]] bool entity_exists_in_play_world(std::string_view entity_id) const;
 
     EditorModel model_;
     StartupHubModel startup_hub_;
@@ -208,6 +271,10 @@ private:
     std::string auto_compile_blocked_fingerprint_;
     std::chrono::steady_clock::time_point auto_compile_candidate_since_{};
     std::chrono::steady_clock::time_point last_model_refresh_{};
+    std::uint64_t editor_context_revision_{1};
+    std::string editor_context_signature_;
+    std::string pending_panel_focus_id_;
+    std::optional<std::string> active_tab_id_;
     EditorProjectContext project_context_;
     std::string last_action_status_{"No transaction has been committed in this editor session."};
     std::uintptr_t scene_texture_id_{0};

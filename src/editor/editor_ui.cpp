@@ -280,18 +280,32 @@ void draw_sphere(
 } // namespace
 
 EditorUi::EditorUi(World& world, AssetRegistry& assets)
-    : model_(world, assets),scripting_status_cache_(model_.scripting_status_json()) { reset_viewport_camera(); }
+    : model_(world, assets),scripting_status_cache_(model_.scripting_status_json()) {
+    reset_viewport_camera();
+    synchronize_editor_context_revision();
+}
+
+void EditorUi::refresh_visible_state() {
+    model_.refresh();
+    scripting_status_cache_=model_.scripting_status_json();
+    synchronize_editor_context_revision();
+}
 
 void EditorUi::refresh_world_model() {
     if(script_compile_busy_)return;
-    model_.refresh();
-    scripting_status_cache_=model_.scripting_status_json();
+    refresh_visible_state();
 }
 
 bool EditorUi::select_asset(const std::string_view asset_id) noexcept {
-    if(!model_.select_asset(asset_id))return false;
+    const auto* previous=model_.selected_asset();
+    const auto previous_id=previous==nullptr?std::string_view{}:std::string_view(previous->id);
+    const auto selected=model_.select_asset(asset_id);
+    if(!selected)return false;
     animation_graph_focus_frames_=nlohmann::json::parse(
         model_.selected_animation_graph_authoring_json(),nullptr,false).value("valid",false)?3:0;
+    const auto* current=model_.selected_asset();
+    const auto current_id=current==nullptr?std::string_view{}:std::string_view(current->id);
+    if(previous_id!=current_id)mark_editor_context_changed();
     return true;
 }
 
@@ -301,7 +315,7 @@ void EditorUi::render() {
     const auto now=std::chrono::steady_clock::now();
     if(!script_compile_busy_&&(last_model_refresh_.time_since_epoch().count()==0||
        now-last_model_refresh_>=std::chrono::milliseconds(100))) {
-        model_.refresh();scripting_status_cache_=model_.scripting_status_json();evaluate_auto_compile();last_model_refresh_=now;
+        refresh_world_model();evaluate_auto_compile();last_model_refresh_=now;
     }
     const auto& io = ImGui::GetIO();
     if (!script_compile_busy_&&simulation_state_==EditorSimulationState::edit && !io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && model_.can_save_scene()) {
@@ -323,6 +337,7 @@ void EditorUi::render() {
     }
     if(startup_hub_open_) {
         draw_startup_hub();
+        synchronize_editor_context_revision();
         return;
     }
     draw_root_dockspace();
@@ -336,6 +351,7 @@ void EditorUi::render() {
     if(project_settings_open_&&project_input_panel_)project_input_panel_->render();
     if(project_settings_open_&&hybrid_pixel_profile_panel_)hybrid_pixel_profile_panel_->render();
     if(project_settings_open_&&project_ui_panel_)project_ui_panel_->render();
+    synchronize_editor_context_revision();
 }
 
 void EditorUi::set_engine_status(std::string status_json) {
@@ -446,6 +462,7 @@ void EditorUi::set_project_context(EditorProjectContext context) {
         const auto output=(std::filesystem::path(project_context_.root)/"dist"/(project_context_.name+"-windows-x64")).string();
         std::snprintf(package_output_path_.data(),package_output_path_.size(),"%s",output.c_str());
     }
+    synchronize_editor_context_revision();
 }
 
 void EditorUi::draw_startup_hub() {
@@ -791,15 +808,26 @@ std::optional<SceneWindowPosition> EditorUi::retained_inspector_window_at(const 
 }
 
 bool EditorUi::select_entity(const std::string_view entity_id) {
-    return model_.select_object(entity_id);
+    if(simulation_state_!=EditorSimulationState::edit) {
+        if(!entity_exists_in_play_world(entity_id)||play_world_selected_entity_id_==entity_id)return false;
+        play_world_selected_entity_id_=std::string(entity_id);
+        mark_editor_context_changed();
+        return true;
+    }
+    const auto before=model_.selected_object_ids();
+    const auto selected=model_.select_object(entity_id);
+    if(selected&&before!=model_.selected_object_ids())mark_editor_context_changed();
+    return selected;
 }
 
 void EditorUi::set_simulation_state(const EditorSimulationState state) noexcept {
+    if(simulation_state_==state)return;
     simulation_state_=state;
     if(state==EditorSimulationState::edit) {
         play_world_observation_json_.clear();play_world_inspector_json_.clear();play_world_apply_plan_json_.clear();
         play_world_selected_entity_id_.clear();selected_play_world_change_ids_.clear();known_play_world_change_ids_.clear();
     } else if(play_world_selected_entity_id_.empty()&&!model_.objects().empty())play_world_selected_entity_id_=model_.selected_object().id;
+    mark_editor_context_changed();
 }
 void EditorUi::set_play_world_context(std::string observation_json,std::string inspector_json,std::string apply_plan_json) {
     play_world_observation_json_=std::move(observation_json);play_world_inspector_json_=std::move(inspector_json);
@@ -816,6 +844,7 @@ void EditorUi::set_play_world_context(std::string observation_json,std::string i
     }
     std::erase_if(selected_play_world_change_ids_,[&](const std::string& id){return !current.contains(id);});
     known_play_world_change_ids_=std::move(current);
+    synchronize_editor_context_revision();
 }
 const std::string& EditorUi::play_world_selected_entity_id() const noexcept {return play_world_selected_entity_id_;}
 std::vector<std::string> EditorUi::selected_play_world_change_ids() const {
@@ -843,6 +872,294 @@ void EditorUi::set_managed_debug_context(std::string events_json,std::string las
 }
 std::optional<EditorManagedDebugRequest> EditorUi::consume_managed_debug_request() {
     auto request=managed_debug_request_;managed_debug_request_.reset();return request;
+}
+
+void EditorUi::mark_editor_context_changed() noexcept {
+    ++editor_context_revision_;
+    editor_context_signature_.clear();
+}
+
+std::string EditorUi::editor_context_signature() const {
+    std::string result;
+    const auto append=[&](const std::string_view value) {
+        result+=std::to_string(value.size());
+        result.push_back(':');
+        result.append(value);
+        result.push_back('|');
+    };
+    append(simulation_state_==EditorSimulationState::edit?"edit":
+        simulation_state_==EditorSimulationState::playing?"playing":"paused");
+    append(project_context_.project_id);append(project_context_.root);append(project_context_.startup_scene);
+    append(model_.scene_source());append(std::to_string(model_.world_revision()));
+    for(const auto& id:model_.selected_object_ids())append(id);
+    if(const auto* asset=model_.selected_asset();asset!=nullptr)append(asset->id);
+    append(model_.focused_panel());
+    append(active_tab_id_?std::string_view(*active_tab_id_):std::string_view{});
+    append(startup_hub_open_?"startup-visible":"startup-hidden");
+    append(play_world_selected_entity_id_);
+    append(last_action_status_);append(script_compile_busy_?"build-busy":"build-idle");
+    append(model_.can_undo()?"undo-available":"undo-empty");
+    append(model_.can_redo()?"redo-available":"redo-empty");
+    auto change_ids=selected_play_world_change_ids();
+    for(const auto& id:change_ids)append(id);
+    return result;
+}
+
+void EditorUi::synchronize_editor_context_revision() {
+    auto signature=editor_context_signature();
+    if(editor_context_signature_.empty()) {
+        editor_context_signature_=std::move(signature);
+        return;
+    }
+    if(signature!=editor_context_signature_) {
+        ++editor_context_revision_;
+        editor_context_signature_=std::move(signature);
+    }
+}
+
+void EditorUi::set_focused_panel(const std::string_view panel_id) {
+    const auto before=model_.focused_panel();
+    const auto before_tab=active_tab_id_;
+    model_.set_focused_panel(panel_id);
+    if(ImGui::IsWindowDocked())active_tab_id_=std::string(panel_id);
+    else active_tab_id_.reset();
+    if(before!=model_.focused_panel()||before_tab!=active_tab_id_)mark_editor_context_changed();
+}
+
+void EditorUi::prepare_panel_window(const std::string_view panel_id) {
+    if(pending_panel_focus_id_!=panel_id)return;
+    ImGui::SetNextWindowFocus();
+    pending_panel_focus_id_.clear();
+}
+
+bool EditorUi::entity_exists_in_play_world(const std::string_view entity_id) const {
+    if(entity_id.empty())return false;
+    const auto observation=nlohmann::json::parse(play_world_observation_json_,nullptr,false);
+    if(!observation.is_object())return false;
+    const auto iterator=observation.find("entities");
+    if(iterator==observation.end()||!iterator->is_array())return false;
+    for(const auto& entity:*iterator) {
+        if(!entity.is_object())continue;
+        const auto id=entity.find("id");
+        if(id!=entity.end()&&id->is_string()&&id->get<std::string>()==entity_id)return true;
+    }
+    return false;
+}
+
+bool EditorUi::apply_entity_selection(const std::vector<std::string>& entity_ids,
+                                      const std::string_view primary_entity_id) {
+    if(entity_ids.empty()||primary_entity_id.empty())return false;
+    if(simulation_state_!=EditorSimulationState::edit) {
+        if(entity_ids.size()!=1U)return false;
+        if(play_world_selected_entity_id_==entity_ids.front())return false;
+        play_world_selected_entity_id_=entity_ids.front();
+        return true;
+    }
+    const auto before=model_.selected_object_ids();
+    const auto primary=std::ranges::find(entity_ids,primary_entity_id);
+    if(primary==entity_ids.end())return false;
+    if(!model_.select_object(primary_entity_id,false))return false;
+    for(const auto& id:entity_ids) {
+        if(id==primary_entity_id)continue;
+        if(!model_.select_object(id,true))return false;
+    }
+    return before!=model_.selected_object_ids();
+}
+
+EditorUiContextSnapshot EditorUi::editor_context_snapshot() const {
+    EditorUiContextSnapshot result;
+    result.revision=editor_context_revision_;
+    result.world_revision=model_.world_revision();
+    result.authority=simulation_state_==EditorSimulationState::edit?"edit-world":"play-world-read-only";
+    result.simulation_state=simulation_state_==EditorSimulationState::edit?"edit":
+        simulation_state_==EditorSimulationState::playing?"playing":"paused";
+    result.writable=simulation_state_==EditorSimulationState::edit&&!script_compile_busy_;
+    result.project_id=project_context_.project_id;
+    result.project_name=project_context_.name;
+    result.project_root=project_context_.root;
+    result.scene_source=model_.scene_source();
+    result.scene_dirty=model_.scene_dirty();
+    if(simulation_state_==EditorSimulationState::edit) {
+        result.selected_entity_ids=model_.selected_object_ids();
+        if(!result.selected_entity_ids.empty())result.primary_selected_entity_id=result.selected_entity_ids.front();
+    } else if(!play_world_selected_entity_id_.empty()) {
+        result.selected_entity_ids.push_back(play_world_selected_entity_id_);
+        result.primary_selected_entity_id=play_world_selected_entity_id_;
+    }
+    if(const auto* asset=model_.selected_asset();asset!=nullptr)result.selected_asset_id=asset->id;
+    result.focused_panel_id=model_.focused_panel();
+    result.active_tab_id=active_tab_id_;
+    result.last_action_status=last_action_status_;
+    result.selected_play_world_change_ids=selected_play_world_change_ids();
+    result.scene_can_undo=model_.can_undo();
+    result.scene_can_redo=model_.can_redo();
+    result.script_build_busy=script_compile_busy_;
+    return result;
+}
+
+std::string EditorUi::editor_context_snapshot_json() const {
+    const auto value=editor_context_snapshot();
+    const auto asset_id=value.selected_asset_id.empty()?nlohmann::json(nullptr):nlohmann::json(value.selected_asset_id);
+    const auto tab_id=value.active_tab_id? nlohmann::json(*value.active_tab_id):nlohmann::json(nullptr);
+    return nlohmann::json{
+        {"schemaVersion",value.schema_version},{"revision",value.revision},{"worldRevision",value.world_revision},
+        {"authority",value.authority},{"simulationState",value.simulation_state},{"writable",value.writable},
+        {"project",{{"id",value.project_id},{"name",value.project_name},{"root",value.project_root}}},
+        {"scene",{{"source",value.scene_source},{"dirty",value.scene_dirty}}},
+        {"selection",{{"entityIds",value.selected_entity_ids},{"primaryEntityId",value.primary_selected_entity_id.empty()?
+            nlohmann::json(nullptr):nlohmann::json(value.primary_selected_entity_id)},{"assetId",asset_id}}},
+        {"focus",{{"panelId",value.focused_panel_id},{"activeTabId",tab_id}}},
+        {"transaction",{{"lastActionStatus",value.last_action_status},{"selectedPlayWorldChangeIds",value.selected_play_world_change_ids},
+            {"canUndo",value.scene_can_undo},{"canRedo",value.scene_can_redo},{"scriptBuildBusy",value.script_build_busy}}}
+    }.dump();
+}
+
+EditorUiContextApplyReceipt EditorUi::apply_editor_context_intent(const EditorUiContextIntent& intent) {
+    synchronize_editor_context_revision();
+    EditorUiContextApplyReceipt result{.revision_before=editor_context_revision_,.revision_after=editor_context_revision_};
+    const auto fail=[&](std::string code,std::string detail) {
+        result.success=false;result.code=std::move(code);result.detail=std::move(detail);result.revision_after=editor_context_revision_;return result;
+    };
+    if(intent.expected_revision!=editor_context_revision_)
+        return fail("editor.context-conflict","The Editor context revision changed; observe it again before applying selection or focus.");
+    auto requested_panel=intent.focused_panel_id;
+    if(intent.active_tab_id&&!intent.active_tab_id->empty()) {
+        if(requested_panel&&!requested_panel->empty()&&*requested_panel!=*intent.active_tab_id)
+            return fail("editor.context-focus-conflict","focus.panelId and focus.activeTabId must identify the same visible panel.");
+        requested_panel=intent.active_tab_id;
+    }
+    if(requested_panel) {
+        if(requested_panel->empty()||std::ranges::find(model_.panels(),*requested_panel,&EditorPanel::id)==model_.panels().end())
+            return fail("editor.context-panel-invalid","The requested Editor panel is not part of the current shell.");
+    }
+    std::vector<std::string> entity_ids;
+    const bool selection_requested=intent.selected_entity_ids.has_value()||intent.primary_selected_entity_id.has_value();
+    if(intent.selected_entity_ids)entity_ids=*intent.selected_entity_ids;
+    if(intent.primary_selected_entity_id&&intent.primary_selected_entity_id->empty()&&!entity_ids.empty())
+        return fail("editor.context-selection-invalid","A primary selection cannot be empty when entity IDs are supplied.");
+    if(intent.primary_selected_entity_id&&!intent.primary_selected_entity_id->empty()&&entity_ids.empty())
+        entity_ids.push_back(*intent.primary_selected_entity_id);
+    if(entity_ids.size()>128U)return fail("editor.context-selection-too-large","The Editor selection is limited to 128 entities.");
+    std::unordered_set<std::string> unique_entity_ids;
+    for(const auto& id:entity_ids) {
+        if(id.empty()||id.size()>128U||!unique_entity_ids.insert(id).second)
+            return fail("editor.context-selection-invalid","Entity selection IDs must be unique, non-empty and bounded.");
+        if(simulation_state_==EditorSimulationState::edit) {
+            if(std::ranges::find(model_.objects(),id,&EditorObject::id)==model_.objects().end())
+                return fail("editor.context-entity-not-found","One or more requested Edit World entities do not exist.");
+        } else if(!entity_exists_in_play_world(id)) {
+            return fail("editor.context-entity-not-found","One or more requested Play World entities do not exist.");
+        }
+    }
+    std::string primary_entity_id;
+    if(intent.primary_selected_entity_id)primary_entity_id=*intent.primary_selected_entity_id;
+    else if(!entity_ids.empty())primary_entity_id=entity_ids.front();
+    if(!primary_entity_id.empty()&&std::ranges::find(entity_ids,primary_entity_id)==entity_ids.end())
+        return fail("editor.context-selection-invalid","The primary entity must be included in entityIds.");
+    if(intent.selected_entity_ids&&intent.selected_entity_ids->empty()) {
+        const auto current_selection=editor_context_snapshot().selected_entity_ids;
+        if(!current_selection.empty())return fail("editor.context-selection-clear-unavailable",
+            "The current EditorModel exposes revision-bound selection but no destructive clear operation.");
+    }
+    if(intent.selected_asset_id) {
+        if(intent.selected_asset_id->empty()) {
+            if(model_.selected_asset()!=nullptr)return fail("editor.context-asset-clear-unavailable",
+                "The current EditorModel does not expose an asset-selection clear operation.");
+        } else if(!std::ranges::any_of(model_.assets(),[&](const EditorAsset& asset){return asset.id==*intent.selected_asset_id;}))
+            return fail("editor.context-asset-not-found","The requested asset is not in the current EditorModel registry.");
+    }
+    if(intent.dry_run) {
+        result.success=true;result.code="editor.context-dry-run";
+        result.detail="Editor selection/focus intent validated without changing visible state.";
+        return result;
+    }
+    bool changed=false;
+    if(selection_requested&&!entity_ids.empty())changed|=apply_entity_selection(entity_ids,primary_entity_id);
+    if(intent.selected_asset_id&&!intent.selected_asset_id->empty()) {
+        const auto* before=model_.selected_asset();
+        const auto before_id=before==nullptr?std::string_view{}:std::string_view(before->id);
+        static_cast<void>(model_.select_asset(*intent.selected_asset_id));
+        const auto* after=model_.selected_asset();
+        const auto after_id=after==nullptr?std::string_view{}:std::string_view(after->id);
+        changed|=before_id!=after_id;
+    }
+    if(requested_panel&&model_.focused_panel()!=*requested_panel) {
+        model_.set_focused_panel(*requested_panel);changed=true;
+    }
+    if(requested_panel)pending_panel_focus_id_=*requested_panel;
+    if(changed)mark_editor_context_changed();
+    refresh_visible_state();
+    result.success=true;result.code=changed?"ok":"editor.context-no-change";
+    result.detail=changed?"Editor selection/focus applied and visible state refreshed.":"Editor context already matched the requested intent.";
+    result.revision_after=editor_context_revision_;
+    return result;
+}
+
+std::string EditorUi::apply_editor_context_intent_json(const std::string_view request_json) {
+    EditorUiContextApplyReceipt receipt;
+    const auto document=nlohmann::json::parse(request_json,nullptr,false);
+    if(!document.is_object()) {
+        receipt={false,"editor.context-request-invalid","The context intent must be a JSON object.",editor_context_revision_,editor_context_revision_};
+    } else if(!document.contains("expectedRevision")||!document.at("expectedRevision").is_number_unsigned()) {
+        receipt={false,"editor.context-revision-required","A numeric expectedRevision is required for a context intent.",editor_context_revision_,editor_context_revision_};
+    } else {
+        EditorUiContextIntent intent;
+        intent.expected_revision=document.at("expectedRevision").get<std::uint64_t>();
+        if(document.contains("dryRun")&&!document.at("dryRun").is_boolean())
+            receipt={false,"editor.context-dry-run-invalid","dryRun must be a boolean.",editor_context_revision_,editor_context_revision_};
+        else intent.dry_run=document.value("dryRun",false);
+        const auto selection=document.find("selection");
+        if(selection!=document.end()&&!selection->is_object())
+            receipt={false,"editor.context-selection-invalid","selection must be an object.",editor_context_revision_,editor_context_revision_};
+        else if(selection!=document.end()) {
+            const auto entity_ids=selection->find("entityIds");
+            if(entity_ids!=selection->end()&&!entity_ids->is_array())
+                receipt={false,"editor.context-selection-invalid","selection.entityIds must be an array.",editor_context_revision_,editor_context_revision_};
+            else {
+                bool valid=true;
+                if(entity_ids!=selection->end()) {
+                    std::vector<std::string> ids;
+                    for(const auto& value:*entity_ids) {
+                        if(!value.is_string()){valid=false;break;}
+                        ids.push_back(value.get<std::string>());
+                    }
+                    if(valid)intent.selected_entity_ids=std::move(ids);
+                }
+                const auto primary=selection->find("primaryEntityId");
+                if(primary!=selection->end()) {
+                    if(!primary->is_string())valid=false;
+                    else intent.primary_selected_entity_id=primary->get<std::string>();
+                }
+                const auto asset=selection->find("assetId");
+                if(asset!=selection->end()) {
+                    if(!asset->is_string())valid=false;
+                    else intent.selected_asset_id=asset->get<std::string>();
+                }
+                if(!valid)receipt={false,"editor.context-selection-invalid","Selection fields have invalid JSON types.",editor_context_revision_,editor_context_revision_};
+            }
+        }
+        if(receipt.code.empty()) {
+            const auto focus=document.find("focus");
+            if(focus!=document.end()&&!focus->is_object())receipt={false,"editor.context-focus-invalid","focus must be an object.",editor_context_revision_,editor_context_revision_};
+            else if(focus!=document.end()) {
+                const auto panel=focus->find("panelId");
+                if(panel!=focus->end()) {
+                    if(!panel->is_string())receipt={false,"editor.context-focus-invalid","focus.panelId must be a string.",editor_context_revision_,editor_context_revision_};
+                    else intent.focused_panel_id=panel->get<std::string>();
+                }
+                const auto tab=focus->find("activeTabId");
+                if(receipt.code.empty()&&tab!=focus->end()&&!tab->is_null()) {
+                    if(!tab->is_string())receipt={false,"editor.context-focus-invalid","focus.activeTabId must be a string or null.",editor_context_revision_,editor_context_revision_};
+                    else intent.active_tab_id=tab->get<std::string>();
+                }
+            }
+        }
+        if(receipt.code.empty())receipt=apply_editor_context_intent(intent);
+    }
+    const auto context=nlohmann::json::parse(editor_context_snapshot_json(),nullptr,false);
+    return nlohmann::json{{"schemaVersion","noemancer.editor-context-receipt/0.1"},{"success",receipt.success},
+        {"code",receipt.code},{"detail",receipt.detail},{"revisionBefore",receipt.revision_before},
+        {"revisionAfter",receipt.revision_after},{"context",context}}.dump();
 }
 
 std::string EditorUi::semantic_snapshot_json() const {
@@ -987,6 +1304,7 @@ std::string EditorUi::semantic_snapshot_json() const {
             nlohmann::json::parse(scene_recovery_candidates_json_,nullptr,false)}};
     snapshot["assetJob"]=nlohmann::json::parse(model_.active_asset_job_json(),nullptr,false);
     snapshot["lastActionStatus"]=last_action_status_;
+    snapshot["editorContext"]=nlohmann::json::parse(editor_context_snapshot_json(),nullptr,false);
     nlohmann::json pending_cells=nlohmann::json::array();for(std::size_t index=0;index<std::min<std::size_t>(tile_stroke_edits_.size(),64);++index) {
         const auto& edit=tile_stroke_edits_[index];pending_cells.push_back({{"x",edit.x},{"y",edit.y},{"operation",edit.tile_id?"paint":"erase"},
             {"tileId",edit.tile_id?nlohmann::json(*edit.tile_id):nlohmann::json(nullptr)}});
@@ -1314,8 +1632,9 @@ void EditorUi::draw_root_dockspace() {
 }
 
 void EditorUi::draw_scene_view() {
+    prepare_panel_window("editor.panel.scene");
     ImGui::Begin("Scene View", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))model_.set_focused_panel("editor.panel.scene");
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.scene");
 
     ImGui::TextDisabled("TOOLS");ImGui::SameLine();
     if (draw_mode_button("##tool-select",EditorIcon::select,"SELECT",gizmo_mode_==GizmoMode::select)) gizmo_mode_=GizmoMode::select;
@@ -1648,7 +1967,9 @@ void EditorUi::draw_transform_gizmo(const float x,const float y,const float widt
 }
 
 void EditorUi::draw_world_outliner() {
+    prepare_panel_window("editor.panel.outliner");
     ImGui::Begin("World Outliner");
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.outliner");
     const bool edit_world=simulation_state_==EditorSimulationState::edit;
     const bool authoring=edit_world&&!script_compile_busy_;
     const auto runtime_observation=edit_world?nlohmann::json::object():nlohmann::json::parse(play_world_observation_json_,nullptr,false);
@@ -1740,7 +2061,10 @@ void EditorUi::draw_world_outliner() {
                         (play_world_selected_entity_id_==id?ImGuiTreeNodeFlags_Selected:0)|
                         (children?ImGuiTreeNodeFlags_DefaultOpen:ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen);
                     const auto open=ImGui::TreeNodeEx(name.c_str(),flags);
-                    if(ImGui::IsItemClicked()){play_world_selected_entity_id_=id;static_cast<void>(model_.select_object(id));}
+                    if(ImGui::IsItemClicked()&&play_world_selected_entity_id_!=id) {
+                        play_world_selected_entity_id_=id;
+                        mark_editor_context_changed();
+                    }
                     if(ImGui::IsItemHovered())ImGui::SetTooltip("%s\n%s\nruntime revision %llu",id.c_str(),
                         entity.value("type",std::string{"entity"}).c_str(),static_cast<unsigned long long>(entity.value("revision",0ULL)));
                     if(children&&open){draw_runtime_children(id);ImGui::TreePop();}ImGui::PopID();
@@ -1784,7 +2108,11 @@ void EditorUi::draw_world_outliner() {
                     (model_.is_object_selected(object.id) ? ImGuiTreeNodeFlags_Selected : 0) |
                     (has_children ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen);
                 const bool open = ImGui::TreeNodeEx(object.name.c_str(), flags);
-                if (ImGui::IsItemClicked()) model_.select_object(index,ImGui::GetIO().KeyCtrl);
+                if (ImGui::IsItemClicked()) {
+                    const auto before=model_.selected_object_ids();
+                    static_cast<void>(model_.select_object(index,ImGui::GetIO().KeyCtrl));
+                    if(before!=model_.selected_object_ids())mark_editor_context_changed();
+                }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("%s\n%s", object.id.c_str(), object.kind.c_str());
                 }
@@ -1815,7 +2143,9 @@ void EditorUi::draw_world_outliner() {
 }
 
 void EditorUi::draw_inspector() {
+    prepare_panel_window("editor.panel.inspector");
     ImGui::Begin("Inspector");
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.inspector");
     if(simulation_state_!=EditorSimulationState::edit) {
         const auto inspector=nlohmann::json::parse(play_world_inspector_json_,nullptr,false);
         draw_panel_heading("Runtime Inspector","live values");
@@ -2050,14 +2380,15 @@ void EditorUi::draw_animation_graph() {
         animation_graph_drag_asset_id_.clear();animation_graph_drag_fingerprint_.clear();
     }
 
+    prepare_panel_window("editor.panel.animation-graph");
     if(animation_graph_focus_frames_>0)ImGui::SetNextWindowFocus();
     ImGui::Begin("Animation Graph");
     if(animation_graph_focus_frames_>0) {
         ImGui::SetWindowFocus();
-        model_.set_focused_panel("editor.panel.animation-graph");
+        set_focused_panel("editor.panel.animation-graph");
         --animation_graph_focus_frames_;
     }
-    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))model_.set_focused_panel("editor.panel.animation-graph");
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.animation-graph");
     if(!animation_graph_document_) {
         draw_panel_heading("Animation Graph","visual authoring");
         draw_empty_panel_state("Select an Animation Graph","Choose an AnimationGraph asset in the Asset Browser to edit nodes, layers, and masks.");
@@ -2300,7 +2631,9 @@ void EditorUi::draw_animation_graph() {
 }
 
 void EditorUi::draw_asset_browser() {
+    prepare_panel_window("editor.panel.assets");
     ImGui::Begin("Asset Browser");
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.assets");
     if(const auto reconciliation=model_.reconcile_active_asset_job())last_action_status_=reconciliation->detail;
     const auto registry=nlohmann::json::parse(model_.asset_registry_status_json(),nullptr,false);
     const auto registry_revision=registry.is_object()?registry.value("revision",0ULL):0ULL;
@@ -2370,13 +2703,13 @@ void EditorUi::draw_asset_browser() {
         if(resident!=asset_thumbnail_textures_.end()&&resident->second!=0U) {
             const auto top_left=ImGui::GetCursorScreenPos();
             ImGui::Image(static_cast<ImTextureID>(resident->second),{card_width,52.0F});
-            if(ImGui::IsItemClicked())model_.select_asset(index);
+            if(ImGui::IsItemClicked())static_cast<void>(select_asset(asset.id));
             if(selected)ImGui::GetWindowDrawList()->AddRect(top_left,{top_left.x+card_width,top_left.y+52.0F},
                 IM_COL32(76,170,232,255),3.0F,0,2.0F);
         } else {
             ImGui::PushStyleColor(ImGuiCol_Button,selected?ImVec4(0.16F,0.32F,0.46F,1.0F):ImVec4(channel(0),channel(8),channel(16),1.0F));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(channel(0)+0.08F,channel(8)+0.08F,channel(16)+0.08F,1.0F));
-            if(ImGui::Button(preview,{card_width,52.0F}))model_.select_asset(index);
+            if(ImGui::Button(preview,{card_width,52.0F}))static_cast<void>(select_asset(asset.id));
             ImGui::PopStyleColor(2);
         }
         ImGui::TextUnformatted(asset.name.c_str());
@@ -2485,7 +2818,9 @@ void EditorUi::draw_asset_browser() {
 }
 
 void EditorUi::draw_console() {
+    prepare_panel_window("editor.panel.console");
     ImGui::Begin("Console");
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.console");
     const auto scripting=nlohmann::json::parse(scripting_status_cache_,nullptr,false);
     const auto project=scripting.is_object()&&scripting.value("project",nlohmann::json{}).is_object()?
         scripting.at("project"):nlohmann::json::object();
@@ -2650,7 +2985,9 @@ void EditorUi::draw_console() {
 }
 
 void EditorUi::draw_agent_context() {
+    prepare_panel_window("editor.panel.agent-context");
     ImGui::Begin("Agent Context");
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.agent-context");
     ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(accent), "Semantic Observation Preview");
     ImGui::TextWrapped(
         "Panels and the live ECS World now share stable identities, revisions and source anchors with Agent tools.");

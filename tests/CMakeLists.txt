@@ -389,6 +389,12 @@ add_executable(noemancer_editor_ui_tests editor_ui_tests.cpp)
 target_link_libraries(noemancer_editor_ui_tests PRIVATE noemancer::editor noemancer_imgui)
 add_test(NAME noemancer.editor_ui COMMAND noemancer_editor_ui_tests)
 
+add_executable(noemancer_live_editor_context_acceptance_tests live_editor_context_acceptance_tests.cpp)
+target_link_libraries(noemancer_live_editor_context_acceptance_tests PRIVATE
+    noemancer::editor noemancer_imgui nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.live_editor_context_acceptance
+    COMMAND noemancer_live_editor_context_acceptance_tests)
+
 add_executable(noemancer_project_settings_input_map_tests project_settings_input_map_tests.cpp)
 target_link_libraries(noemancer_project_settings_input_map_tests PRIVATE noemancer::editor nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.project_settings_input_map COMMAND noemancer_project_settings_input_map_tests)

@@ -848,6 +848,11 @@ void Application::rebuild_live_editor_command_registry() {
     auto next = std::make_unique<CommandRegistry>(world_, asset_registry_);
     if (project_ui_session_ && project_ui_session_->valid())
         next->attach_project_ui_authoring(*project_ui_session_);
+    next->attach_editor_context(
+        [this] { return editor_ui_.editor_context_snapshot_json(); },
+        [this](const std::string_view arguments) {
+            return editor_ui_.apply_editor_context_intent_json(arguments);
+        });
     live_editor_command_registry_ = std::move(next);
 }
 
@@ -996,7 +1001,8 @@ LiveEditorTransportDispatchResult Application::dispatch_live_editor_request(
             "The live Editor command authority is not available in Player or headless mode."};
     }
     const auto invocation = live_editor_command_registry_->invoke(request.method, request.arguments_json);
-    if (invocation.exit_code == 0) editor_ui_.refresh_world_model();
+    if (invocation.exit_code == 0 && request.method != "editor.context.observe" &&
+        request.method != "editor.context.intent") editor_ui_.refresh_world_model();
     // CommandRegistry already owns the stable protocol envelope (including
     // the command result and failure code). Preserve it byte-for-byte for the
     // live transport rather than introducing a second ABI. A valid dispatch

@@ -51,6 +51,8 @@ const expected = [
   "audio.mixer.observe",
   "audio.voice.play",
   "audio.voice.spatial.set",
+  "editor.context.intent",
+  "editor.context.observe",
   "editor.inspector.describe",
   "engine.status",
   "gameplay.ability.activate",

@@ -34,6 +34,9 @@ public:
         std::string_view name,
         std::string_view arguments_json) const;
     void attach_project_ui_authoring(ProjectUiAuthoringSession& session);
+    void attach_editor_context(
+        std::function<std::string()> observe,
+        std::function<std::string(std::string_view)> apply_intent);
 
 private:
     void register_commands();
@@ -56,6 +59,8 @@ private:
     std::unique_ptr<AssetRegistry> owned_assets_;
     AssetRegistry* assets_{};
     std::unique_ptr<ProjectUiAuthoringCommandService> project_ui_authoring_;
+    std::function<std::string()> editor_context_observe_;
+    std::function<std::string(std::string_view)> editor_context_apply_intent_;
     std::vector<CommandDefinition> commands_;
 };
 

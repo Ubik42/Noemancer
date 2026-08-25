@@ -298,6 +298,13 @@ void CommandRegistry::attach_project_ui_authoring(ProjectUiAuthoringSession& ses
     project_ui_authoring_=std::make_unique<ProjectUiAuthoringCommandService>(session);
 }
 
+void CommandRegistry::attach_editor_context(
+    std::function<std::string()> observe,
+    std::function<std::string(std::string_view)> apply_intent) {
+    editor_context_observe_=std::move(observe);
+    editor_context_apply_intent_=std::move(apply_intent);
+}
+
 void CommandRegistry::register_commands() {
     commands_.push_back(CommandDefinition{
         .name = "engine.status",
@@ -1334,6 +1341,41 @@ void CommandRegistry::register_commands() {
             query.depth=input.value("depth",2U);query.byte_budget=input.value("byteBudget",16U*1024U);
             query.cursor=input.value("cursor",0U);query.include_values=input.value("includeValues",true);
             return semantic_ui_query_json(world_->semantic_ui_project_document_json(input.value("locale",std::string("en-US"))),query);
+        }
+    });
+
+    commands_.push_back(CommandDefinition{
+        .name = "editor.context.observe",
+        .description = "Observe the bounded visible Editor project, scene, Edit/Play authority, selection, focus and recent transaction context.",
+        .access = "read", .idempotent = true, .supports_dry_run = false,
+        .runtime_state = "attached", .task_kind = "immediate",
+        .input_schema_json = R"({"type":"object","additionalProperties":false})",
+        .output_schema_json = R"({"type":"object","required":["schemaVersion","revision","authority","project","scene","selection","focus","transaction"]})",
+        .handler = [this](const std::string_view arguments) {
+            static_cast<void>(parse_object(arguments));
+            if(editor_context_observe_)return editor_context_observe_();
+            return Json{{"schemaVersion","noemancer.editor-context/0.1"},{"revision",0},
+                {"valid",false},{"code","editor.context-detached"},
+                {"detail","This command requires the live interactive Editor authority."},
+                {"authority","unavailable"},{"project",nullptr},{"scene",nullptr},
+                {"selection",nullptr},{"focus",nullptr},{"transaction",nullptr}}.dump();
+        }
+    });
+
+    commands_.push_back(CommandDefinition{
+        .name = "editor.context.intent",
+        .description = "Apply one revision-bound visible Editor selection or panel-focus intent through the existing Editor authority.",
+        .access = "write", .idempotent = false, .supports_dry_run = true,
+        .runtime_state = "attached", .task_kind = "immediate",
+        .input_schema_json = R"({"type":"object","required":["expectedRevision"],"properties":{"expectedRevision":{"type":"integer","minimum":1},"dryRun":{"type":"boolean","default":false},"selection":{"type":"object","properties":{"entityIds":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"maxLength":128}},"primaryEntityId":{"type":"string","maxLength":128},"assetId":{"type":"string","maxLength":128}},"additionalProperties":false},"focus":{"type":"object","properties":{"panelId":{"type":"string","maxLength":128},"activeTabId":{"type":["string","null"],"maxLength":128}},"additionalProperties":false}},"additionalProperties":false})",
+        .output_schema_json = R"({"type":"object","required":["schemaVersion","success","code","detail","revisionBefore","revisionAfter","context"]})",
+        .handler = [this](const std::string_view arguments) {
+            static_cast<void>(parse_object(arguments));
+            if(editor_context_apply_intent_)return editor_context_apply_intent_(arguments);
+            return Json{{"schemaVersion","noemancer.editor-context-receipt/0.1"},
+                {"success",false},{"code","editor.context-detached"},
+                {"detail","This command requires the live interactive Editor authority."},
+                {"revisionBefore",0},{"revisionAfter",0},{"context",nullptr}}.dump();
         }
     });
 

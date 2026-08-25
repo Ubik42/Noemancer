@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-24",
   "status": "active-development",
-  "currentSlice": "agent.open-editor-live-session-transport",
-  "currentStep": "bind-editor-chrome-selection-and-semantic-context",
+  "currentSlice": "production.virtual-filesystem-and-package-mount",
+  "currentStep": "define-bounded-vfs-contract-and-package-mount",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,7 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "agent.open-editor-live-session-transport"
+    "production.virtual-filesystem-and-package-mount"
   ],
   "externalEvidencePending": [
     "performance.gpu-telemetry-compatible-host"
@@ -32,7 +32,8 @@
     "hybrid-pixel.package-player-production-validation",
     "hybrid-pixel.large-sprite-tilemap-production-pressure",
     "game-migration.hybrid-pixel-hd2d-small-slice",
-    "development-loop.source-project-first-visual-latency"
+    "development-loop.source-project-first-visual-latency",
+    "agent.open-editor-live-session-transport"
   ],
   "closedExperiments": [
     {
