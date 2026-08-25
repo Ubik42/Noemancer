@@ -376,7 +376,7 @@ void validate_cook_manifest(const PackageInput& input, PackagePlan& plan) {
             artifact.payload_format == "gltf/binary" || artifact.payload_format == "fbx/binary" ||
             artifact.payload_format == ".glb" || artifact.payload_format == ".gltf" ||
             artifact.payload_format == ".fbx" ||
-            source_extension == ".glb" || source_extension == ".fbx") {
+            source_extension == ".glb" || source_extension == ".gltf" || source_extension == ".fbx") {
             add_diagnostic(plan, "package.source-geometry-forbidden", path,
                 "Game packages require noemancer/meshbin/0.2 and may not distribute source GLB/FBX geometry.");
         }

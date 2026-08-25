@@ -147,8 +147,8 @@ Classification classify_asset(const AssetRecord& asset) {
         return {"scene", "scene-placeholder"};
     }
     if (ends_with(path, ".png")) return {"texture", "png-decode-scale"};
-    if (ends_with(path, ".jpg") || ends_with(path, ".jpeg") ||
-        ends_with(path, ".webp") || ends_with(path, ".tga") ||
+    if (ends_with(path, ".jpg") || ends_with(path, ".jpeg")) return {"texture", "jpeg-decode-scale"};
+    if (ends_with(path, ".webp") || ends_with(path, ".tga") ||
         ends_with(path, ".exr") || ends_with(path, ".hdr") ||
         ends_with(path, ".ktx2") || ends_with(path, ".basis") ||
         contains(kind, "texture") || contains(kind, "image")) {
@@ -413,10 +413,10 @@ ThumbnailReceipt execute_thumbnail(const ThumbnailPlan& plan, const ThumbnailExe
     }
 
     std::vector<std::uint8_t> rgba8;
-    if (plan.strategy == "png-decode-scale") {
+    if (plan.strategy == "png-decode-scale" || plan.strategy == "jpeg-decode-scale") {
         if (!options.read_source) {
             receipt.code = "thumbnail.source-reader-required";
-            receipt.detail = "A PNG source thumbnail requires the existing source reader and image decoder.";
+            receipt.detail = "A source image thumbnail requires the existing source reader and image decoder.";
             return receipt;
         }
         const auto source = options.read_source(plan.source_uri);
@@ -430,10 +430,13 @@ ThumbnailReceipt execute_thumbnail(const ThumbnailPlan& plan, const ThumbnailExe
             receipt.detail = "The thumbnail source is empty or exceeds the bounded source budget.";
             return receipt;
         }
-        const auto decoded = decode_png_rgba8(std::span<const std::byte>(source.bytes.data(), source.bytes.size()));
+        const auto bytes=std::span<const std::byte>(source.bytes.data(),source.bytes.size());
+        const auto decoded = decode_image_rgba8(bytes,
+            plan.strategy == "jpeg-decode-scale" ? "image/jpeg" : "image/png");
         if (!decoded.valid || decoded.width == 0U || decoded.height == 0U) {
-            receipt.code = "thumbnail.png-decode-failed";
-            receipt.detail = "The existing PNG decoder rejected the source thumbnail.";
+            receipt.code = plan.strategy == "jpeg-decode-scale"
+                ? "thumbnail.jpeg-decode-failed" : "thumbnail.png-decode-failed";
+            receipt.detail = "The image adapter rejected the source thumbnail.";
             add_diagnostic(receipt.diagnostics, decoded.code);
             return receipt;
         }
@@ -462,8 +465,8 @@ ThumbnailReceipt execute_thumbnail(const ThumbnailPlan& plan, const ThumbnailExe
     }
     receipt.success = true;
     receipt.code = "thumbnail.generated";
-    receipt.detail = plan.strategy == "png-decode-scale"
-        ? "PNG thumbnail generated through the existing image adapter."
+    receipt.detail = plan.strategy == "png-decode-scale" || plan.strategy == "jpeg-decode-scale"
+        ? "Source thumbnail generated through the existing image adapter."
         : "Deterministic PNG proxy thumbnail generated; source-specific decoding remains deferred.";
     receipt.payload = encoded.bytes;
     receipt.payload_bytes = receipt.payload.size();

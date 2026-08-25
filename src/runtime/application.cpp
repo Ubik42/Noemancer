@@ -417,7 +417,7 @@ Application::Application(RunOptions options)
                 break;
             }
             const auto source = asset_registry_.source_path(asset);
-            const auto decoded = asset.extension == ".fbx" ? decode_fbx_asset(source) : decode_glb_mesh(source);
+            const auto decoded = asset.extension == ".fbx" ? decode_fbx_asset(source) : decode_gltf_mesh(source);
             ++source_animation_decode_count_;
             ++source_geometry_decode_count_;
             if (decoded.valid && !decoded.skins.empty() && !decoded.animations.empty()) {
@@ -551,7 +551,7 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
     for(const auto& asset:asset_registry_.records()) {
         if(!asset.available||(asset.extension!=".glb"&&asset.extension!=".fbx"))continue;
         const auto source=asset_registry_.source_path(asset);
-        const auto decoded=asset.extension==".fbx"?decode_fbx_asset(source):decode_glb_mesh(source);
+        const auto decoded=asset.extension==".fbx"?decode_fbx_asset(source):decode_gltf_mesh(source);
         if(decoded.valid&&!decoded.skins.empty()&&!decoded.animations.empty())
             static_cast<void>(world_.register_gltf_animations(asset.id,decoded));
     }
@@ -1164,7 +1164,7 @@ bool Application::register_animation_clip_assets(World& world) {
         if(source_asset==nullptr||!source_asset->available||
             (source_asset->extension!=".fbx"&&source_asset->extension!=".glb"))return false;
         const auto source_path=asset_registry_.source_path(*source_asset);
-        const auto decoded=source_asset->extension==".fbx"?decode_fbx_asset(source_path):decode_glb_mesh(source_path);
+        const auto decoded=source_asset->extension==".fbx"?decode_fbx_asset(source_path):decode_gltf_mesh(source_path);
         ++source_animation_decode_count_;
         if(!decoded.valid)return false;
         const auto compression=parsed_descriptor.document->compression=="ozz_hierarchical_key_reduction"?
@@ -1369,7 +1369,7 @@ void Application::apply_simulation_command(const EditorSimulationCommand command
         for (const auto& asset:asset_registry_.records()) {
             if (!asset.available || (asset.extension!=".glb"&&asset.extension!=".fbx")) continue;
             const auto source=asset_registry_.source_path(asset);
-            const auto decoded=asset.extension==".fbx"?decode_fbx_asset(source):decode_glb_mesh(source);
+            const auto decoded=asset.extension==".fbx"?decode_fbx_asset(source):decode_gltf_mesh(source);
             if(decoded.valid&&!decoded.skins.empty()&&!decoded.animations.empty())
                 static_cast<void>(candidate->register_gltf_animations(asset.id,decoded));
         }

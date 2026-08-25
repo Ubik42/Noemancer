@@ -9,5 +9,6 @@
 | 0005 | Accepted baseline; advanced renderer items remain evidence-gated | Render quality contract and Semantic UI platform |
 | 0006 | Accepted | Semantic State Plane |
 | 0007 | Accepted | Noemancer name |
+| 0008 | Accepted | libjpeg-turbo image adapter and external glTF source closure |
 
 ADRs record decisions, not implementation progress or task order. Consult `docs/architecture.md` and `docs/development-plan.zh-CN.md` for those.

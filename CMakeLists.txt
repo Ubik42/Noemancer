@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(NOEMANCER_WARNINGS_AS_ERRORS "Treat engine warnings as errors" ON)
 
 include(FetchContent)
+include(ExternalProject)
 
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -62,6 +63,16 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/lvandeve/lodepng.git
     GIT_TAG ed6fe5825c6a4fbb7f58ab35a4231c7543cd452a
     GIT_SHALLOW FALSE
+    SOURCE_SUBDIR _no_cmake
+)
+
+# libjpeg-turbo is the SIMD-accelerated JPEG decode kernel behind the
+# engine-owned RGBA8 image adapter. Pin the official release archive and hash;
+# no TurboJPEG types cross the public asset or scene boundary.
+FetchContent_Declare(
+    libjpeg_turbo
+    URL https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz
+    URL_HASH SHA256=6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e
     SOURCE_SUBDIR _no_cmake
 )
 
@@ -232,7 +243,38 @@ FetchContent_Declare(
         -P ${PROJECT_SOURCE_DIR}/cmake/apply_patch_if_needed.cmake
 )
 
-FetchContent_MakeAvailable(SDL flecs nlohmann_json imgui imguizmo lodepng miniaudio fastgltf meshoptimizer ktx_software JoltPhysics ozz_animation ufbx freetype harfbuzz)
+FetchContent_MakeAvailable(SDL flecs nlohmann_json imgui imguizmo lodepng libjpeg_turbo miniaudio fastgltf meshoptimizer ktx_software JoltPhysics ozz_animation ufbx freetype harfbuzz)
+set(NOEMANCER_LIBJPEG_TURBO_BINARY_DIR "${PROJECT_BINARY_DIR}/_deps/libjpeg_turbo-external-build")
+ExternalProject_Add(noemancer_libjpeg_turbo_external
+    SOURCE_DIR "${libjpeg_turbo_SOURCE_DIR}"
+    BINARY_DIR "${NOEMANCER_LIBJPEG_TURBO_BINARY_DIR}"
+    CMAKE_ARGS
+        -DENABLE_SHARED=OFF
+        -DENABLE_STATIC=ON
+        -DWITH_TURBOJPEG=ON
+        -DWITH_TOOLS=OFF
+        -DWITH_TESTS=OFF
+        -DWITH_CRT_DLL=ON
+    BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG> --target turbojpeg-static
+    INSTALL_COMMAND ""
+    UPDATE_COMMAND ""
+    BUILD_ALWAYS 1
+)
+add_library(noemancer_turbojpeg STATIC IMPORTED GLOBAL)
+add_dependencies(noemancer_turbojpeg noemancer_libjpeg_turbo_external)
+set_target_properties(noemancer_turbojpeg PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${libjpeg_turbo_SOURCE_DIR}/src")
+if(MSVC)
+    set_target_properties(noemancer_turbojpeg PROPERTIES
+        IMPORTED_CONFIGURATIONS "Debug;Release;RelWithDebInfo;MinSizeRel"
+        IMPORTED_LOCATION_DEBUG "${NOEMANCER_LIBJPEG_TURBO_BINARY_DIR}/Debug/turbojpeg-static.lib"
+        IMPORTED_LOCATION_RELEASE "${NOEMANCER_LIBJPEG_TURBO_BINARY_DIR}/Release/turbojpeg-static.lib"
+        IMPORTED_LOCATION_RELWITHDEBINFO "${NOEMANCER_LIBJPEG_TURBO_BINARY_DIR}/RelWithDebInfo/turbojpeg-static.lib"
+        IMPORTED_LOCATION_MINSIZEREL "${NOEMANCER_LIBJPEG_TURBO_BINARY_DIR}/MinSizeRel/turbojpeg-static.lib")
+else()
+    set_target_properties(noemancer_turbojpeg PROPERTIES
+        IMPORTED_LOCATION "${NOEMANCER_LIBJPEG_TURBO_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}turbojpeg${CMAKE_STATIC_LIBRARY_SUFFIX}")
+endif()
 if(NOT TARGET Freetype::Freetype)
     add_library(Freetype::Freetype ALIAS freetype-interface)
 endif()

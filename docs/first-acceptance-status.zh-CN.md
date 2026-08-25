@@ -101,7 +101,7 @@
 ## 下一阶段边界
 
 1. `production.cooked-animation-artifact` 与 `production.cooked-geometry-runtime` 均已用真实 Package→Player 闭环退出；Editor 源资产成功不再替代包内 Runtime 证据。
-2. 已完成项以 `docs/current-state.json.completedMilestones` 为准。RenderLab 公开合同已由 `generated/acceptance/render-lab-classic-scene-20260825-final/` 双后端退出：三项真实 CC0 GLB、固定机位/质量/身份、Cook→Package→Player cooked-only 闭环成立，Package D3D12/Vulkan CPU Frame p95 为 1.56/1.41 ms；GPU timestamp 仍明确 unavailable。当前前沿为外部 `.gltf`/JPEG/大场景，其中外部 buffer/PNG 的安全不可变快照与真实 fastgltf 解码已完成；其后立即修复同一证据揭示的 Editor Retained UI 命令录制 D3D12/Vulkan 834/1015 ms p95 严重退化，再推进 GPU timestamp、大气、共享 HiZ/history/Temporal Denoising、SSR、SSGI、阴影扩展和真实 Ray Tracing/RTGI。高 DPI 与可再分发多语字体仍在队列中。
+2. 已完成项以 `docs/current-state.json.completedMilestones` 为准。RenderLab 公开合同已由 `generated/acceptance/render-lab-classic-scene-20260825-final/` 双后端退出：三项真实 CC0 GLB、固定机位/质量/身份、Cook→Package→Player cooked-only 闭环成立，Package D3D12/Vulkan CPU Frame p95 为 1.56/1.41 ms；GPU timestamp 仍明确 unavailable。外部 `.gltf`/JPEG/大依赖集合也已退出：libjpeg-turbo 3.2.0、统一 PNG/JPEG Adapter、不可变依赖闭包与缓存失效、真实 JPEG glTF Cook、128 依赖压力、Release Package 许可证闭包均通过；本机缺 NASM，故不能宣称 JPEG SIMD 性能已成立。当前立即修复 Editor Retained UI 命令录制 D3D12/Vulkan 834/1015 ms p95 严重退化，再推进 GPU timestamp、大气、共享 HiZ/history/Temporal Denoising、SSR、SSGI、阴影扩展和真实 Ray Tracing/RTGI。高 DPI 与可再分发多语字体仍在队列中。
 3. Project-attached Agent transport 已成立；对另一个已打开 Editor 的远程会话、跨进程共享 durable journal、独立机器矩阵、签名和安装器仍是独立后续工作，不混入当前 VFS 迁移批次。
 
 ## 游戏迁移节奏

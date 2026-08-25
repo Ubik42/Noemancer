@@ -645,6 +645,26 @@ GltfDependencyVerification verify_gltf_source_snapshot(
     return result;
 }
 
+std::string gltf_source_snapshot_fingerprint(const GltfSourceSnapshot& snapshot) {
+    if (!snapshot.valid || snapshot.content_hash.empty()) return {};
+    std::vector<const GltfExternalResourceSnapshot*> dependencies;
+    dependencies.reserve(snapshot.dependencies.size());
+    for (const auto& dependency : snapshot.dependencies) dependencies.push_back(&dependency);
+    std::ranges::sort(dependencies, {}, [](const auto* dependency) {
+        return dependency->normalized_relative_path;
+    });
+    std::ostringstream identity;
+    identity << "noemancer.gltf-source-closure/0.1\n"
+             << snapshot.content_hash << '\n' << snapshot.source_bytes << '\n';
+    for (const auto* dependency : dependencies) {
+        identity << dependency->normalized_relative_path << '\n' << dependency->kind << '\n'
+                 << dependency->content_hash << '\n' << dependency->source_bytes << '\n';
+    }
+    const auto material = identity.str();
+    const auto hash = sha256_bytes(std::as_bytes(std::span(material)));
+    return hash.success ? hash.value : std::string{};
+}
+
 void compute_decoded_scene_bounds(DecodedSceneAsset& asset) {
     for (auto& primitive:asset.primitives) {
         std::array<float,3> minimum{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()};
@@ -762,16 +782,22 @@ void fastgltf_decode_images(const fastgltf::Asset& asset, GltfMeshData& result) 
         fastgltf::MimeType mime_type = fastgltf::MimeType::None;
         const auto encoded = fastgltf_image_bytes(asset, asset.images[image_index], mime_type);
         decoded_image.mime_type = std::string(fastgltf::getMimeTypeString(mime_type));
-        if (mime_type != fastgltf::MimeType::PNG) {
-            decoded_image.code = encoded.empty() ? "image.external-uri-unsupported" : "image.unsupported-mime";
+        if (encoded.empty()) {
+            decoded_image.code = "image.external-uri-unavailable";
             continue;
         }
-        const auto png = decode_png_rgba8(encoded);
-        decoded_image.valid = png.valid;
-        decoded_image.code = png.code;
-        decoded_image.width = png.width;
-        decoded_image.height = png.height;
-        decoded_image.rgba8 = png.rgba8;
+        DecodedImage image;
+        if (mime_type == fastgltf::MimeType::PNG) image = decode_image_rgba8(encoded, "image/png");
+        else if (mime_type == fastgltf::MimeType::JPEG) image = decode_image_rgba8(encoded, "image/jpeg");
+        else {
+            decoded_image.code = "image.unsupported-mime";
+            continue;
+        }
+        decoded_image.valid = image.valid;
+        decoded_image.code = image.code;
+        decoded_image.width = image.width;
+        decoded_image.height = image.height;
+        decoded_image.rgba8 = std::move(image.rgba8);
     }
 }
 
@@ -1250,6 +1276,28 @@ GltfMeshData decode_gltf_mesh_fastgltf(const std::span<const std::byte> storage,
 
 #endif
 
+GltfMeshData decode_gltf_mesh(const GltfSourceSnapshot& snapshot) {
+    GltfMeshData result;
+    if (!snapshot.valid || snapshot.storage.empty()) {
+        result.code = "gltf.invalid-snapshot";
+        result.detail = "A valid immutable JSON glTF source snapshot is required.";
+        return result;
+    }
+#if NOEMANCER_HAS_FASTGLTF
+    ScopedGltfSnapshotDirectory staging(snapshot);
+    if (!staging.valid()) {
+        result.code = staging.code();
+        result.detail = staging.detail();
+        return result;
+    }
+    return decode_gltf_mesh_fastgltf(snapshot.storage, staging.document_path(), false);
+#else
+    result.code = "gltf.fastgltf-unavailable";
+    result.detail = "JSON glTF decoding requires the private fastgltf importer dependency.";
+    return result;
+#endif
+}
+
 GltfMeshData decode_gltf_mesh(const std::filesystem::path& path) {
     std::string extension = path.extension().string();
     std::ranges::transform(extension, extension.begin(), [](const unsigned char value) {
@@ -1269,22 +1317,7 @@ GltfMeshData decode_gltf_mesh(const std::filesystem::path& path) {
         result.detail = snapshot.detail;
         return result;
     }
-#if NOEMANCER_HAS_FASTGLTF
-    // fastgltf must never resolve authoring-tree dependencies directly. The
-    // source document and every approved external URI are copied from the
-    // engine-owned immutable snapshot into an isolated directory first.
-    ScopedGltfSnapshotDirectory staging(snapshot);
-    if (!staging.valid()) {
-        result.code = staging.code();
-        result.detail = staging.detail();
-        return result;
-    }
-    return decode_gltf_mesh_fastgltf(snapshot.storage, staging.document_path(), false);
-#else
-    result.code = "gltf.fastgltf-unavailable";
-    result.detail = "JSON glTF decoding requires the private fastgltf importer dependency.";
-    return result;
-#endif
+    return decode_gltf_mesh(snapshot);
 }
 
 GltfMeshData decode_glb_mesh(const std::filesystem::path& path) {

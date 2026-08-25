@@ -343,6 +343,7 @@ constexpr std::array kRuntimeLicenseSpecs{
     RuntimeLicenseSpec{"dear-imgui", "Dear ImGui", "MIT", "Dear-ImGui-LICENSE.txt", "https://github.com/ocornut/imgui"},
     RuntimeLicenseSpec{"imguizmo", "ImGuizmo", "MIT", "ImGuizmo-LICENSE.txt", "https://github.com/CedricGuillemet/ImGuizmo"},
     RuntimeLicenseSpec{"lodepng", "LodePNG", "Zlib", "lodepng-LICENSE.txt", "https://github.com/lvandeve/lodepng"},
+    RuntimeLicenseSpec{"libjpeg-turbo", "libjpeg-turbo", "LicenseRef-libjpeg-turbo-composite", "libjpeg-turbo-LICENSE.md", "https://github.com/libjpeg-turbo/libjpeg-turbo"},
     RuntimeLicenseSpec{"miniaudio", "miniaudio", "MIT", "miniaudio-LICENSE.txt", "https://github.com/mackron/miniaudio"},
     RuntimeLicenseSpec{"jolt-physics", "Jolt Physics", "MIT", "Jolt-Physics-LICENSE.txt", "https://github.com/jrouwe/JoltPhysics"},
     RuntimeLicenseSpec{"freetype", "FreeType", "FTL", "FreeType-LICENSE.txt", "https://gitlab.freedesktop.org/freetype/freetype"},

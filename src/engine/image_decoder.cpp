@@ -1,13 +1,88 @@
 #include "engine/image_decoder.hpp"
 
 #include <lodepng.h>
+#include <turbojpeg.h>
 
 #include <cmath>
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <limits>
 #include <sstream>
 
 namespace noemancer {
+
+DecodedImage decode_image_rgba8(const std::span<const std::byte> encoded,
+                                const std::string_view format_hint) {
+    std::string format(format_hint);
+    std::ranges::transform(format, format.begin(), [](const unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    if (format == "png" || format == ".png" || format == "image/png")
+        return decode_png_rgba8(encoded);
+    if (format == "jpg" || format == ".jpg" || format == "jpeg" || format == ".jpeg" ||
+        format == "image/jpeg") return decode_jpeg_rgba8(encoded);
+    DecodedImage result;
+    result.code = "image.unsupported-format";
+    result.detail = "The engine image adapter supports PNG and JPEG RGBA8 decode for this path.";
+    return result;
+}
+
+DecodedImage decode_jpeg_rgba8(const std::span<const std::byte> encoded) {
+    DecodedImage result;
+    if (encoded.empty()) {
+        result.code = "image.empty";
+        result.detail = "JPEG payload is empty.";
+        return result;
+    }
+    auto* decoder = tj3Init(TJINIT_DECOMPRESS);
+    if (decoder == nullptr) {
+        result.code = "image.jpeg-decoder-unavailable";
+        result.detail = "libjpeg-turbo could not create a decompressor.";
+        return result;
+    }
+    const auto fail = [&](const std::string_view code) {
+        result.code = std::string(code);
+        const auto* error = tj3GetErrorStr(decoder);
+        result.detail = error != nullptr ? error : "libjpeg-turbo rejected the JPEG payload.";
+        tj3Destroy(decoder);
+        return result;
+    };
+    if (tj3DecompressHeader(decoder,
+            reinterpret_cast<const unsigned char*>(encoded.data()), encoded.size()) != 0)
+        return fail("image.jpeg-invalid-header");
+    const int width = tj3Get(decoder, TJPARAM_JPEGWIDTH);
+    const int height = tj3Get(decoder, TJPARAM_JPEGHEIGHT);
+    constexpr std::uint64_t maximum_pixels = 64ULL * 1024ULL * 1024ULL;
+    if (width <= 0 || height <= 0 ||
+        static_cast<std::uint64_t>(width) > maximum_pixels / static_cast<std::uint64_t>(height)) {
+        tj3Destroy(decoder);
+        result.code = "image.invalid-dimensions";
+        result.detail = "JPEG dimensions are empty or exceed the 64-megapixel decode budget.";
+        return result;
+    }
+    const auto bytes = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * 4ULL;
+    if (bytes > std::numeric_limits<std::size_t>::max()) {
+        tj3Destroy(decoder);
+        result.code = "image.too-large";
+        result.detail = "JPEG RGBA8 output exceeds the decoder address space.";
+        return result;
+    }
+    result.rgba8.resize(static_cast<std::size_t>(bytes));
+    if (tj3Decompress8(decoder,
+            reinterpret_cast<const unsigned char*>(encoded.data()), encoded.size(),
+            result.rgba8.data(), 0, TJPF_RGBA) != 0) {
+        result.rgba8.clear();
+        return fail("image.jpeg-decode-failed");
+    }
+    tj3Destroy(decoder);
+    result.valid = true;
+    result.code = "ok";
+    result.detail = "JPEG decoded by libjpeg-turbo to tightly packed RGBA8.";
+    result.width = static_cast<std::uint32_t>(width);
+    result.height = static_cast<std::uint32_t>(height);
+    return result;
+}
 
 DecodedImage decode_png_rgba8(const std::span<const std::byte> encoded) {
     DecodedImage result;

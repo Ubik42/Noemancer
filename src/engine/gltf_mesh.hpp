@@ -126,8 +126,7 @@ struct GltfSourceSnapshotLimits final {
 
 // External files are discovered before fastgltf runs, normalized beneath the
 // source directory, bounded, hashed and copied into engine-owned storage.
-// JPEG dependencies can be captured, but decoding remains explicitly
-// unsupported by the current PNG-only image decoder.
+// PNG and JPEG dependencies are decoded behind the engine-owned image adapter.
 struct GltfSourceSnapshot final {
     bool valid{};
     std::string code;
@@ -170,6 +169,8 @@ using DecodedSceneAsset = GltfMeshData;
 [[nodiscard]] GltfDependencyVerification verify_gltf_source_snapshot(
     const GltfSourceSnapshot& snapshot,
     const GltfSourceSnapshotLimits& limits = {});
+[[nodiscard]] std::string gltf_source_snapshot_fingerprint(const GltfSourceSnapshot& snapshot);
+[[nodiscard]] GltfMeshData decode_gltf_mesh(const GltfSourceSnapshot& snapshot);
 [[nodiscard]] GltfMeshData decode_gltf_mesh(const std::filesystem::path& path);
 [[nodiscard]] GltfMeshData decode_glb_mesh(const std::filesystem::path& path);
 void compute_decoded_scene_bounds(DecodedSceneAsset& asset);

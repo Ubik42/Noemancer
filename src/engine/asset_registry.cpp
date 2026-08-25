@@ -99,7 +99,9 @@ bool has_animation_format_conflict(const AssetRecord& asset) {
     const bool state_machine_suffix = asset.relative_path.ends_with(".animation-state-machine.json");
     return (graph_kind && state_machine_suffix) || (state_machine_kind && graph_suffix);
 }
-bool is_texture_cook_source(const AssetRecord& asset){return asset.extension==".png";}
+bool is_texture_cook_source(const AssetRecord& asset){
+    return asset.extension==".png"||asset.extension==".jpg"||asset.extension==".jpeg";
+}
 
 constexpr std::size_t max_animation_graph_source_bytes = 64U * 1024U * 1024U;
 constexpr std::size_t max_animation_graph_string_bytes = 4096U;
@@ -251,7 +253,7 @@ TextureCookCompression texture_compression(const TextureCookSettings& settings) 
 std::string cooked_payload_format(const AssetRecord& asset) {
     if(asset.uri.starts_with("builtin://"))return "builtin/json";
     if(is_animation_clip_asset(asset))return "noemancer/animbin";
-    if(asset.extension==".glb"||asset.extension==".fbx")return "noemancer/meshbin/0.2";
+    if(asset.extension==".glb"||asset.extension==".gltf"||asset.extension==".fbx")return "noemancer/meshbin/0.2";
     if(is_sprite_asset(asset))return "noemancer.sprite-atlas-artifact/0.1";
     if(is_texture_cook_source(asset))return "ktx2";
     return asset.extension;
@@ -260,7 +262,7 @@ std::string cooked_payload_format(const AssetRecord& asset) {
 std::string cooked_payload_extension(const AssetRecord& asset) {
     if(asset.uri.starts_with("builtin://"))return ".json";
     if(is_animation_clip_asset(asset))return ".animbin";
-    if(asset.extension==".glb"||asset.extension==".fbx")return ".meshbin";
+    if(asset.extension==".glb"||asset.extension==".gltf"||asset.extension==".fbx")return ".meshbin";
     if(is_texture_cook_source(asset))return ".ktx2";
     return asset.extension;
 }
@@ -995,12 +997,21 @@ std::string AssetRegistry::inspect_json(const std::string_view asset_id) const {
         inspection["code"] = "asset.animation-format-conflict";
         inspection["importedMetadata"] = {{"detail", "Animation asset kind and filename suffix disagree."}};
         inspection["renderPayload"] = nullptr;
-    } else if (asset->available && asset->extension == ".glb") {
-        inspection["importedMetadata"] = Json::parse(
-            gltf_summary_json(inspect_glb(source_path(*asset))));
-        inspection["valid"] = inspection["importedMetadata"].value("valid", false);
-        inspection["code"] = inspection["importedMetadata"].value("code", "gltf.invalid");
-        const auto mesh = decode_glb_mesh(source_path(*asset));
+    } else if (asset->available && (asset->extension == ".glb" || asset->extension == ".gltf")) {
+        if (asset->extension == ".glb") {
+            inspection["importedMetadata"] = Json::parse(gltf_summary_json(inspect_glb(source_path(*asset))));
+            inspection["valid"] = inspection["importedMetadata"].value("valid", false);
+            inspection["code"] = inspection["importedMetadata"].value("code", "gltf.invalid");
+        } else {
+            const auto snapshot = read_gltf_source_snapshot(source_path(*asset));
+            inspection["importedMetadata"] = {{"valid", snapshot.valid}, {"code", snapshot.code},
+                {"detail", snapshot.detail}, {"format", "gltf-json"},
+                {"sourceClosureHash", gltf_source_snapshot_fingerprint(snapshot)},
+                {"externalDependencyCount", snapshot.dependencies.size()}, {"sourceClosureBytes", snapshot.total_bytes}};
+            inspection["valid"] = snapshot.valid;
+            inspection["code"] = snapshot.code;
+        }
+        const auto mesh = decode_gltf_mesh(source_path(*asset));
         Json primitive_bounds=Json::array();
         for (const auto& primitive:mesh.primitives) primitive_bounds.push_back(
             {{"center",primitive.bounds_center},{"radius",primitive.bounds_radius},{"skinnedInflation",primitive.skin>=0?1.5:1.0}});
@@ -1217,17 +1228,42 @@ std::string AssetRegistry::cook_plan_json(
                 }
             }
         }
-        else if (asset->extension == ".glb" || asset->extension == ".fbx") {
-            importer = (asset->extension == ".glb" ? "gltf.binary/0.1" : "ufbx.scene/0.23.0") +
+        else if (asset->extension == ".glb" || asset->extension == ".gltf" || asset->extension == ".fbx") {
+            importer = (asset->extension == ".glb" ? "gltf.binary/0.1" :
+                asset->extension == ".gltf" ? "gltf.json-external/0.1" : "ufbx.scene/0.23.0") +
                 std::string("+mesh-runtime-artifact/0.2");
+            std::string source_identity = asset->content_hash;
+            Json external_dependencies = Json::array();
+            std::uint64_t source_closure_bytes = asset->source_bytes;
+            if (asset->extension == ".gltf") {
+                const auto snapshot = read_gltf_source_snapshot(source_path(*asset));
+                const auto closure_hash = gltf_source_snapshot_fingerprint(snapshot);
+                if (!snapshot.valid || closure_hash.empty()) {
+                    errors.push_back({{"code", snapshot.valid ? "gltf.source-closure-hash-failed" : snapshot.code},
+                        {"assetId", id}, {"detail", snapshot.detail}});
+                } else {
+                    source_identity = closure_hash;
+                    source_closure_bytes = snapshot.total_bytes;
+                    for (const auto& dependency : snapshot.dependencies) external_dependencies.push_back({
+                        {"path", dependency.normalized_relative_path}, {"kind", dependency.kind},
+                        {"contentHash", dependency.content_hash}, {"sourceBytes", dependency.source_bytes}});
+                }
+            }
             const auto recipe_material = std::string(mesh_runtime_artifact_schema) + "\n" +
-                asset->content_hash + "\n" + importer + "\n" + std::string(target_profile) +
+                source_identity + "\n" + importer + "\n" + std::string(target_profile) +
                 "\nmeshoptimizer-per-primitive\nktx2-embedded\n";
             const auto hash = sha256_bytes(std::as_bytes(std::span(recipe_material)));
             if (!hash.success) errors.push_back({{"code", hash.code}, {"assetId", id}, {"detail", hash.detail}});
             else recipe_hash = hash.value;
+            if (asset->extension == ".gltf") {
+                build_inputs.push_back({{"assetId", asset->id}, {"role", "gltf-source-closure"},
+                    {"sourceHash", asset->content_hash}, {"sourceClosureHash", source_identity},
+                    {"sourceClosureBytes", source_closure_bytes}, {"externalDependencies", std::move(external_dependencies)}});
+            }
         }
-        else if (is_texture_cook_source(*asset)) importer = "image.png-rgba8/1.0+ktx2-basisu/0.1";
+        else if (is_texture_cook_source(*asset)) importer =
+            (asset->extension==".png"?"image.png-rgba8/1.0":"image.jpeg-rgba8/1.0")+
+            std::string("+ktx2-basisu/0.1");
         else if (asset->extension == ".hdr") importer = "radiance.hdr/1.0+split-sum-ggx/1.0";
         else if (is_sprite_asset(*asset)) {
             importer="noemancer.sprite-asset/0.1";
@@ -1441,7 +1477,7 @@ std::string AssetRegistry::apply_cook_plan_json(
                 asset->content_hash.substr(asset->content_hash.find(':')+1);
             const auto cache_directory = generated_root / "cook-cache" / hash;
             const auto metadata_path = cache_directory / "asset.json";
-            const bool mesh_cook = asset->extension == ".glb" || asset->extension == ".fbx";
+            const bool mesh_cook = asset->extension == ".glb" || asset->extension == ".gltf" || asset->extension == ".fbx";
             const auto payload_extension = cooked_payload_extension(*asset);
             const auto payload_format = cooked_payload_format(*asset);
             const auto payload_path = cache_directory / ("payload" + payload_extension);
@@ -1550,7 +1586,7 @@ std::string AssetRegistry::apply_cook_plan_json(
                     if(!write_atomic_bytes(snapshot.path(),source_bytes,snapshot_error))
                         throw std::runtime_error("Animation Clip source snapshot failed: "+snapshot_error);
                     const auto decoded=source_asset->extension==".fbx"?decode_fbx_asset(snapshot.path()):
-                        decode_glb_mesh(snapshot.path());
+                        decode_gltf_mesh(snapshot.path());
                     if(!decoded.valid)throw std::runtime_error("Animation Clip source decode failed for "+asset->id+
                         ": "+decoded.code+" - "+decoded.detail);
                     const auto compression=parsed.document->compression=="ozz_hierarchical_key_reduction"?
@@ -1579,23 +1615,40 @@ std::string AssetRegistry::apply_cook_plan_json(
                     if (source_bytes.size() != asset->source_bytes || !source_identity.success ||
                         source_identity.value != asset->content_hash)
                         throw std::runtime_error("GLB source changed while Cook was starting: " + asset->id);
-                    const auto snapshot_directory = generated_root / "cook-staging" / next_cook_operation_id();
-                    ScopedCookInputSnapshot snapshot(snapshot_directory / ("source" + asset->extension));
-                    std::string snapshot_error;
-                    if (!write_atomic_bytes(snapshot.path(), source_bytes, snapshot_error))
-                        throw std::runtime_error("GLB source snapshot failed: " + snapshot_error);
                     Json summary;
                     GltfMeshData decoded;
+                    if (asset->extension == ".gltf") {
+                        const auto gltf_snapshot = read_gltf_source_snapshot(source_file);
+                        const auto closure_hash = gltf_source_snapshot_fingerprint(gltf_snapshot);
+                        const auto& build_inputs = input.at("buildInputs");
+                        const auto expected_closure = build_inputs.empty() ? std::string{} :
+                            build_inputs.front().value("sourceClosureHash", std::string{});
+                        if (!gltf_snapshot.valid || closure_hash.empty() || closure_hash != expected_closure)
+                            throw std::runtime_error("glTF source closure changed while Cook was starting: " + asset->id);
+                        decoded = decode_gltf_mesh(gltf_snapshot);
+                        summary = {{"valid", decoded.valid}, {"format", "gltf-json"},
+                            {"sourceClosureHash", closure_hash},
+                            {"externalDependencyCount", gltf_snapshot.dependencies.size()},
+                            {"sourceClosureBytes", gltf_snapshot.total_bytes},
+                            {"vertexCount", decoded.vertices.size()}, {"indexCount", decoded.indices.size()},
+                            {"primitiveCount", decoded.primitives.size()}, {"imageCount", decoded.images.size()}};
+                    } else {
+                        const auto snapshot_directory = generated_root / "cook-staging" / next_cook_operation_id();
+                        ScopedCookInputSnapshot snapshot(snapshot_directory / ("source" + asset->extension));
+                        std::string snapshot_error;
+                        if (!write_atomic_bytes(snapshot.path(), source_bytes, snapshot_error))
+                            throw std::runtime_error("Mesh source snapshot failed: " + snapshot_error);
                     if (asset->extension == ".glb") {
                         summary = Json::parse(gltf_summary_json(inspect_glb(snapshot.path())));
                         if (!summary.value("valid", false))
                             throw std::runtime_error("GLB inspection failed for " + asset->id);
-                        decoded = decode_glb_mesh(snapshot.path());
+                        decoded = decode_gltf_mesh(snapshot.path());
                     } else {
                         decoded = decode_fbx_asset(snapshot.path());
                         summary = {{"valid", decoded.valid}, {"format", "fbx"},
                             {"vertexCount", decoded.vertices.size()}, {"indexCount", decoded.indices.size()},
                             {"primitiveCount", decoded.primitives.size()}, {"imageCount", decoded.images.size()}};
+                    }
                     }
                     if (!decoded.valid) {
                         throw std::runtime_error("GLB mesh decode failed for " + asset->id + ": " +
@@ -1621,8 +1674,9 @@ std::string AssetRegistry::apply_cook_plan_json(
                             {"embeddedTextures", "ktx2"}}}};
                 } else if(!animation_document && texture_cook) {
                     const auto encoded=read_binary_file(source_file);
-                    const auto decoded=decode_png_rgba8(std::span<const std::byte>(encoded.data(),encoded.size()));
-                    if(!decoded.valid)throw std::runtime_error("PNG decode failed for "+asset->id+": "+decoded.code+" - "+decoded.detail);
+                    const auto decoded=decode_image_rgba8(
+                        std::span<const std::byte>(encoded.data(),encoded.size()),asset->extension);
+                    if(!decoded.valid)throw std::runtime_error("Texture decode failed for "+asset->id+": "+decoded.code+" - "+decoded.detail);
                     TextureCookInput texture_input{.width=decoded.width,.height=decoded.height};
                     texture_input.rgba8.assign(reinterpret_cast<const std::byte*>(decoded.rgba8.data()),
                         reinterpret_cast<const std::byte*>(decoded.rgba8.data()+decoded.rgba8.size()));

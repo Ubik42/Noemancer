@@ -112,6 +112,7 @@ configure_file("${nlohmann_json_SOURCE_DIR}/LICENSE.MIT" "${NOEMANCER_GENERATED_
 configure_file("${imgui_SOURCE_DIR}/LICENSE.txt" "${NOEMANCER_GENERATED_LICENSE_DIR}/Dear-ImGui-LICENSE.txt" COPYONLY)
 configure_file("${imguizmo_SOURCE_DIR}/LICENSE" "${NOEMANCER_GENERATED_LICENSE_DIR}/ImGuizmo-LICENSE.txt" COPYONLY)
 configure_file("${lodepng_SOURCE_DIR}/LICENSE" "${NOEMANCER_GENERATED_LICENSE_DIR}/lodepng-LICENSE.txt" COPYONLY)
+configure_file("${libjpeg_turbo_SOURCE_DIR}/LICENSE.md" "${NOEMANCER_GENERATED_LICENSE_DIR}/libjpeg-turbo-LICENSE.md" COPYONLY)
 configure_file("${miniaudio_SOURCE_DIR}/LICENSE" "${NOEMANCER_GENERATED_LICENSE_DIR}/miniaudio-LICENSE.txt" COPYONLY)
 configure_file("${joltphysics_SOURCE_DIR}/LICENSE" "${NOEMANCER_GENERATED_LICENSE_DIR}/Jolt-Physics-LICENSE.txt" COPYONLY)
 configure_file("${freetype_SOURCE_DIR}/docs/FTL.TXT" "${NOEMANCER_GENERATED_LICENSE_DIR}/FreeType-LICENSE.txt" COPYONLY)
@@ -133,7 +134,7 @@ target_compile_definitions(noemancer_engine PRIVATE
     NOEMANCER_RMLUI_DEFAULT_FONT="${NOEMANCER_DEFAULT_FONT_PATH}")
 target_link_libraries(noemancer_engine
     PUBLIC flecs::flecs_static SDL3::SDL3-static
-    PRIVATE fastgltf::fastgltf meshoptimizer ktx
+    PRIVATE fastgltf::fastgltf meshoptimizer ktx noemancer_turbojpeg
     PRIVATE Jolt
     PRIVATE ozz_animation ozz_animation_offline
     PRIVATE noemancer_ufbx

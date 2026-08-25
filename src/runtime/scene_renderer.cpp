@@ -1432,7 +1432,7 @@ bool SceneRenderer::create_imported_geometry() {
             ++cooked_geometry_loads_;
         } else {
             const auto asset_path = asset_registry_.source_path(asset);
-            decoded = asset.extension == ".fbx" ? decode_fbx_asset(asset_path) : decode_glb_mesh(asset_path);
+            decoded = asset.extension == ".fbx" ? decode_fbx_asset(asset_path) : decode_gltf_mesh(asset_path);
             ++source_geometry_decodes_;
         }
         if (!decoded.valid) {

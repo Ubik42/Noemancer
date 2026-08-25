@@ -30,7 +30,7 @@ Noemancer 的差异化集中在：
 渲染批次的顺序与退出条件：
 
 1. `commercial-raster.render-lab-classic-scene-contract` 已退出：`generated/acceptance/render-lab-classic-scene-20260825-final/` 固定 1440×900 机位、三项 Khronos CC0 GLB、项目/场景/Registry/素材 SHA-256、质量 sidecar、Render Graph/Shader 指纹与 D3D12/Vulkan 双后端；Release Package Player 两后端 CPU Frame p95 为 1.56/1.41 ms，均为 3 Cooked Load、0 Source Decode、0 Offline Compile，包内源模型为 0。SDL_GPU 无 timestamp API，四路 GPU 数据均明确 unavailable。源码 Editor 路径同时暴露出 D3D12/Vulkan 834/1015 ms p95 的严重 UI 命令录制异常，不能拿 Player 结果掩盖。
-2. `asset.gltf-external-resource-jpeg-and-large-scene-readiness`：当前 `.gltf` 外部 buffer/PNG 已通过引擎所有不可变快照、URI 归一化、越界/URL/盘符拒绝、预算、SHA-256 复验、隔离 staging 与 fastgltf 实际三角形/纹理解码；继续 Adopt 成熟 JPEG 解码器并以真实大 Scene 依赖/预算探针退出，保留 Cooked-only Player 和许可证闭包。
+2. `asset.gltf-external-resource-jpeg-and-large-scene-readiness` 已退出：Adopt 官方 libjpeg-turbo 3.2.0；统一 PNG/JPEG RGBA8 Adapter、缩略图与 KTX2 Texture Cook；JSON `.gltf` 的文档、外部 buffer/PNG/JPEG 形成有界不可变依赖闭包、稳定 SHA-256 closure/recipe/cache identity、隔离 staging 和变更失效。真实三角形 JPEG Cook→`.meshbin`→cache-hit、128 外部依赖压力、旧计划拒绝、Release Package 复合许可证原文均通过。当前主机缺 NASM，JPEG 功能成立但 SIMD 明确未启用，不据此声称最佳解码性能。
 3. `performance.editor-retained-ui-command-recording`：用持久性能分段精确拆出 ImGui、Retained 主表面、Inspector/Outliner/Asset Browser upload/render 与资源 cycling，消除 RenderLab 源项目 1 FPS 级退化；不得通过隐藏面板或降低场景负载规避。
 4. `performance.gpu-pass-timestamp-foundation`：先在 SDL_GPU 路径真实输出 unsupported/capability，再以最小 Native D3D12/Vulkan 诊断 Adapter 建立图内 marker、frame-ring、延迟读回、availability 与 overflow；没有有效值时禁止输出 `0` 冒充 GPU 时间。
 4. `render.dynamic-sky-atmosphere`：Wicked 多 LUT/raymarch 作为高质量参考，Godot Preetham 作为低成本档；真实 Render Graph 具备 transmittance/multi-scatter/sky-view、时间/天气、跨后端降级和 RenderLab 对照。
@@ -50,7 +50,7 @@ Noemancer 的差异化集中在：
 
 ### 已完成基底：生产后端去临时实现
 
-miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 BasisLZ/UASTC 与 meshoptimizer Mesh Cook 已接入。Asset Registry 会把 GLB/FBX 从不可变源快照 Cook 为内容与配方共同寻址的 `noemancer/meshbin/0.2`，也会按 base-color/normal/data/emissive/UI 语义把 PNG 编码为 KTX2；Player 直接校验并加载 Cooked Geometry，不带源模型解析或离线编译路径。Runtime 通过私有 libktx Adapter 校验并转码为可移植 RGBA8 上传。第三方类型仍封闭在 Adapter，Headless 参考 Mixer 与 Editor 源模型预览只作为明确边界内的路径，不进入发行包。
+miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、libjpeg-turbo、KTX2 BasisLZ/UASTC 与 meshoptimizer Mesh Cook 已接入。Asset Registry 会把 GLB、外部资源 JSON glTF 与 FBX 从不可变源闭包 Cook 为内容与配方共同寻址的 `noemancer/meshbin/0.2`，也会按 base-color/normal/data/emissive/UI 语义把 PNG/JPEG 编码为 KTX2；Player 直接校验并加载 Cooked Geometry，不带源模型解析或离线编译路径。Runtime 通过私有 libktx Adapter 校验并转码为可移植 RGBA8 上传。第三方类型仍封闭在 Adapter，Headless 参考 Mixer 与 Editor 源模型预览只作为明确边界内的路径，不进入发行包。
 
 ## Codex `/goal`（Ralph Loop）快速开发模式
 
@@ -81,7 +81,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、KTX2 B
 ### P1：已完成——引擎生产闭环收口
 
 - 已完成的 P1 基础：Asset Browser 已接入稳定 ID、状态、进度、取消/重试和有界观察的后台 Job；后台 Import/Inspect 调用真实 Registry/Importer，结果以 live revision 校验回写；缩略图复用 lodepng 生成内容寻址 PNG 并由有界 SDL_GPU Cache 显示；缺源、缺依赖、循环与 Import/Cook 失败会形成确定性诊断和修复入口。Play World 具有独立的运行时 Outliner/声明式 Inspector、稳定实体/组件差异、逐项选择预览、基线冲突检查、dry-run、单次原子 Apply Back 与 Undo；托管调试已有隐藏进程、长寿命 DAP Session、请求关联、事件队列和断点/暂停/调用栈/终止协议；Package Pipeline 已具备 Game Profile、资源闭包、许可/NOTICE、确定性计划与原子提交契约。
-- Asset/Cook 的 PNG Registry/KTX2 生产接线已收口；Asset Browser 缩略图与修复纵切已收口，不继续横向扩写预览内核。JPEG/WebP/EXR 等格式按真实项目需求接成熟解码器，不自研通用图片库。
+- Asset/Cook 的 PNG/JPEG Registry/KTX2 生产接线已收口；Asset Browser 两种格式的真实缩略图与修复纵切已收口。WebP/EXR 等格式仍按真实项目需求接成熟解码器，不自研通用图片库。
 - Play World：运行时查看和选择性 Apply Back 已收口；运行态语义投影有界发布，选择集合按稳定 change ID 重建候选 Scene，且只提交可持久化 Scene 差异，排除 subsystem 私有瞬态。
 - Project Workspace：Editor 已可 New Project / Open Project；创建服务以 sibling staging + atomic rename 生成 Project、规范 Scene、引用内置起步资源的 Registry、可直接编译的 .NET 10 项目和 GameEntry。默认 `starter` 与 `hybrid-pixel` 是同一请求中的稳定 plain-data preset；CLI `project create --preset` 与 Project Hub 共用该 Authority，Hybrid preset 原子生成合法 Project `0.2` + Hybrid Pixel `0.1`，非法 preset 在 staging 前失败且不留目录。切换项目会重建 Scene、Registry、脚本上下文并重置 Editor 保存基线；退出脏 Scene 使用 Save / Discard / Cancel 协调器。
 - C# 作者循环：Scripting Authority 发布有界的项目源码目录和编译指纹；Console 可打开项目、预览或交给外部代码编辑器打开项目内源码，Runtime 会规范化并拒绝越界路径。源码预览不再隐式改写断点。Editor 的 Debug 编译完成事件会在主线程安全点准备独立 Play World 热替换，下一次托管回调通过既有 collectible ALC 迁移状态；失败时保留旧程序集并保持 dirty，同一失败指纹不会触发自动重试风暴，手动重试仍可用。

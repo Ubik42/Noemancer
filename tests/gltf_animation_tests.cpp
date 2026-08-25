@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -117,12 +118,29 @@ void write_text(const std::filesystem::path& path,const std::string& value){
     output.write(value.data(),static_cast<std::streamsize>(value.size()));
 }
 
-ExternalGltfFixture make_external_gltf_fixture(){
+std::vector<std::byte> decode_base64_fixture(const std::string_view source){
+    constexpr std::string_view alphabet=
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::array<int,256> table{};table.fill(-1);
+    for(std::size_t index=0;index<alphabet.size();++index)
+        table[static_cast<unsigned char>(alphabet[index])]=static_cast<int>(index);
+    std::vector<std::byte> output;std::uint32_t accumulator{};int bits{};
+    for(const unsigned char value:source){
+        if(value=='=')break;
+        const int decoded=table[value];if(decoded<0)continue;
+        accumulator=(accumulator<<6U)|static_cast<std::uint32_t>(decoded);bits+=6;
+        if(bits>=8){bits-=8;output.push_back(static_cast<std::byte>((accumulator>>bits)&0xffU));}
+    }
+    return output;
+}
+
+ExternalGltfFixture make_external_gltf_fixture(const bool jpeg=false){
     ExternalGltfFixture fixture;
-    fixture.root=std::filesystem::temp_directory_path()/"noemancer-gltf-external-snapshot-tests";
+    fixture.root=std::filesystem::temp_directory_path()/
+        (jpeg?"noemancer-gltf-external-jpeg-tests":"noemancer-gltf-external-snapshot-tests");
     fixture.document=fixture.root/"scene.gltf";
     fixture.buffer=fixture.root/"geometry"/"mesh.bin";
-    fixture.image=fixture.root/"textures"/"base.png";
+    fixture.image=fixture.root/"textures"/(jpeg?"base.jpg":"base.png");
     std::error_code ignored;std::filesystem::remove_all(fixture.root,ignored);
     std::filesystem::create_directories(fixture.buffer.parent_path());
     std::filesystem::create_directories(fixture.image.parent_path());
@@ -131,17 +149,27 @@ ExternalGltfFixture make_external_gltf_fixture(){
         append(geometry,value);
     {std::ofstream output(fixture.buffer,std::ios::binary|std::ios::trunc);
      output.write(reinterpret_cast<const char*>(geometry.data()),static_cast<std::streamsize>(geometry.size()));}
-    constexpr std::array<std::uint8_t,16> pixels{
-        255,0,0,255,0,255,0,255,0,0,255,255,255,255,255,255};
-    const auto png=noemancer::encode_png_rgba8(2U,2U,pixels);
+    std::vector<std::byte> image_bytes;
+    if(jpeg){
+        constexpr std::string_view encoded=
+            "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAACAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD7r/Zv8B+GtS/Z4+F13d+HdJuru48LaXLNPPYxPJI7WkRZmYrkkkkknrmiiivx3H/73W/xS/Nn4Fmf+/V/8cvzZ//Z";
+        image_bytes=decode_base64_fixture(encoded);
+    }else{
+        constexpr std::array<std::uint8_t,16> pixels{
+            255,0,0,255,0,255,0,255,0,0,255,255,255,255,255,255};
+        const auto png=noemancer::encode_png_rgba8(2U,2U,pixels);
+        image_bytes.resize(png.bytes.size());
+        std::memcpy(image_bytes.data(),png.bytes.data(),png.bytes.size());
+    }
     {std::ofstream output(fixture.image,std::ios::binary|std::ios::trunc);
-     output.write(reinterpret_cast<const char*>(png.bytes.data()),static_cast<std::streamsize>(png.bytes.size()));}
+     output.write(reinterpret_cast<const char*>(image_bytes.data()),static_cast<std::streamsize>(image_bytes.size()));}
     const nlohmann::json document={
         {"asset",{{"version","2.0"}}},
         {"buffers",{{{"uri","geometry/mesh.bin"},{"byteLength",geometry.size()}}}},
         {"bufferViews",{{{"buffer",0},{"byteOffset",0},{"byteLength",geometry.size()}}}},
         {"accessors",{{{"bufferView",0},{"componentType",5126},{"count",3},{"type","VEC3"}}}},
-        {"images",{{{"uri","textures/base.png"},{"mimeType","image/png"}}}},
+        {"images",{{{"uri",jpeg?"textures/base.jpg":"textures/base.png"},
+                       {"mimeType",jpeg?"image/jpeg":"image/png"}}}},
         {"textures",{{{"source",0}}}},
         {"materials",{{{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}}}}}}},
         {"meshes",{{{"primitives",{{{"attributes",{{"POSITION",0}}},{"material",0}}}}}}},
@@ -186,6 +214,19 @@ int main() {
                  <<external_decoded.code<<": "<<external_decoded.detail<<'\n';
         std::filesystem::remove_all(external.root,ignored);return 17;
     }
+    const auto external_jpeg=make_external_gltf_fixture(true);
+    const auto jpeg_snapshot=noemancer::read_gltf_source_snapshot(external_jpeg.document);
+    const auto jpeg_decoded=noemancer::decode_gltf_mesh(external_jpeg.document);
+    if(!jpeg_snapshot.valid||jpeg_snapshot.dependencies.size()!=2U||
+       !jpeg_decoded.valid||jpeg_decoded.images.size()!=1U||!jpeg_decoded.images[0].valid||
+       jpeg_decoded.images[0].mime_type!="image/jpeg"||jpeg_decoded.images[0].width!=2U||
+       jpeg_decoded.images[0].height!=2U||jpeg_decoded.images[0].rgba8.size()!=16U||
+       jpeg_decoded.primitives[0].base_color_image!=0){
+        std::cerr<<"External JPEG glTF did not decode through libjpeg-turbo: "
+                 <<jpeg_decoded.code<<": "<<jpeg_decoded.detail<<'\n';
+        std::filesystem::remove_all(external.root,ignored);
+        std::filesystem::remove_all(external_jpeg.root,ignored);return 21;
+    }
     const std::array<std::string,4> unsafe_uris{
         "../outside.bin","%2e%2e/outside.bin","C:/outside.bin","https://invalid/mesh.bin"};
     for(std::size_t index=0;index<unsafe_uris.size();++index){
@@ -201,6 +242,7 @@ int main() {
     const auto changed=noemancer::verify_gltf_source_snapshot(snapshot);
     if(changed.unchanged||changed.normalized_relative_path!="geometry/mesh.bin")return 20;
     std::filesystem::remove_all(external.root,ignored);
+    std::filesystem::remove_all(external_jpeg.root,ignored);
 
     const auto path = make_minimal_skinned_glb();
     const auto container = noemancer::read_glb_container(path);

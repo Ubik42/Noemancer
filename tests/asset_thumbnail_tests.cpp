@@ -62,6 +62,17 @@ int main() {
         std::cerr << "PNG thumbnail plan was not deterministic or path-safe\n";
         return 1;
     }
+    auto jpeg_source=source;
+    jpeg_source.id="asset.texture.hero-jpeg";
+    jpeg_source.uri="project://textures/hero.jpg";
+    jpeg_source.relative_path="textures/hero.jpg";
+    jpeg_source.extension=".jpg";
+    jpeg_source.content_hash="sha256:hero-jpeg-content";
+    const auto jpeg_plan=noemancer::plan_thumbnail(jpeg_source,recipe);
+    if(!jpeg_plan.valid||jpeg_plan.strategy!="jpeg-decode-scale"){
+        std::cerr<<"JPEG thumbnail did not select the libjpeg-turbo image adapter\n";
+        return 10;
+    }
 
     const std::vector<std::uint8_t> source_rgba{
         255U, 0U, 0U, 255U, 0U, 255U, 0U, 255U,

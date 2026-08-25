@@ -1,5 +1,6 @@
 #include "engine/image_decoder.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +27,15 @@ int main() {
     if (noemancer::decode_radiance_hdr(invalid).valid) {
         std::cerr << "Truncated HDR payload was accepted\n";
         return 2;
+    }
+    const std::array<std::byte,4> invalid_jpeg{
+        std::byte{0xff},std::byte{0xd8},std::byte{0xff},std::byte{0xd9}};
+    const auto rejected_jpeg=noemancer::decode_jpeg_rgba8(invalid_jpeg);
+    if(rejected_jpeg.valid||rejected_jpeg.code!="image.invalid-dimensions"||
+       !rejected_jpeg.rgba8.empty()){
+        std::cerr<<"Truncated JPEG payload was not rejected at the bounded adapter: "
+                 <<rejected_jpeg.code<<": "<<rejected_jpeg.detail<<'\n';
+        return 3;
     }
     return 0;
 }
