@@ -3,6 +3,7 @@
 #include "engine/scene_document.hpp"
 #include "engine/gameplay_runtime.hpp"
 #include "engine/hybrid_pixel_profile.hpp"
+#include "engine/sky_atmosphere.hpp"
 #include "engine/virtual_file_system.hpp"
 
 #include <filesystem>
@@ -30,6 +31,10 @@ struct ProjectDocument final {
     // complete value rather than a second project-specific pixel settings
     // shape, so Editor/Runtime/Agent can all consume the same plain data.
     std::optional<HybridPixelProfile> hybrid_pixel_profile;
+    // Optional renderer-neutral atmosphere authoring.  The project manifest
+    // stores the same codec-owned plain data consumed by Editor/Runtime/
+    // Agent; derived LUT budgets and GPU resources stay outside ProjectDocument.
+    std::optional<SkyAtmosphereSettings> sky_atmosphere;
 };
 
 struct ProjectLoadError final {

@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 
 $SourceContractSchema = 'noemancer.shader-artifact-source-contract/0.1'
 $ManifestSchema = 'noemancer.shader-artifact-manifest/0.1'
-$ExpectedShaderCount = 31
+$ExpectedShaderCount = 34
 $ResourceNames = @(
     'samplers',
     'uniformBuffers',
@@ -278,6 +278,9 @@ try {
         'vfx_sim.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 7; threadGroupX = 64 }
         'vfx_sort_alpha.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 3; threadGroupX = 256 }
         'vfx_spawn.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 7; threadGroupX = 64 }
+        'sky_atmosphere_transmittance.comp' = [ordered]@{ samplers = 0; uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 0; storageTextures = 1; threadGroupX = 8; threadGroupY = 8; threadGroupZ = 1 }
+        'sky_atmosphere_multi_scattering.comp' = [ordered]@{ samplers = 1; uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 0; storageTextures = 1; threadGroupX = 8; threadGroupY = 8; threadGroupZ = 1 }
+        'sky_atmosphere_sky_view.comp' = [ordered]@{ samplers = 2; uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 0; storageTextures = 1; threadGroupX = 8; threadGroupY = 8; threadGroupZ = 1 }
     }
 
     $manifestShaders = [System.Collections.Generic.List[object]]::new()
@@ -303,6 +306,12 @@ try {
         foreach ($resourceName in $ResourceNames) {
             $resourceValue = Get-RequiredProperty -Object $resourceDocument -Name $resourceName -Context "Shader '$stem'.resources"
             $resources[$resourceName] = ConvertTo-NonNegativeInteger -Value $resourceValue -Context "Shader '$stem'.resources.$resourceName"
+        }
+        $storageTexturesValue = Get-OptionalProperty -Object $resourceDocument -Name 'storageTextures'
+        $resources['storageTextures'] = if ($null -eq $storageTexturesValue) {
+            0
+        } else {
+            ConvertTo-NonNegativeInteger -Value $storageTexturesValue -Context "Shader '$stem'.resources.storageTextures"
         }
         if ($stage -eq 'compute' -and $resources.storageBuffers -ne 0) {
             throw "Compute shader '$stem' must use readonlyStorageBuffers/readwriteStorageBuffers rather than storageBuffers."
@@ -340,8 +349,16 @@ try {
                     throw "Shader '$stem' has resources.$resourceName=$($resources[$resourceName]); expected $($expected[$resourceName]) from the SDL_GPU pipeline call."
                 }
             }
-            if ($threadGroup[0] -ne $expected.threadGroupX -or $threadGroup[1] -ne 1 -or $threadGroup[2] -ne 1) {
-                throw "Shader '$stem' has threadGroup [$($threadGroup -join ',')]; expected [$($expected.threadGroupX),1,1]."
+            $expectedThreadGroupY = if ($expected.Contains('threadGroupY')) { $expected.threadGroupY } else { 1 }
+            $expectedThreadGroupZ = if ($expected.Contains('threadGroupZ')) { $expected.threadGroupZ } else { 1 }
+            if ($threadGroup[0] -ne $expected.threadGroupX -or $threadGroup[1] -ne $expectedThreadGroupY -or $threadGroup[2] -ne $expectedThreadGroupZ) {
+                throw "Shader '$stem' has threadGroup [$($threadGroup -join ',')]; expected [$($expected.threadGroupX),$expectedThreadGroupY,$expectedThreadGroupZ]."
+            }
+            if ($expected.Contains('storageTextures') -and $resources.storageTextures -ne $expected.storageTextures) {
+                throw "Shader '$stem' has resources.storageTextures=$($resources.storageTextures); expected $($expected.storageTextures) from the SDL_GPU pipeline call."
+            }
+            if ($expected.Contains('samplers') -and $resources.samplers -ne $expected.samplers) {
+                throw "Shader '$stem' has resources.samplers=$($resources.samplers); expected $($expected.samplers) sampled LUT bindings from the SDL_GPU pipeline call."
             }
         }
 

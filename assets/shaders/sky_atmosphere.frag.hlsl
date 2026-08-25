@@ -16,15 +16,18 @@
 //   resource contract.
 //
 // Binding ABI (owned by the renderer integration):
+//   t0/s0, space2 = cached sky-view LUT and linear sampler.
 //   b0, space3 = SkyAtmosphereSettings.
-// There are no texture or sampler dependencies.  The output is scene-linear
-// HDR and is intended to flow into the existing tone-map/exposure pass.
+// The output is scene-linear HDR and flows into tone-map/exposure.
 
 struct FragmentInput
 {
     float4 position : SV_Position;
     float2 texcoord : TEXCOORD0;
 };
+
+Texture2D<float4> skyViewLut : register(t0, space2);
+SamplerState skyViewSampler : register(s0, space2);
 
 cbuffer SkyAtmosphereSettings : register(b0, space3)
 {
@@ -51,7 +54,8 @@ cbuffer SkyAtmosphereSettings : register(b0, space3)
     // rgb: fallback zenith tint used only when the camera ray misses the atmosphere;
     // w: fallback sky intensity
     float4 fallbackSky;
-    // x: view samples, y: light samples, z: flags (bit 0 enables temporal jitter),
+    // x: view samples, y: light samples, z: flags (bit 0 temporal jitter,
+    // bit 1 cached sky-view LUT),
     // w: frame index used by the optional jitter hash
     uint4 quality;
     // xy: viewport size in pixels, z: time in seconds, w: reserved
@@ -219,6 +223,29 @@ float3 reconstruct_world_direction(float2 texcoord)
         safe_normalize(cameraForward.xyz, float3(0.0f, 1.0f, 0.0f)));
 }
 
+float2 sky_view_uv(float3 direction, float3 sunDirection)
+{
+    const float radius = safe_radius(planetRadii.x);
+    const float cameraHeight = max(length(cameraPosition.xyz - safe_planet_center()), radius + 1.0f);
+    const float horizonLength = sqrt(max(cameraHeight * cameraHeight - radius * radius, 0.0f));
+    const float beta = acos(saturate(horizonLength / cameraHeight));
+    const float horizonAngle = PI - beta;
+    const float viewAngle = acos(clamp(direction.y, -1.0f, 1.0f));
+    float vertical;
+    if (viewAngle <= horizonAngle)
+    {
+        const float coordinate = saturate(viewAngle / max(horizonAngle, MIN_DISTANCE));
+        vertical = 0.5f * (1.0f - sqrt(saturate(1.0f - coordinate)));
+    }
+    else
+    {
+        const float coordinate = saturate((viewAngle - horizonAngle) / max(beta, MIN_DISTANCE));
+        vertical = 0.5f * (1.0f + sqrt(coordinate));
+    }
+    const float horizontal = sqrt(saturate((1.0f - dot(direction, sunDirection)) * 0.5f));
+    return float2(horizontal, vertical);
+}
+
 float4 main(FragmentInput input) : SV_Target0
 {
     const float3 rayOrigin = safe_finite(cameraPosition.xyz);
@@ -226,6 +253,26 @@ float4 main(FragmentInput input) : SV_Target0
     const float3 sunDirection = safe_normalize(sunDirectionIntensity.xyz,
         float3(0.0f, 1.0f, 0.0f));
     const float3 fallback = fallback_sky_color(rayDirection, sunDirection);
+
+    // Bit 1 selects the cached multi-LUT path. Bit 0 remains temporal jitter
+    // for the direct fallback. Keeping both paths in one artifact lets the
+    // runtime fail soft when LUT creation is unsupported by a backend.
+    if ((quality.z & 2u) != 0u)
+    {
+        uint lutWidth;
+        uint lutHeight;
+        skyViewLut.GetDimensions(lutWidth, lutHeight);
+        const float2 texel = 0.5f / max(float2((float)lutWidth, (float)lutHeight), 1.0f);
+        const float2 uv = clamp(sky_view_uv(rayDirection, sunDirection), texel, 1.0f - texel);
+        const float exposureStops = clamp(safe_finite(sunColorExposure.w), -16.0f, 16.0f);
+        float3 lutRadiance = skyViewLut.SampleLevel(skyViewSampler, uv, 0.0f).rgb;
+        // A sky background is not a planetary terrain renderer. Fade the LUT's
+        // below-horizon ground solution into the authored lower hemisphere;
+        // real scene geometry drawn by the opaque pass still occludes it.
+        const float lowerHemisphere = saturate(-rayDirection.y * 6.0f);
+        lutRadiance = lerp(lutRadiance, fallback * 0.35f, lowerHemisphere);
+        return float4(safe_hdr(lutRadiance * exp2(exposureStops)), 1.0f);
+    }
 
     const float2 atmosphereHit = ray_sphere_intersection(rayOrigin, rayDirection,
         safe_planet_center(), safe_radius(planetRadii.y));
@@ -295,8 +342,18 @@ float4 main(FragmentInput input) : SV_Target0
         const float groundSun = saturate(dot(groundNormal, sunDirection));
         const float3 groundTransmittance = sample_sun_transmittance(groundPosition,
             sunDirection, lightSamples);
-        radiance += viewTransmittance * max(groundAlbedoIntensity.rgb, 0.0f) *
-            max(groundAlbedoIntensity.w, 0.0f) * groundSun * groundTransmittance * INV_FOUR_PI;
+        const float3 groundAlbedo = max(groundAlbedoIntensity.rgb, 0.0f) *
+            max(groundAlbedoIntensity.w, 0.0f);
+        // The planet surface is a Lambertian receiver, so direct lighting must
+        // include the authored solar radiance.  Keep a small sky-irradiance
+        // approximation in the direct-raymarch fallback: otherwise every
+        // below-horizon background pixel becomes mathematically black when the
+        // sun is behind the local horizon.  The LUT path replaces this term
+        // with multi-scattered atmosphere irradiance.
+        const float3 directGround = groundAlbedo * groundSun * groundTransmittance *
+            sunRadiance * (4.0f * INV_FOUR_PI);
+        const float3 skyGround = groundAlbedo * fallback * 0.08f;
+        radiance += viewTransmittance * (directGround + skyGround);
     }
 
     // Exposure is applied before the pass hands scene-linear HDR to tone map.

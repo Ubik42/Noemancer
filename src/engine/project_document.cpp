@@ -138,6 +138,14 @@ ProjectLoadResult parse_project_documents(
                 continue;
             }
         }
+        if (field == "skyAtmosphere") {
+            if (is_project_v2) continue;
+            if (is_project_v1) {
+                add_error(result, "project.sky-atmosphere-schema", "/skyAtmosphere",
+                    "skyAtmosphere requires noemancer.project/0.2 and cannot be silently accepted by a 0.1 manifest.");
+                continue;
+            }
+        }
         if (!known) {
             add_error(result, "project.unknown-field", "/" + field,
                 "Unknown project fields are rejected to prevent silent data loss.");
@@ -241,6 +249,21 @@ ProjectLoadResult parse_project_documents(
             }
         } else {
             project.hybrid_pixel_profile = *parsed_profile.document;
+        }
+    }
+    if (is_project_v2 && input.contains("skyAtmosphere")) {
+        const auto parsed_atmosphere = SkyAtmosphereSettingsCodec::parse_json(
+            input.at("skyAtmosphere").dump());
+        if (!parsed_atmosphere) {
+            for (const auto& atmosphere_error : parsed_atmosphere.errors) {
+                const auto atmosphere_path = atmosphere_error.path == "/" ?
+                    std::string("/skyAtmosphere") :
+                    std::string("/skyAtmosphere") + atmosphere_error.path;
+                add_error(result, "project.sky-atmosphere." + atmosphere_error.code,
+                    atmosphere_path, atmosphere_error.message);
+            }
+        } else {
+            project.sky_atmosphere = *parsed_atmosphere.document;
         }
     }
     parse_input_actions(input,project,result);

@@ -7,6 +7,7 @@
 #include "engine/hybrid_pixel_profile.hpp"
 #include "engine/live_editor_session.hpp"
 #include "engine/log.hpp"
+#include "engine/sky_atmosphere.hpp"
 #include "engine/world.hpp"
 #include "engine/virtual_file_system.hpp"
 #include "runtime/asset_vfs_catalog.hpp"
@@ -175,6 +176,7 @@ private:
     std::string project_hud_document_json_;
     std::string player_profile_document_json_;
     std::optional<HybridPixelProfile> hybrid_pixel_profile_;
+    SkyAtmosphereSettings sky_atmosphere_{make_sky_atmosphere_settings(SkyAtmosphereQuality::high)};
     std::uint64_t hybrid_pixel_profile_revision_{1U};
     std::unique_ptr<GamePersistenceStore> persistence_store_;
     std::string managed_debug_last_action_json_;

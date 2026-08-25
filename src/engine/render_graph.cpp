@@ -95,7 +95,7 @@ CompiledRenderGraph RenderGraphCompiler::compile(
 }
 
 CompiledRenderGraph make_forward_render_graph() {
-    auto graph = RenderGraphCompiler::compile("render.graph.forward.v11",
+    auto graph = RenderGraphCompiler::compile("render.graph.forward.v12",
         {{"render.resource.shadow-depth", "D32_FLOAT", true, "2d-array", 4, false, "shadow"}, {"render.resource.scene-hdr", "RGBA16_FLOAT", true},
          {"render.resource.scene-indirect", "RGBA16_FLOAT", true},
          {"render.resource.scene-hdr-ao", "RGBA16_FLOAT", true},
@@ -126,9 +126,11 @@ CompiledRenderGraph make_forward_render_graph() {
          {"render.pass.gpu-visibility","render.pipeline.compute-frustum-compact",
           {"render.resource.gpu-scene-instances","render.resource.gpu-draw-batches"},
           {"render.resource.gpu-visible-indices","render.resource.gpu-indirect-commands"},{"render.pass.shadow-depth"}},
-         {"render.pass.opaque-lit", "render.pipeline.pbr-forward", {"render.resource.shadow-depth","render.resource.gpu-scene-instances","render.resource.gpu-visible-indices","render.resource.gpu-indirect-commands"},
+         {"render.pass.sky-atmosphere", "render.pipeline.sky-atmosphere", {},
+          {"render.resource.scene-hdr"}, {"render.pass.gpu-visibility"}},
+         {"render.pass.opaque-lit", "render.pipeline.pbr-forward", {"render.resource.scene-hdr","render.resource.shadow-depth","render.resource.gpu-scene-instances","render.resource.gpu-visible-indices","render.resource.gpu-indirect-commands"},
           {"render.resource.scene-hdr", "render.resource.scene-indirect", "render.resource.scene-depth", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"},
-          {"render.pass.gpu-visibility"}},
+          {"render.pass.gpu-visibility", "render.pass.sky-atmosphere"}},
          {"render.pass.ambient-occlusion", "render.pipeline.gtao", {"render.resource.scene-depth", "render.resource.world-normal"},
           {"render.resource.ambient-occlusion"}, {"render.pass.opaque-lit"}},
          {"render.pass.ambient-occlusion-denoise-horizontal", "render.pipeline.ao-bilateral-horizontal",

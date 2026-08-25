@@ -31,6 +31,9 @@ constexpr auto valid_hybrid_pixel_profile = R"({
   "presentationFilter":"nearest"
 })";
 
+constexpr auto valid_sky_atmosphere =
+    R"({"schema":"noemancer.sky-atmosphere/0.1","profileId":"sky.main","quality":"medium","physical":{"miePhaseG":0.72}})";
+
 } // namespace
 
 int main() {
@@ -128,16 +131,35 @@ int main() {
     {
         std::ofstream manifest(root / "noemancer.project.json", std::ios::trunc);
         manifest << R"({"schema":"noemancer.project/0.2","projectId":"project.test","name":"Test Project","startupScene":"scenes/start.scene.json","assetRoots":["assets"],"hybridPixelProfile":)"
-                 << valid_hybrid_pixel_profile << '}';
+                 << valid_hybrid_pixel_profile << R"(,"skyAtmosphere":)"
+                 << valid_sky_atmosphere << '}';
     }
     const auto loaded_v2 = noemancer::load_project(root);
     if (!loaded_v2 || loaded_v2.project->schema != "noemancer.project/0.2" ||
         !loaded_v2.project->hybrid_pixel_profile ||
         loaded_v2.project->hybrid_pixel_profile->profile_id != "hd2d.main" ||
-        loaded_v2.project->hybrid_pixel_profile->virtual_width != 640U) {
+        loaded_v2.project->hybrid_pixel_profile->virtual_width != 640U ||
+        !loaded_v2.project->sky_atmosphere ||
+        loaded_v2.project->sky_atmosphere->profile_id != "sky.main" ||
+        loaded_v2.project->sky_atmosphere->quality != noemancer::SkyAtmosphereQuality::medium ||
+        loaded_v2.project->sky_atmosphere->mie_phase_g != 0.72F) {
         std::cerr << noemancer::project_load_errors_json(loaded_v2) << '\n';
         std::filesystem::remove_all(root);
         return 4;
+    }
+
+    // Atmosphere source is owned by the current project schema and strict
+    // codec diagnostics retain their nested JSON Pointer when promoted.
+    {
+        std::ofstream manifest(root / "noemancer.project.json", std::ios::trunc);
+        manifest << R"({"schema":"noemancer.project/0.2","projectId":"project.test","name":"Test Project","startupScene":"scenes/start.scene.json","assetRoots":["assets"],"skyAtmosphere":{"schema":"noemancer.sky-atmosphere/0.1","quality":"cinematic"}})";
+    }
+    const auto invalid_atmosphere = noemancer::load_project(root);
+    if (invalid_atmosphere || !has_error(invalid_atmosphere,
+        "project.sky-atmosphere.sky-atmosphere.invalid-quality",
+        "/skyAtmosphere/quality")) {
+        std::filesystem::remove_all(root);
+        return 15;
     }
 
     {
@@ -181,11 +203,14 @@ int main() {
     {
         std::ofstream manifest(root / "noemancer.project.json", std::ios::trunc);
         manifest << R"({"schema":"noemancer.project/0.1","projectId":"project.test","name":"Test Project","startupScene":"scenes/start.scene.json","assetRoots":["assets"],"hybridPixelProfile":)"
-                 << valid_hybrid_pixel_profile << '}';
+                 << valid_hybrid_pixel_profile << R"(,"skyAtmosphere":)"
+                 << valid_sky_atmosphere << '}';
     }
     const auto legacy_profile = noemancer::load_project(root);
     if (legacy_profile || !has_error(legacy_profile,
-        "project.hybrid-pixel-profile-schema", "/hybridPixelProfile")) {
+        "project.hybrid-pixel-profile-schema", "/hybridPixelProfile") ||
+        !has_error(legacy_profile,
+        "project.sky-atmosphere-schema", "/skyAtmosphere")) {
         std::filesystem::remove_all(root);
         return 7;
     }

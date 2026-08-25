@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -215,6 +217,161 @@ void append_physical(std::string& output, const SkyAtmosphereSettings& settings)
     append_key(output, "sunIrradiance", first); first = false; append_rgb(output, settings.sun_irradiance);
     append_key(output, "sunAngularRadiusRad", first); first = false; append_number(output, settings.sun_angular_radius_rad);
     output.push_back('}');
+}
+
+void append_authored_settings(std::string& output, const SkyAtmosphereSettings& settings) {
+    output.push_back('{');
+    bool first = true;
+    append_key(output, "schema", first); first = false; append_json_string(output, settings.schema);
+    append_key(output, "profileId", first); first = false; append_json_string(output, settings.profile_id);
+    append_key(output, "enabled", first); first = false; append_bool(output, settings.enabled);
+    append_key(output, "quality", first); first = false;
+    append_json_string(output, sky_atmosphere_quality_name(settings.quality));
+    append_key(output, "debugView", first); first = false;
+    append_json_string(output, sky_atmosphere_debug_view_name(settings.debug_view));
+    append_key(output, "physical", first); first = false; append_physical(output, settings);
+    output.push_back('}');
+}
+
+using Json = nlohmann::json;
+
+void check_fields(const Json& value, const std::initializer_list<std::string_view> allowed,
+                  const std::string_view path,
+                  std::vector<SkyAtmosphereDiagnostic>& diagnostics) {
+    if (!value.is_object()) return;
+    for (const auto& [name, unused] : value.items()) {
+        static_cast<void>(unused);
+        const auto known = std::any_of(allowed.begin(), allowed.end(),
+                                       [&name](const std::string_view candidate) {
+                                           return candidate == name;
+                                       });
+        if (!known) {
+            add_error(diagnostics, "sky-atmosphere.unknown-field",
+                      std::string(path) + "/" + name,
+                      "Unknown field is rejected to prevent silent authoring data loss.");
+        }
+    }
+}
+
+bool parse_string_field(const Json& value, const char* name, const std::string_view path,
+                        std::string& output,
+                        std::vector<SkyAtmosphereDiagnostic>& diagnostics,
+                        const bool required = false) {
+    const auto field_path = std::string(path) + "/" + name;
+    if (!value.contains(name)) {
+        if (required) {
+            add_error(diagnostics, "sky-atmosphere.missing-field", field_path,
+                      "Required string field is missing.");
+        }
+        return false;
+    }
+    if (!value.at(name).is_string()) {
+        add_error(diagnostics, "sky-atmosphere.invalid-string", field_path,
+                  "Expected a string value.");
+        return false;
+    }
+    output = value.at(name).get<std::string>();
+    return true;
+}
+
+bool parse_bool_field(const Json& value, const char* name, const std::string_view path,
+                      bool& output,
+                      std::vector<SkyAtmosphereDiagnostic>& diagnostics) {
+    const auto field_path = std::string(path) + "/" + name;
+    if (!value.contains(name)) return false;
+    if (!value.at(name).is_boolean()) {
+        add_error(diagnostics, "sky-atmosphere.invalid-boolean", field_path,
+                  "Expected a boolean value.");
+        return false;
+    }
+    output = value.at(name).get<bool>();
+    return true;
+}
+
+bool parse_number_field(const Json& value, const char* name, const std::string_view path,
+                        float& output,
+                        std::vector<SkyAtmosphereDiagnostic>& diagnostics) {
+    const auto field_path = std::string(path) + "/" + name;
+    if (!value.contains(name)) return false;
+    if (!value.at(name).is_number()) {
+        add_error(diagnostics, "sky-atmosphere.invalid-number", field_path,
+                  "Expected a finite numeric value.");
+        return false;
+    }
+    const auto parsed = static_cast<float>(value.at(name).get<double>());
+    if (!std::isfinite(parsed)) {
+        add_error(diagnostics, "sky-atmosphere.invalid-number", field_path,
+                  "Expected a finite numeric value representable by float.");
+        return false;
+    }
+    output = parsed;
+    return true;
+}
+
+bool parse_rgb_field(const Json& value, const char* name, const std::string_view path,
+                    std::array<float, 3>& output,
+                    std::vector<SkyAtmosphereDiagnostic>& diagnostics) {
+    const auto field_path = std::string(path) + "/" + name;
+    if (!value.contains(name)) return false;
+    const auto& source = value.at(name);
+    if (!source.is_array() || source.size() != 3U) {
+        add_error(diagnostics, "sky-atmosphere.invalid-vector", field_path,
+                  "Expected an array of exactly three finite numeric components.");
+        return false;
+    }
+    std::array<float, 3> candidate{};
+    bool valid = true;
+    for (std::size_t index = 0; index < candidate.size(); ++index) {
+        const auto component_path = field_path + "/" + std::to_string(index);
+        if (!source.at(index).is_number()) {
+            add_error(diagnostics, "sky-atmosphere.invalid-number", component_path,
+                      "Expected a finite numeric vector component.");
+            valid = false;
+            continue;
+        }
+        candidate[index] = static_cast<float>(source.at(index).get<double>());
+        if (!std::isfinite(candidate[index])) {
+            add_error(diagnostics, "sky-atmosphere.invalid-number", component_path,
+                      "Expected a finite numeric vector component representable by float.");
+            valid = false;
+        }
+    }
+    if (valid) output = candidate;
+    return valid;
+}
+
+void parse_physical(const Json& value, SkyAtmosphereSettings& settings,
+                    std::vector<SkyAtmosphereDiagnostic>& diagnostics) {
+    if (!value.contains("physical")) return;
+    const auto& physical = value.at("physical");
+    if (!physical.is_object()) {
+        add_error(diagnostics, "sky-atmosphere.invalid-object", "/physical",
+                  "physical must be an object of atmosphere parameters.");
+        return;
+    }
+    check_fields(physical,
+                 {"planetRadiusM", "atmosphereHeightM", "rayleighScaleHeightM",
+                  "mieScaleHeightM", "groundAlbedo", "rayleighScatteringPerM",
+                  "rayleighAbsorptionPerM", "mieScatteringPerM", "mieAbsorptionPerM",
+                  "miePhaseG", "ozoneAbsorptionPerM", "ozoneCenterHeightM", "ozoneWidthM",
+                  "sunDirection", "sunIrradiance", "sunAngularRadiusRad"},
+                 "/physical", diagnostics);
+    parse_number_field(physical, "planetRadiusM", "/physical", settings.planet_radius_m, diagnostics);
+    parse_number_field(physical, "atmosphereHeightM", "/physical", settings.atmosphere_height_m, diagnostics);
+    parse_number_field(physical, "rayleighScaleHeightM", "/physical", settings.rayleigh_scale_height_m, diagnostics);
+    parse_number_field(physical, "mieScaleHeightM", "/physical", settings.mie_scale_height_m, diagnostics);
+    parse_rgb_field(physical, "groundAlbedo", "/physical", settings.ground_albedo, diagnostics);
+    parse_rgb_field(physical, "rayleighScatteringPerM", "/physical", settings.rayleigh_scattering_per_m, diagnostics);
+    parse_rgb_field(physical, "rayleighAbsorptionPerM", "/physical", settings.rayleigh_absorption_per_m, diagnostics);
+    parse_rgb_field(physical, "mieScatteringPerM", "/physical", settings.mie_scattering_per_m, diagnostics);
+    parse_rgb_field(physical, "mieAbsorptionPerM", "/physical", settings.mie_absorption_per_m, diagnostics);
+    parse_number_field(physical, "miePhaseG", "/physical", settings.mie_phase_g, diagnostics);
+    parse_rgb_field(physical, "ozoneAbsorptionPerM", "/physical", settings.ozone_absorption_per_m, diagnostics);
+    parse_number_field(physical, "ozoneCenterHeightM", "/physical", settings.ozone_center_height_m, diagnostics);
+    parse_number_field(physical, "ozoneWidthM", "/physical", settings.ozone_width_m, diagnostics);
+    parse_rgb_field(physical, "sunDirection", "/physical", settings.sun_direction, diagnostics);
+    parse_rgb_field(physical, "sunIrradiance", "/physical", settings.sun_irradiance, diagnostics);
+    parse_number_field(physical, "sunAngularRadiusRad", "/physical", settings.sun_angular_radius_rad, diagnostics);
 }
 
 void append_history_source(std::string& output, const SkyAtmosphereSettings& settings) {
@@ -454,6 +611,92 @@ std::vector<SkyAtmosphereDiagnostic> validate_sky_atmosphere(
     return diagnostics;
 }
 
+SkyAtmosphereParseResult SkyAtmosphereSettingsCodec::parse_json(
+    const std::string_view source) {
+    SkyAtmosphereParseResult result;
+    if (source.size() > sky_atmosphere_max_source_bytes) {
+        add_error(result.errors, "sky-atmosphere.source-too-large", "/",
+                  "Atmosphere source exceeds the 256 KiB authoring budget.");
+        return result;
+    }
+    const auto input = Json::parse(source, nullptr, false);
+    if (input.is_discarded() || !input.is_object()) {
+        add_error(result.errors, "sky-atmosphere.invalid-json", "/",
+                  "Sky Atmosphere settings must be a JSON object.");
+        return result;
+    }
+    check_fields(input, {"schema", "profileId", "enabled", "quality", "debugView", "physical"},
+                 "", result.errors);
+
+    SkyAtmosphereSettings settings;
+    parse_string_field(input, "schema", "", settings.schema, result.errors, true);
+    parse_string_field(input, "profileId", "", settings.profile_id, result.errors);
+    parse_bool_field(input, "enabled", "", settings.enabled, result.errors);
+    if (input.contains("quality")) {
+        if (!input.at("quality").is_string()) {
+            add_error(result.errors, "sky-atmosphere.invalid-string", "/quality",
+                      "quality must be one of off, low, medium, high or ultra.");
+        } else {
+            const auto value = input.at("quality").get<std::string>();
+            const auto quality = sky_atmosphere_quality_from_string(value);
+            if (!sky_atmosphere_quality_valid(quality) ||
+                sky_atmosphere_quality_name(quality) != value) {
+                add_error(result.errors, "sky-atmosphere.invalid-quality", "/quality",
+                          "quality must be one of off, low, medium, high or ultra.");
+            } else {
+                settings.quality = quality;
+            }
+        }
+    }
+    // An omitted enabled flag follows the explicit quality preset.  This
+    // keeps the concise authoring form `{"quality":"off"}` equivalent to
+    // the engine factory while still allowing an author to disable a costly
+    // profile without changing its selected quality for diagnostics.
+    if (!input.contains("enabled") && settings.quality == SkyAtmosphereQuality::off) {
+        settings.enabled = false;
+    }
+    if (input.contains("debugView")) {
+        if (!input.at("debugView").is_string()) {
+            add_error(result.errors, "sky-atmosphere.invalid-string", "/debugView",
+                      "debugView must use a published Sky Atmosphere debug view name.");
+        } else {
+            const auto value = input.at("debugView").get<std::string>();
+            const auto view = sky_atmosphere_debug_view_from_string(value);
+            if (!sky_atmosphere_debug_view_valid(view) ||
+                sky_atmosphere_debug_view_name(view) != value) {
+                add_error(result.errors, "sky-atmosphere.invalid-debug-view", "/debugView",
+                          "debugView must use a published Sky Atmosphere debug view name.");
+            } else {
+                settings.debug_view = view;
+            }
+        }
+    }
+    parse_physical(input, settings, result.errors);
+
+    const auto semantic_errors = validate_sky_atmosphere(settings);
+    result.errors.insert(result.errors.end(), semantic_errors.begin(), semantic_errors.end());
+    if (result.errors.empty()) result.document = std::move(settings);
+    return result;
+}
+
+std::vector<SkyAtmosphereDiagnostic> SkyAtmosphereSettingsCodec::validate(
+    const SkyAtmosphereSettings& settings) {
+    return validate_sky_atmosphere(settings);
+}
+
+std::string SkyAtmosphereSettingsCodec::write_canonical_json(
+    const SkyAtmosphereSettings& settings) {
+    std::string output;
+    output.reserve(1536U);
+    append_authored_settings(output, settings);
+    return output;
+}
+
+std::string SkyAtmosphereSettingsCodec::fingerprint(
+    const SkyAtmosphereSettings& settings) {
+    return sky_atmosphere_fingerprint(settings);
+}
+
 std::string sky_atmosphere_canonical_evidence(const SkyAtmosphereSettings& settings) {
     std::string output;
     output.reserve(2048U);
@@ -473,7 +716,10 @@ std::string sky_atmosphere_canonical_evidence(const SkyAtmosphereSettings& setti
 }
 
 std::string sky_atmosphere_canonical_json(const SkyAtmosphereSettings& settings) {
-    return sky_atmosphere_canonical_evidence(settings);
+    std::string output;
+    output.reserve(1536U);
+    append_authored_settings(output, settings);
+    return output;
 }
 
 std::string sky_atmosphere_fingerprint(const SkyAtmosphereSettings& settings) {

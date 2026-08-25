@@ -10,6 +10,7 @@
 #include "engine/pixel_presentation.hpp"
 #include "engine/render_graph.hpp"
 #include "engine/render_world.hpp"
+#include "engine/sky_atmosphere.hpp"
 #include "engine/stable_range_allocator.hpp"
 #include "engine/texture_streaming_demand.hpp"
 #include "engine/vfx_gpu_residency.hpp"
@@ -65,6 +66,7 @@ public:
     void poll_gpu_pass_timings() { gpu_pass_timestamps_.poll(); }
     [[nodiscard]] std::string gpu_pass_timing_evidence_json() const { return gpu_pass_timestamps_.evidence_json(); }
     void set_ambient_occlusion_enabled(bool enabled) noexcept { ambient_occlusion_enabled_ = enabled; }
+    void set_sky_atmosphere(SkyAtmosphereSettings settings);
     [[nodiscard]] bool enqueue_gpu_visibility_readback(SDL_GPUCommandBuffer* command_buffer);
     void attach_gpu_visibility_readback_fence(SDL_GPUFence* fence);
     [[nodiscard]] bool resolve_gpu_visibility_readback();
@@ -107,6 +109,10 @@ private:
         const RenderWorldSnapshot& render_world,const ClusteredLightingCamera& camera,
         std::span<const std::int32_t> shadow_base_layers);
     [[nodiscard]] bool create_vfx_compute_resources();
+    [[nodiscard]] bool create_sky_atmosphere_resources();
+    [[nodiscard]] bool ensure_sky_atmosphere_resources();
+    [[nodiscard]] bool dispatch_sky_atmosphere_luts(SDL_GPUCommandBuffer* command_buffer,
+        const std::array<float,3>& camera_position);
     [[nodiscard]] bool upload_vfx_compute_state(SDL_GPUCommandBuffer* command_buffer, const RenderWorldSnapshot& render_world);
     void dispatch_vfx_compute(SDL_GPUCommandBuffer* command_buffer);
     void dispatch_vfx_group_sort(SDL_GPUCommandBuffer* command_buffer, const std::array<float,3>& camera_position);
@@ -203,6 +209,19 @@ private:
     SDL_GPUGraphicsPipeline* ao_composite_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* auto_exposure_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* tone_map_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* sky_atmosphere_pipeline_{nullptr};
+    SDL_GPUComputePipeline* sky_transmittance_pipeline_{nullptr};
+    SDL_GPUComputePipeline* sky_multi_scattering_pipeline_{nullptr};
+    SDL_GPUComputePipeline* sky_view_pipeline_{nullptr};
+    SDL_GPUTexture* sky_transmittance_lut_{nullptr};
+    SDL_GPUTexture* sky_multi_scattering_lut_{nullptr};
+    SDL_GPUTexture* sky_view_lut_{nullptr};
+    SDL_GPUSampler* sky_lut_sampler_{nullptr};
+    std::string sky_lut_identity_;
+    std::uint32_t sky_lut_width_{};
+    std::uint32_t sky_lut_height_{};
+    std::uint64_t sky_lut_regenerations_{};
+    bool sky_lut_valid_{};
     SDL_GPUGraphicsPipeline* fxaa_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* taa_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* vfx_alpha_draw_pipeline_{nullptr};
@@ -502,6 +521,7 @@ private:
     std::size_t tilemap_chunk_ranges_{};
     std::size_t tilemap_largest_chunk_range_{};
     CompiledRenderGraph render_graph_;
+    SkyAtmosphereSettings sky_atmosphere_{make_sky_atmosphere_settings(SkyAtmosphereQuality::low)};
     std::string extraction_id_;
     std::uint64_t world_revision_{};
     std::uint64_t frame_index_{};
@@ -544,6 +564,7 @@ private:
     double shadow_record_microseconds_{};
     double gpu_visibility_record_microseconds_{};
     double opaque_record_microseconds_{};
+    double sky_atmosphere_record_microseconds_{};
     double transparent_record_microseconds_{};
     double bloom_record_microseconds_{};
     double gtao_record_microseconds_{};

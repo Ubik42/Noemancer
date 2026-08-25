@@ -82,15 +82,65 @@ int main() {
         return fail("invalid settings did not return actionable diagnostics");
     }
 
+    // The project-facing codec accepts a bounded authored subset and fills
+    // omitted values from the Earth-like defaults.  Its canonical source is
+    // round-trippable; derived budget/history evidence is not an authoring
+    // input and therefore cannot be smuggled back into the source document.
+    const auto canonical_source = SkyAtmosphereSettingsCodec::write_canonical_json(high);
+    const auto parsed_canonical = SkyAtmosphereSettingsCodec::parse_json(canonical_source);
+    if (!parsed_canonical || !parsed_canonical.document ||
+        SkyAtmosphereSettingsCodec::write_canonical_json(*parsed_canonical.document) != canonical_source ||
+        parsed_canonical.document->quality != SkyAtmosphereQuality::high ||
+        parsed_canonical.document->planet_radius_m != high.planet_radius_m) {
+        return fail("canonical authored atmosphere source did not round-trip");
+    }
+    const auto minimal_source = std::string{"{\"schema\":\""} +
+        std::string(sky_atmosphere_schema) +
+        R"(","quality":"medium","physical":{"miePhaseG":0.72}})";
+    const auto parsed_minimal = SkyAtmosphereSettingsCodec::parse_json(minimal_source);
+    if (!parsed_minimal || !parsed_minimal.document ||
+        parsed_minimal.document->profile_id != "default" ||
+        parsed_minimal.document->debug_view != SkyAtmosphereDebugView::final ||
+        parsed_minimal.document->quality != SkyAtmosphereQuality::medium ||
+        std::abs(parsed_minimal.document->mie_phase_g - 0.72F) > 1.0e-6F ||
+        parsed_minimal.document->planet_radius_m != high.planet_radius_m) {
+        return fail("minimal authored atmosphere source did not apply defaults");
+    }
+    const auto parsed_off = SkyAtmosphereSettingsCodec::parse_json(
+        std::string{"{\"schema\":\""} + std::string(sky_atmosphere_schema) +
+        R"(","quality":"off"})");
+    if (!parsed_off || !parsed_off.document || parsed_off.document->enabled ||
+        parsed_off.document->quality != SkyAtmosphereQuality::off) {
+        return fail("quality off did not select the disabled default");
+    }
+    const auto unknown_source = SkyAtmosphereSettingsCodec::parse_json(
+        canonical_source.substr(0U, canonical_source.size() - 1U) +
+        R"(,"qualityBudget":{}})"
+    );
+    if (unknown_source || !has_diagnostic(unknown_source.errors,
+        "sky-atmosphere.unknown-field", "/qualityBudget")) {
+        return fail("derived evidence field was accepted as authored input");
+    }
+    const auto invalid_json = SkyAtmosphereSettingsCodec::parse_json(
+        R"({"schema":"noemancer.sky-atmosphere/0.1","quality":"cinematic"})"
+    );
+    if (invalid_json || !has_diagnostic(invalid_json.errors,
+        "sky-atmosphere.invalid-quality", "/quality")) {
+        return fail("invalid quality was not rejected by the codec");
+    }
+
     // Canonical evidence and identities are deterministic and independent of
     // calls or temporary allocations.
     const auto first_evidence = sky_atmosphere_canonical_evidence(high);
-    const auto second_evidence = sky_atmosphere_canonical_json(high);
+    const auto second_evidence = sky_atmosphere_canonical_evidence(high);
+    const auto first_source = sky_atmosphere_canonical_json(high);
+    const auto second_source = SkyAtmosphereSettingsCodec::write_canonical_json(high);
     const auto first_fingerprint = sky_atmosphere_fingerprint(high);
     const auto second_fingerprint = sky_atmosphere_fingerprint(high);
     const auto first_history = sky_atmosphere_history_reset_identity(high);
     const auto second_history = sky_atmosphere_history_reset_identity(high);
-    if (first_evidence != second_evidence || first_fingerprint != second_fingerprint ||
+    if (first_evidence != second_evidence || first_source != second_source ||
+        first_fingerprint != second_fingerprint ||
         first_history != second_history || first_fingerprint.rfind("fnv1a64:", 0U) != 0U ||
         first_history.rfind("sky-atmosphere-history/1:fnv1a64:", 0U) != 0U ||
         first_evidence.find("qualityBudget") == std::string::npos ||

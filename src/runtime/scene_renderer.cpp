@@ -97,6 +97,42 @@ struct Vec3 { float x; float y; float z; };
 struct Mat4 { std::array<float, 16> value{}; };
 Mat4 identity();
 
+struct alignas(16) SkyAtmosphereGpuData final {
+    Mat4 inverse_view_projection;
+    std::array<float,4> camera_position{};
+    std::array<float,4> camera_forward{};
+    std::array<float,4> planet_center{};
+    std::array<float,4> planet_radii{};
+    std::array<float,4> sun_direction_intensity{};
+    std::array<float,4> sun_color_exposure{};
+    std::array<float,4> rayleigh_scattering_scale_height{};
+    std::array<float,4> mie_scattering_scale_height{};
+    std::array<float,4> mie_absorption_phase_g{};
+    std::array<float,4> ground_albedo_intensity{};
+    std::array<float,4> fallback_sky{};
+    std::array<std::uint32_t,4> quality{};
+    std::array<float,4> viewport_and_time{};
+};
+static_assert(sizeof(SkyAtmosphereGpuData)==272,
+    "SkyAtmosphereGpuData must match sky_atmosphere.frag.hlsl b0");
+
+struct alignas(16) SkyAtmosphereLutGpuData final {
+    std::array<float,4> planet_parameters{};
+    std::array<float,4> density_parameters{};
+    std::array<float,4> ground_albedo{};
+    std::array<float,4> rayleigh_scattering{};
+    std::array<float,4> rayleigh_absorption{};
+    std::array<float,4> mie_scattering{};
+    std::array<float,4> mie_absorption{};
+    std::array<float,4> ozone_absorption{};
+    std::array<float,4> sun_direction{};
+    std::array<float,4> sun_irradiance{};
+    std::array<float,4> target_parameters{};
+    std::array<std::uint32_t,4> quality{};
+};
+static_assert(sizeof(SkyAtmosphereLutGpuData)==192,
+    "SkyAtmosphereLutGpuData must match atmosphere compute b0");
+
 struct alignas(16) ObjectData {
     Mat4 model;
     Mat4 view_projection;
@@ -546,6 +582,9 @@ constexpr std::uint32_t vfx_counter_bytes=16U;
 
 } // namespace
 
+SDL_GPUComputePipeline* load_atmosphere_compute_pipeline(SDL_GPUDevice* device,
+    std::string_view shader_name,std::uint32_t samplers);
+
 SceneRenderer::SceneRenderer(SDL_GPUDevice* device, const AssetRegistry& asset_registry,
                              std::shared_ptr<VirtualFileSystem> virtual_file_system,
                              const AssetVfsCatalog& asset_vfs_catalog,
@@ -566,6 +605,105 @@ SceneRenderer::SceneRenderer(SDL_GPUDevice* device, const AssetRegistry& asset_r
     for (int index=0;index<driver_count;++index) available_gpu_backends_.emplace_back(SDL_GetGPUDriver(index));
 }
 SceneRenderer::~SceneRenderer() { release(); }
+
+void SceneRenderer::set_sky_atmosphere(SkyAtmosphereSettings settings) {
+    if(sky_atmosphere_history_reset_identity(settings)!=
+       sky_atmosphere_history_reset_identity(sky_atmosphere_))sky_lut_valid_=false;
+    sky_atmosphere_=std::move(settings);
+}
+
+bool SceneRenderer::create_sky_atmosphere_resources() {
+    shader_artifact_failure.clear();
+    sky_transmittance_pipeline_=load_atmosphere_compute_pipeline(device_,"sky_atmosphere_transmittance.comp",0);
+    sky_multi_scattering_pipeline_=load_atmosphere_compute_pipeline(device_,"sky_atmosphere_multi_scattering.comp",1);
+    sky_view_pipeline_=load_atmosphere_compute_pipeline(device_,"sky_atmosphere_sky_view.comp",2);
+    if(!sky_transmittance_pipeline_||!sky_multi_scattering_pipeline_||!sky_view_pipeline_) {
+        last_error_="Unable to create sky-atmosphere LUT pipelines: "+
+            (shader_artifact_failure.empty()?std::string(SDL_GetError()):shader_artifact_failure);
+        return false;
+    }
+    SDL_GPUSamplerCreateInfo sampler{};sampler.min_filter=SDL_GPU_FILTER_LINEAR;
+    sampler.mag_filter=SDL_GPU_FILTER_LINEAR;sampler.mipmap_mode=SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    sampler.address_mode_u=sampler.address_mode_v=sampler.address_mode_w=SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sky_lut_sampler_=SDL_CreateGPUSampler(device_,&sampler);
+    if(!sky_lut_sampler_) {last_error_="Unable to create sky-atmosphere LUT sampler: "+std::string(SDL_GetError());return false;}
+    return ensure_sky_atmosphere_resources();
+}
+
+bool SceneRenderer::ensure_sky_atmosphere_resources() {
+    const auto quality=sky_atmosphere_.quality==SkyAtmosphereQuality::off?SkyAtmosphereQuality::low:sky_atmosphere_.quality;
+    const auto& budget=sky_atmosphere_quality_budget(quality);
+    if(sky_transmittance_lut_&&sky_multi_scattering_lut_&&sky_view_lut_&&
+       sky_lut_width_==budget.sky_view_width&&sky_lut_height_==budget.sky_view_height)return true;
+    if(sky_transmittance_lut_)SDL_ReleaseGPUTexture(device_,sky_transmittance_lut_);
+    if(sky_multi_scattering_lut_)SDL_ReleaseGPUTexture(device_,sky_multi_scattering_lut_);
+    if(sky_view_lut_)SDL_ReleaseGPUTexture(device_,sky_view_lut_);
+    sky_transmittance_lut_=nullptr;sky_multi_scattering_lut_=nullptr;sky_view_lut_=nullptr;
+    const auto create_lut=[&](SDL_GPUTexture*& texture,const std::uint32_t width,
+                              const std::uint32_t height,const char* name) {
+        SDL_GPUTextureCreateInfo info{};info.type=SDL_GPU_TEXTURETYPE_2D;
+        info.format=SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+        info.usage=SDL_GPU_TEXTUREUSAGE_SAMPLER|SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
+        info.width=width;info.height=height;info.layer_count_or_depth=1;
+        info.num_levels=1;info.sample_count=SDL_GPU_SAMPLECOUNT_1;
+        texture=SDL_CreateGPUTexture(device_,&info);if(texture)SDL_SetGPUTextureName(device_,texture,name);
+        return texture!=nullptr;
+    };
+    if(!create_lut(sky_transmittance_lut_,budget.transmittance_width,budget.transmittance_height,
+            "sky-atmosphere.transmittance")||
+       !create_lut(sky_multi_scattering_lut_,budget.multi_scattering_width,budget.multi_scattering_height,
+            "sky-atmosphere.multi-scattering")||
+       !create_lut(sky_view_lut_,budget.sky_view_width,budget.sky_view_height,"sky-atmosphere.sky-view")) {
+        last_error_="Unable to allocate sky-atmosphere LUT textures: "+std::string(SDL_GetError());return false;
+    }
+    sky_lut_width_=budget.sky_view_width;sky_lut_height_=budget.sky_view_height;
+    sky_lut_valid_=false;sky_lut_identity_.clear();return true;
+}
+
+bool SceneRenderer::dispatch_sky_atmosphere_luts(SDL_GPUCommandBuffer* command,
+                                                  const std::array<float,3>& camera_position) {
+    if(!command||!ensure_sky_atmosphere_resources())return false;
+    const auto identity=sky_atmosphere_history_reset_identity(sky_atmosphere_);
+    if(sky_lut_valid_&&identity==sky_lut_identity_)return true;
+    const auto& atmosphere=sky_atmosphere_;const auto& budget=sky_atmosphere_quality_budget(atmosphere.quality);
+    const SkyAtmosphereLutGpuData data{
+        {atmosphere.planet_radius_m,atmosphere.atmosphere_height_m,
+            atmosphere.planet_radius_m+std::max(camera_position[1],1.0F),atmosphere.atmosphere_height_m*2.0F},
+        {atmosphere.rayleigh_scale_height_m,atmosphere.mie_scale_height_m,
+            atmosphere.ozone_center_height_m,atmosphere.ozone_width_m},
+        {atmosphere.ground_albedo[0],atmosphere.ground_albedo[1],atmosphere.ground_albedo[2],1.0F},
+        {atmosphere.rayleigh_scattering_per_m[0],atmosphere.rayleigh_scattering_per_m[1],atmosphere.rayleigh_scattering_per_m[2],0},
+        {atmosphere.rayleigh_absorption_per_m[0],atmosphere.rayleigh_absorption_per_m[1],atmosphere.rayleigh_absorption_per_m[2],0},
+        {atmosphere.mie_scattering_per_m[0],atmosphere.mie_scattering_per_m[1],atmosphere.mie_scattering_per_m[2],0},
+        {atmosphere.mie_absorption_per_m[0],atmosphere.mie_absorption_per_m[1],atmosphere.mie_absorption_per_m[2],atmosphere.mie_phase_g},
+        {atmosphere.ozone_absorption_per_m[0],atmosphere.ozone_absorption_per_m[1],atmosphere.ozone_absorption_per_m[2],0},
+        {atmosphere.sun_direction[0],atmosphere.sun_direction[1],atmosphere.sun_direction[2],atmosphere.sun_angular_radius_rad},
+        // The authoring contract stores a normalized spectral tint. Match the
+        // scene-light photometric scale here instead of baking exposure into
+        // the LUT shader.
+        {atmosphere.sun_irradiance[0]*20.0F,atmosphere.sun_irradiance[1]*20.0F,
+            atmosphere.sun_irradiance[2]*20.0F,20.0F},
+        {static_cast<float>(budget.sky_view_width),static_cast<float>(budget.sky_view_height),0,0},
+        {budget.transmittance_samples,budget.multi_scattering_samples,budget.sky_view_samples,0}};
+    const auto dispatch=[&](SDL_GPUComputePipeline* pipeline,SDL_GPUTexture* output,
+                            const std::span<const SDL_GPUTextureSamplerBinding> inputs,
+                            const std::uint32_t width,const std::uint32_t height) {
+        SDL_PushGPUComputeUniformData(command,0,&data,sizeof(data));
+        const SDL_GPUStorageTextureReadWriteBinding target{output,0,0,false,0,0,0};
+        auto* pass=SDL_BeginGPUComputePass(command,&target,1,nullptr,0);if(!pass)return false;
+        SDL_BindGPUComputePipeline(pass,pipeline);
+        if(!inputs.empty())SDL_BindGPUComputeSamplers(pass,0,inputs.data(),static_cast<Uint32>(inputs.size()));
+        SDL_DispatchGPUCompute(pass,(width+7U)/8U,(height+7U)/8U,1);SDL_EndGPUComputePass(pass);return true;
+    };
+    if(!dispatch(sky_transmittance_pipeline_,sky_transmittance_lut_,{},budget.transmittance_width,budget.transmittance_height))return false;
+    const std::array<SDL_GPUTextureSamplerBinding,1> transmittance{{{sky_transmittance_lut_,sky_lut_sampler_}}};
+    if(!dispatch(sky_multi_scattering_pipeline_,sky_multi_scattering_lut_,transmittance,
+            budget.multi_scattering_width,budget.multi_scattering_height))return false;
+    const std::array<SDL_GPUTextureSamplerBinding,2> sky_inputs{{
+        {sky_transmittance_lut_,sky_lut_sampler_},{sky_multi_scattering_lut_,sky_lut_sampler_}}};
+    if(!dispatch(sky_view_pipeline_,sky_view_lut_,sky_inputs,budget.sky_view_width,budget.sky_view_height))return false;
+    sky_lut_valid_=true;sky_lut_identity_=identity;++sky_lut_regenerations_;return true;
+}
 
 bool SceneRenderer::initialize() {
     if (!SDL_SetGPUAllowedFramesInFlight(device_,allowed_frames_in_flight_)) {
@@ -588,6 +726,7 @@ bool SceneRenderer::initialize() {
     sampler_info.address_mode_u = sampler_info.address_mode_v = sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     shadow_sampler_ = SDL_CreateGPUSampler(device_, &sampler_info);
     if (!shadow_sampler_) { last_error_ = SDL_GetError(); release(); return false; }
+    if(!create_sky_atmosphere_resources()) {release();return false;}
     shader_artifact_failure.clear();
     vfx_compute_pipeline_=load_vfx_compute_pipeline(device_,"vfx_sim.comp",7);
     if (!vfx_compute_pipeline_) { last_error_="Unable to create VFX compute ABI pipeline: "+
@@ -1285,6 +1424,59 @@ bool SceneRenderer::create_sprite_resources() {
     return true;
 }
 
+SDL_GPUComputePipeline* load_atmosphere_compute_pipeline(SDL_GPUDevice* device,
+                                                          const std::string_view shader_name,
+                                                          const std::uint32_t samplers) {
+    const auto formats=SDL_GetGPUShaderFormats(device);
+    const bool use_dxil=(formats&SDL_GPU_SHADERFORMAT_DXIL)!=0;
+    const bool use_spirv=!use_dxil&&(formats&SDL_GPU_SHADERFORMAT_SPIRV)!=0;
+    if(!use_dxil&&!use_spirv)return nullptr;
+    const auto artifact=runtime_shader_artifacts().load(ShaderArtifactRequest{
+        .stem=std::string(shader_name),.stage=ShaderArtifactStage::compute,
+        .resources={.uniform_buffers=1,.samplers=samplers,.storage_textures=1}},
+        use_dxil?ShaderArtifactBackend::dxil:ShaderArtifactBackend::spv);
+    if(!artifact.success) {
+        shader_artifact_failure=artifact.code+": "+artifact.detail;
+        return nullptr;
+    }
+    SDL_GPUComputePipelineCreateInfo info{};
+    info.code=reinterpret_cast<const Uint8*>(artifact.bytes.data());
+    info.code_size=artifact.bytes.size();info.entrypoint=artifact.entrypoint.c_str();
+    info.format=use_dxil?SDL_GPU_SHADERFORMAT_DXIL:SDL_GPU_SHADERFORMAT_SPIRV;
+    info.num_samplers=samplers;info.num_readwrite_storage_textures=1;
+    info.num_uniform_buffers=1;info.threadcount_x=8;info.threadcount_y=8;info.threadcount_z=1;
+    return SDL_CreateGPUComputePipeline(device,&info);
+}
+
+Mat4 inverse_or_identity(const Mat4& source) {
+    std::array<std::array<double,8>,4> augmented{};
+    for(std::size_t row=0;row<4;++row) {
+        for(std::size_t column=0;column<4;++column)
+            augmented[row][column]=source.value[column*4+row];
+        augmented[row][row+4]=1.0;
+    }
+    for(std::size_t pivot=0;pivot<4;++pivot) {
+        std::size_t best=pivot;
+        for(std::size_t row=pivot+1;row<4;++row)
+            if(std::abs(augmented[row][pivot])>std::abs(augmented[best][pivot]))best=row;
+        if(std::abs(augmented[best][pivot])<1.0e-12)return identity();
+        if(best!=pivot)std::swap(augmented[best],augmented[pivot]);
+        const auto divisor=augmented[pivot][pivot];
+        for(auto& value:augmented[pivot])value/=divisor;
+        for(std::size_t row=0;row<4;++row) {
+            if(row==pivot)continue;
+            const auto factor=augmented[row][pivot];
+            for(std::size_t column=0;column<8;++column)
+                augmented[row][column]-=factor*augmented[pivot][column];
+        }
+    }
+    Mat4 result{};
+    for(std::size_t row=0;row<4;++row)
+        for(std::size_t column=0;column<4;++column)
+            result.value[column*4+row]=static_cast<float>(augmented[row][column+4]);
+    return result;
+}
+
 bool SceneRenderer::create_clustered_lighting_resources() {
     const auto cluster_count=clustered_lighting_config_.tiles_x*clustered_lighting_config_.tiles_y*clustered_lighting_config_.depth_slices;
     const auto light_bytes=static_cast<Uint32>(clustered_lighting_config_.maximum_lights*sizeof(GpuLocalLight));
@@ -1594,6 +1786,8 @@ bool SceneRenderer::create_pipelines() {
     SDL_GPUShader* shadow_fragment = load_shader(device_, "shadow_depth.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
     SDL_GPUShader* tone_vertex = load_shader(device_, "tone_map.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* tone_fragment = load_shader(device_, "tone_map.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 3, 1);
+    SDL_GPUShader* sky_vertex = load_shader(device_, "sky_atmosphere.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
+    SDL_GPUShader* sky_fragment = load_shader(device_, "sky_atmosphere.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     SDL_GPUShader* gtao_fragment = load_shader(device_, "gtao.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     SDL_GPUShader* ao_denoise_fragment = load_shader(device_, "ao_denoise.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 3, 1);
     SDL_GPUShader* ao_composite_fragment = load_shader(device_, "ao_composite.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 3, 0);
@@ -1606,7 +1800,7 @@ bool SceneRenderer::create_pipelines() {
     SDL_GPUShader* taa_fragment = load_shader(device_, "taa.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 6, 1);
     SDL_GPUShader* vfx_vertex = load_shader(device_, "vfx_billboard.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 2);
     SDL_GPUShader* vfx_fragment = load_shader(device_, "vfx_billboard.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
-    if (!lit_vertex || !lit_fragment || !sprite_vertex || !sprite_fragment || !sprite_shadow_vertex || !shadow_vertex || !shadow_fragment || !tone_vertex || !tone_fragment || !gtao_fragment || !ao_denoise_fragment || !ao_composite_fragment || !auto_exposure_fragment || !bloom_downsample_fragment || !bloom_upsample_fragment || !fxaa_vertex || !fxaa_fragment || !taa_vertex || !taa_fragment || !vfx_vertex || !vfx_fragment) {
+    if (!lit_vertex || !lit_fragment || !sprite_vertex || !sprite_fragment || !sprite_shadow_vertex || !shadow_vertex || !shadow_fragment || !tone_vertex || !tone_fragment || !sky_vertex || !sky_fragment || !gtao_fragment || !ao_denoise_fragment || !ao_composite_fragment || !auto_exposure_fragment || !bloom_downsample_fragment || !bloom_upsample_fragment || !fxaa_vertex || !fxaa_fragment || !taa_vertex || !taa_fragment || !vfx_vertex || !vfx_fragment) {
         last_error_ = "Unable to load compiled shaders for GPU backend " + gpu_backend_ + " using " + shader_artifact_format_;
         if(!shader_artifact_failure.empty())last_error_+="; "+shader_artifact_failure;
         if (lit_vertex) SDL_ReleaseGPUShader(device_, lit_vertex);
@@ -1619,6 +1813,8 @@ bool SceneRenderer::create_pipelines() {
         if (shadow_fragment) SDL_ReleaseGPUShader(device_, shadow_fragment);
         if (tone_vertex) SDL_ReleaseGPUShader(device_, tone_vertex);
         if (tone_fragment) SDL_ReleaseGPUShader(device_, tone_fragment);
+        if (sky_vertex) SDL_ReleaseGPUShader(device_, sky_vertex);
+        if (sky_fragment) SDL_ReleaseGPUShader(device_, sky_fragment);
         if (gtao_fragment) SDL_ReleaseGPUShader(device_, gtao_fragment);
         if (ao_denoise_fragment) SDL_ReleaseGPUShader(device_, ao_denoise_fragment);
         if (ao_composite_fragment) SDL_ReleaseGPUShader(device_, ao_composite_fragment);
@@ -1757,6 +1953,10 @@ bool SceneRenderer::create_pipelines() {
     tone_info.rasterizer_state.cull_mode=SDL_GPU_CULLMODE_NONE;
     tone_info.target_info={&tone_target,1,SDL_GPU_TEXTUREFORMAT_INVALID,false,0,0,0};
     tone_map_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
+    tone_target.format=normal_format;
+    tone_info.vertex_shader=sky_vertex;tone_info.fragment_shader=sky_fragment;
+    sky_atmosphere_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
+    tone_info.vertex_shader=tone_vertex;
     tone_target.format=ambient_occlusion_format;
     tone_info.fragment_shader=gtao_fragment;
     gtao_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
@@ -1785,6 +1985,7 @@ bool SceneRenderer::create_pipelines() {
     SDL_ReleaseGPUShader(device_,sprite_vertex);SDL_ReleaseGPUShader(device_,sprite_fragment);SDL_ReleaseGPUShader(device_,sprite_shadow_vertex);
     SDL_ReleaseGPUShader(device_, shadow_vertex); SDL_ReleaseGPUShader(device_, shadow_fragment);
     SDL_ReleaseGPUShader(device_, tone_vertex); SDL_ReleaseGPUShader(device_, tone_fragment);
+    SDL_ReleaseGPUShader(device_,sky_vertex);SDL_ReleaseGPUShader(device_,sky_fragment);
     SDL_ReleaseGPUShader(device_,gtao_fragment);SDL_ReleaseGPUShader(device_,ao_denoise_fragment);SDL_ReleaseGPUShader(device_,ao_composite_fragment);SDL_ReleaseGPUShader(device_,auto_exposure_fragment);
     SDL_ReleaseGPUShader(device_,bloom_downsample_fragment);SDL_ReleaseGPUShader(device_,bloom_upsample_fragment);
     SDL_ReleaseGPUShader(device_, fxaa_vertex); SDL_ReleaseGPUShader(device_, fxaa_fragment);
@@ -1793,7 +1994,7 @@ bool SceneRenderer::create_pipelines() {
     return lit_pipeline_ && lit_double_sided_pipeline_ && transparent_pipeline_ && transparent_double_sided_pipeline_ &&
         sprite_cutout_pipeline_ && sprite_alpha_pipeline_ && sprite_shadow_pipeline_ &&
         shadow_pipeline_ && shadow_double_sided_pipeline_ && bloom_downsample_pipeline_ && bloom_upsample_pipeline_ && gtao_pipeline_ && ao_denoise_pipeline_ && ao_composite_pipeline_ &&
-        auto_exposure_pipeline_ && tone_map_pipeline_ && fxaa_pipeline_ && taa_pipeline_ &&
+        auto_exposure_pipeline_ && tone_map_pipeline_ && sky_atmosphere_pipeline_ && fxaa_pipeline_ && taa_pipeline_ &&
         vfx_alpha_draw_pipeline_ && vfx_additive_draw_pipeline_;
 }
 
@@ -3013,6 +3214,27 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         {camera_near,camera_far,1.0F/std::log(camera_far/camera_near),static_cast<float>(local_lights_submitted_)},
         {static_cast<float>(render_width_),static_cast<float>(render_height_),1.0F/static_cast<float>(render_width_),1.0F/static_cast<float>(render_height_)},
         local_shadow_matrices,{static_cast<float>(local_shadow_resolution_),static_cast<float>(next_local_shadow_layer),0.0025F,0.0006F}};
+    const auto& atmosphere=sky_atmosphere_;
+    SkyAtmosphereGpuData atmosphere_gpu{
+        inverse_or_identity(unjittered_view_projection),
+        {camera_position.x,camera_position.y,camera_position.z,1.0F},
+        {camera_forward.x,camera_forward.y,camera_forward.z,0.0F},
+        {0.0F,-atmosphere.planet_radius_m,0.0F,0.0F},
+        {atmosphere.planet_radius_m,atmosphere.planet_radius_m+atmosphere.atmosphere_height_m,
+            atmosphere.atmosphere_height_m*2.0F,0.0F},
+        {atmosphere.sun_direction[0],atmosphere.sun_direction[1],atmosphere.sun_direction[2],20.0F},
+        {atmosphere.sun_irradiance[0],atmosphere.sun_irradiance[1],atmosphere.sun_irradiance[2],0.0F},
+        {atmosphere.rayleigh_scattering_per_m[0],atmosphere.rayleigh_scattering_per_m[1],
+            atmosphere.rayleigh_scattering_per_m[2],atmosphere.rayleigh_scale_height_m},
+        {atmosphere.mie_scattering_per_m[0],atmosphere.mie_scattering_per_m[1],
+            atmosphere.mie_scattering_per_m[2],atmosphere.mie_scale_height_m},
+        {atmosphere.mie_absorption_per_m[0],atmosphere.mie_absorption_per_m[1],
+            atmosphere.mie_absorption_per_m[2],atmosphere.mie_phase_g},
+        {atmosphere.ground_albedo[0],atmosphere.ground_albedo[1],atmosphere.ground_albedo[2],1.0F},
+        {0.08F,0.18F,0.42F,1.0F},
+        {8U,4U,1U,static_cast<std::uint32_t>(frame_index_)},
+        {static_cast<float>(render_width_),static_cast<float>(render_height_),
+            static_cast<float>(frame_index_)/60.0F,0.0F}};
     const auto draw_sprite_batches=[&](SDL_GPURenderPass* pass,const bool transparent) {
         std::size_t cursor=0;
         while(cursor<sprites.size()) {
@@ -3282,6 +3504,23 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
             gpu_driven_fallback_instances_=objects.size();gpu_driven_batches_=0;gpu_driven_reference_visible_=0;
         }
     }
+    } else if (pass_id == "render.pass.sky-atmosphere") {
+    const bool atmosphere_active=atmosphere.enabled&&atmosphere.quality!=SkyAtmosphereQuality::off;
+    const bool lut_ready=atmosphere_active&&dispatch_sky_atmosphere_luts(command,
+        {camera_position.x,camera_position.y,camera_position.z});
+    if(lut_ready)atmosphere_gpu.quality[2]|=2U;
+    SDL_GPUColorTargetInfo color_target{};color_target.texture=hdr_texture_;
+    color_target.clear_color={0.018F,0.028F,0.052F,1.0F};
+    color_target.load_op=SDL_GPU_LOADOP_CLEAR;color_target.store_op=SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,&color_target,1,nullptr);
+    if(pass&&atmosphere_active) {
+        SDL_BindGPUGraphicsPipeline(pass,sky_atmosphere_pipeline_);
+        const SDL_GPUTextureSamplerBinding lut_binding{sky_view_lut_,sky_lut_sampler_};
+        SDL_BindGPUFragmentSamplers(pass,0,&lut_binding,1);
+        SDL_PushGPUFragmentUniformData(command,0,&atmosphere_gpu,sizeof(atmosphere_gpu));
+        SDL_DrawGPUPrimitives(pass,3,1,0,0);
+    }
+    if(pass)SDL_EndGPURenderPass(pass);
     } else if (pass_id == "render.pass.opaque-lit") {
     std::array<SDL_GPUColorTargetInfo,6> color_targets{};
     color_targets[0].texture=hdr_texture_; color_targets[0].clear_color={0.018F,0.028F,0.052F,1};
@@ -3291,6 +3530,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     color_targets[4].texture=reactive_mask_texture_; color_targets[4].clear_color={0,0,0,0};
     color_targets[5].texture=indirect_lighting_texture_; color_targets[5].clear_color={0,0,0,0};
     for (auto& target : color_targets) { target.load_op=SDL_GPU_LOADOP_CLEAR; target.store_op=SDL_GPU_STOREOP_STORE; }
+    color_targets[0].load_op=SDL_GPU_LOADOP_LOAD;
     SDL_GPUDepthStencilTargetInfo depth_target{}; depth_target.texture=depth_texture_; depth_target.clear_depth=1.0F;
     depth_target.load_op=SDL_GPU_LOADOP_CLEAR; depth_target.store_op=SDL_GPU_STOREOP_STORE;
     depth_target.stencil_load_op=SDL_GPU_LOADOP_DONT_CARE; depth_target.stencil_store_op=SDL_GPU_STOREOP_DONT_CARE;
@@ -3631,6 +3871,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     const auto record_duration=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-record_start).count();
     if (pass_id=="render.pass.shadow-depth") shadow_record_microseconds_=record_duration;
     else if(pass_id=="render.pass.gpu-visibility")gpu_visibility_record_microseconds_=record_duration;
+    else if(pass_id=="render.pass.sky-atmosphere")sky_atmosphere_record_microseconds_=record_duration;
     else if (pass_id=="render.pass.opaque-lit") opaque_record_microseconds_=record_duration;
     else if (pass_id=="render.pass.ambient-occlusion") gtao_record_microseconds_=record_duration;
     else if(pass_id.starts_with("render.pass.ambient-occlusion-denoise-"))ao_denoise_record_microseconds_+=record_duration;
@@ -4117,6 +4358,13 @@ std::string SceneRenderer::status_json() const {
         << "\"vfxGpu\":{\"pipelineCreated\":" << (vfx_compute_pipeline_&&vfx_spawn_pipeline_&&vfx_group_pipeline_&&vfx_sort_alpha_pipeline_&&vfx_alpha_draw_pipeline_&&vfx_additive_draw_pipeline_?"true":"false") << ",\"resourcesAllocated\":" << (vfx_particle_buffer_&&vfx_alive_buffers_[0]&&vfx_alive_buffers_[1]&&vfx_dead_buffer_&&vfx_counter_buffers_[0]&&vfx_counter_buffers_[1]&&vfx_dead_counter_buffer_&&vfx_spawn_buffer_&&vfx_spawn_graph_buffer_&&vfx_additive_indices_buffer_&&vfx_alpha_indices_buffer_&&vfx_additive_counter_buffer_&&vfx_alpha_counter_buffer_?"true":"false") << ",\"kernels\":[\"vfx_sim.comp\",\"vfx_spawn.comp\",\"vfx_group.comp\",\"vfx_sort_alpha.comp\"],\"drawShader\":\"vfx_billboard\",\"threadGroupSize\":64,\"alphaSortThreadGroupSize\":256,\"capacity\":" << vfx_gpu_capacity << ",\"particleStrideBytes\":" << vfx_particle_stride << ",\"spawnIdentityStrideBytes\":" << vfx_spawn_identity_stride << ",\"spawnGraphStrideBytes\":" << vfx_spawn_graph_stride << ",\"workingSetBytes\":" << (vfx_gpu_capacity*(vfx_particle_stride+vfx_spawn_identity_stride+vfx_spawn_graph_stride+20U)+vfx_counter_bytes*5U) << ",\"dispatchGroups\":" << vfx_dispatch_groups_ << ",\"controlUploads\":" << vfx_state_uploads_ << ",\"spawnIdentitiesUploaded\":" << vfx_particles_uploaded_ << ",\"spawnGraphCommandsUploaded\":" << vfx_spawn_graph_commands_uploaded_ << ",\"aliveIndicesUploaded\":0,\"dynamicParticleStateUploaded\":false,\"cpuExpectedResidentParticles\":" << vfx_resident_particles_ << ",\"cpuExpectedBlendGroups\":{\"additive\":" << vfx_expected_additive_particles_ << ",\"alpha\":" << vfx_expected_alpha_particles_ << "},\"cpuIdsReclaimedThisFrame\":" << vfx_slots_reclaimed_ << ",\"cpuSpawnPayloadsDroppedThisFrame\":" << vfx_particles_dropped_ << ",\"uploadBytesTotal\":" << vfx_upload_bytes_ << ",\"inputMode\":\"gpu-alive-ping-pong/dead-list/particle-identity-plus-emitter-graph-parameters\",\"particleStatePersistence\":true,\"fullParticleStateUploadPerFrame\":false,\"curveEvaluation\":\"gpu-age/color-size-start-end\",\"gpuNativeSlotAllocation\":true,\"gpuNativeAliveDeadLifecycle\":true,\"gpuNativeBlendGrouping\":true,\"gpuNativeAlphaSort\":true,\"alphaSortPolicy\":\"back-to-front/stable-particle-id/multi-dispatch-bitonic/dynamic-power-of-two-span/max-8192\",\"alphaSortSynchronization\":\"compute-pass-boundary-per-compare-stage\",\"gpuNativeRandomGeneration\":true,\"randomAlgorithm\":\"stateless-u32-hash/seed-particle-index-channel\",\"spawnCatchUp\":\"fixed-60hz/max-512-steps\",\"simulationDispatchesRecorded\":" << vfx_compute_dispatches_ << ",\"spawnDispatchesRecorded\":" << vfx_spawn_dispatches_ << ",\"groupDispatchesRecorded\":" << vfx_group_dispatches_ << ",\"sortDispatchesRecorded\":" << vfx_sort_dispatches_ << ",\"indirectDrawsRecorded\":" << vfx_indirect_draws_ << ",\"simulationReadWriteStorageBuffers\":7,\"spawnReadWriteStorageBuffers\":7,\"groupReadWriteStorageBuffers\":7,\"sortReadWriteStorageBuffers\":3,\"vertexStorageBuffers\":2,\"dispatchActive\":" << (vfx_compute_dispatches_>0?"true":"false") << ",\"compactionActive\":true,\"outputConsumedByDraw\":" << (vfx_indirect_draws_>0?"true":"false") << ",\"drawMode\":\"gpu-blend-grouped/additive-then-alpha/dual-indirect-billboard\",\"abi\":\"structured-particle-gpu-lifecycle-indirect/0.7\"},"
         << "\"evidence\":{\"objectId\":\"render.resource.object-id\",\"depth\":\"render.resource.scene-depth\",\"normal\":\"render.resource.world-normal\",\"motion\":\"render.resource.motion-vectors\",\"reactiveMask\":\"render.resource.reactive-mask\",\"lastPixel\":" << last_pixel_evidence_json() << "},"
         << "\"colorPipeline\":{\"workingSpace\":\"linear-rec709\",\"hdrFormat\":\"RGBA16_FLOAT\",\"toneMapper\":\"ACES-RRT-ODT-fit/matrix\",\"toneMapInput\":\"scene-linear-after-grading\",\"displayGamut\":\"rec709-bounded\",\"outputEncoding\":\"explicit-sRGB-transfer/RGBA8-UNORM\",\"exposureCompensation\":" << exposure_ << ",\"whitePoint\":" << white_point_ << ",\"autoExposure\":{\"enabled\":" << (hybrid_pixel_active()?"false":"true") << ",\"mode\":\"" << (hybrid_pixel_active()?"locked-unity":"8x8-log-average") << "\",\"historyFormat\":\"R16_FLOAT\",\"historyValid\":" << (exposure_history_valid_?"true":"false") << ",\"minimum\":" << (hybrid_pixel_active()?1.0F:auto_exposure_min_) << ",\"maximum\":" << (hybrid_pixel_active()?1.0F:auto_exposure_max_) << ",\"keyValue\":" << (hybrid_pixel_active()?1.0F:auto_exposure_key_) << ",\"speedUp\":" << (hybrid_pixel_active()?0.0F:auto_exposure_speed_up_) << ",\"speedDown\":" << (hybrid_pixel_active()?0.0F:auto_exposure_speed_down_) << "},\"ambientOcclusion\":{\"enabled\":" << (ambient_occlusion_enabled_?"true":"false") << ",\"technique\":\"eight-direction-horizon/separable-bilateral/indirect-only\",\"resolutionDomain\":\"" << (hybrid_pixel_active()?"virtual-grid":"render") << "\",\"resolutionScale\":0.5,\"format\":\"R8_UNORM\",\"denoisePasses\":2,\"radiusPixels\":" << gtao_radius_pixels_ << ",\"intensity\":" << gtao_intensity_ << ",\"bias\":" << gtao_bias_ << ",\"power\":" << gtao_power_ << ",\"depthSigma\":" << gtao_denoise_depth_sigma_ << ",\"normalPower\":" << gtao_denoise_normal_power_ << ",\"workingSetBytes\":" << (static_cast<std::uint64_t>(std::max(1U,render_width_/2U))*std::max(1U,render_height_/2U)*3ULL+static_cast<std::uint64_t>(render_width_)*render_height_*16ULL) << "},\"colorGrading\":{\"model\":\"lift-gamma-gain/saturation/contrast/temperature/tint\",\"order\":\"scene-linear-before-tone-map\",\"saturation\":" << color_saturation_ << ",\"contrast\":" << color_contrast_ << ",\"temperature\":" << color_temperature_ << ",\"tint\":" << color_tint_ << "},\"bloom\":{\"enabled\":true,\"technique\":\"four-level-dual-filter\",\"resolutionDomain\":\"" << (hybrid_pixel_active()?"virtual-grid":"post") << "\",\"levels\":4,\"smallestResolutionScale\":0.0625,\"format\":\"RGBA16_FLOAT\",\"threshold\":" << bloom_threshold_ << ",\"softKnee\":" << bloom_soft_knee_ << ",\"scatter\":" << bloom_scatter_ << ",\"strength\":" << bloom_strength_ << ",\"workingSetBytes\":" << bloom_working_set_bytes_ << "},\"antiAliasing\":\"" << (hybrid_pixel_active()?"spatial-pixel-stable":"TAA") << "\",\"compatibilityAntiAliasing\":\"FXAA\",\"materialMipmaps\":true,\"materialModel\":\"glTF-metallic-roughness/ggx-multiscatter\",\"alphaBlend\":\"sorted-back-to-front/straight-alpha\",\"materialChannels\":[\"baseColor-sRGB\",\"normal-linear\",\"metallicRoughness-linear\",\"occlusion-linear\",\"emissive-sRGB\"],\"ibl\":{\"model\":\"split-sum-ggx-multiscatter\",\"cookVersion\":\"split-sum-ggx/2\",\"sourceAssetId\":\"" << environment_source_id_ << "\",\"sourceFingerprint\":\"" << ibl_source_fingerprint_ << "\",\"sourceType\":\"" << (environment_source_width_?"radiance-hdr":"procedural-hdr") << "\",\"sourceWidth\":" << environment_source_width_ << ",\"sourceHeight\":" << environment_source_height_ << ",\"irradianceResolution\":16,\"prefilteredSpecularResolution\":64,\"prefilteredMipLevels\":7,\"brdfLutResolution\":128,\"format\":\"RGBA16F/RG16F\",\"cacheHit\":" << (ibl_cache_hit_?"true":"false") << ",\"cacheRebuilt\":" << (ibl_cache_rebuilt_?"true":"false") << ",\"cookMicroseconds\":" << ibl_cook_microseconds_ << ",\"artifactBytes\":" << ibl_artifact_bytes_ << ",\"artifactUri\":\"file://" << ibl_artifact_path_ << "\"}},"
+        << "\"skyAtmosphere\":{\"pipelineCreated\":" << (sky_atmosphere_pipeline_?"true":"false")
+        << ",\"lutPipelinesCreated\":" << (sky_transmittance_pipeline_&&sky_multi_scattering_pipeline_&&sky_view_pipeline_?"true":"false")
+        << ",\"path\":\"" << (sky_lut_valid_?"transmittance/multi-scattering/sky-view-lut":"direct-raymarch-fallback")
+        << "\",\"viewSamples\":8,\"lightSamples\":4,\"lutPathReady\":" << (sky_lut_valid_?"true":"false")
+        << ",\"lutSize\":[" << sky_lut_width_ << ',' << sky_lut_height_ << "]"
+        << ",\"lutRegenerations\":" << sky_lut_regenerations_ << ",\"contract\":"
+        << sky_atmosphere_canonical_evidence(sky_atmosphere_) << "},"
         << "\"temporal\":{\"mode\":\"" << (hybrid_pixel_active()?"spatial-pixel-stable":"TAAU")
         << "\",\"debugView\":\"" << temporal_debug_mode_name_ << "\",\"debugViews\":[\"final\",\"motion\",\"reactive\",\"disocclusion\",\"history-weight\"],\"upscalingActive\":"
         << (!hybrid_pixel_active()&&render_scale_<0.999F?"true":"false")
@@ -4128,7 +4376,7 @@ std::string SceneRenderer::status_json() const {
         << ",\"jitterSequence\":\"" << (hybrid_pixel_active()?"disabled":"Halton(2,3)/8") << "\",\"jitterSample\":" << temporal_jitter_sample_
         << ",\"jitterPixels\":[" << temporal_jitter_pixels_[0] << ',' << temporal_jitter_pixels_[1] << "],\"jitterNdc\":[" << temporal_jitter_ndc_[0] << ',' << temporal_jitter_ndc_[1]
         << "],\"depthRejection\":{\"relativeThreshold\":0.02,\"minimumWorldThreshold\":0.1},\"historyRejection\":[\"viewport\",\"sky-depth\",\"previous-depth-disocclusion\",\"reactive-mask\",\"luminance-disagreement\",\"motion-magnitude\",\"neighborhood-clamp\"]},"
-        << "\"cpuRecordMicroseconds\":{\"render.pass.shadow-depth\":" << shadow_record_microseconds_ << ",\"render.pass.gpu-visibility\":" << gpu_visibility_record_microseconds_ << ",\"render.pass.opaque-lit\":" << opaque_record_microseconds_ << ",\"render.pass.ambient-occlusion\":" << gtao_record_microseconds_ << ",\"render.pass.ambient-occlusion-denoise\":" << ao_denoise_record_microseconds_ << ",\"render.pass.ambient-occlusion-composite\":" << ao_composite_record_microseconds_ << ",\"render.pass.transparent-lit\":" << transparent_record_microseconds_ << ",\"render.pass.temporal-resolve\":" << taa_record_microseconds_ << ",\"render.pass.auto-exposure\":" << auto_exposure_record_microseconds_ << ",\"render.pass.bloom-pyramid\":" << bloom_record_microseconds_ << ",\"render.pass.tone-map\":" << tone_map_record_microseconds_ << "},"
+        << "\"cpuRecordMicroseconds\":{\"render.pass.shadow-depth\":" << shadow_record_microseconds_ << ",\"render.pass.gpu-visibility\":" << gpu_visibility_record_microseconds_ << ",\"render.pass.sky-atmosphere\":" << sky_atmosphere_record_microseconds_ << ",\"render.pass.opaque-lit\":" << opaque_record_microseconds_ << ",\"render.pass.ambient-occlusion\":" << gtao_record_microseconds_ << ",\"render.pass.ambient-occlusion-denoise\":" << ao_denoise_record_microseconds_ << ",\"render.pass.ambient-occlusion-composite\":" << ao_composite_record_microseconds_ << ",\"render.pass.transparent-lit\":" << transparent_record_microseconds_ << ",\"render.pass.temporal-resolve\":" << taa_record_microseconds_ << ",\"render.pass.auto-exposure\":" << auto_exposure_record_microseconds_ << ",\"render.pass.bloom-pyramid\":" << bloom_record_microseconds_ << ",\"render.pass.tone-map\":" << tone_map_record_microseconds_ << "},"
         << "\"shadow\":{\"technique\":\"directional-CSM-PCF-3x3\",\"cascadeCount\":4,\"resolutionPerCascade\":2048,\"format\":\"D32_FLOAT\",\"textureBytes\":" << shadow_texture_bytes_
         << ",\"splitLambda\":0.65,\"blendFraction\":0.10,\"maximumDistance\":" << shadow_splits_[3]
         << ",\"splitDistances\":[" << shadow_splits_[0] << ',' << shadow_splits_[1] << ',' << shadow_splits_[2] << ',' << shadow_splits_[3]
@@ -4461,6 +4709,14 @@ void SceneRenderer::release() {
     if (ao_composite_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,ao_composite_pipeline_);
     if (auto_exposure_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,auto_exposure_pipeline_);
     if (tone_map_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,tone_map_pipeline_);
+    if (sky_atmosphere_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,sky_atmosphere_pipeline_);
+    if(sky_transmittance_pipeline_)SDL_ReleaseGPUComputePipeline(device_,sky_transmittance_pipeline_);
+    if(sky_multi_scattering_pipeline_)SDL_ReleaseGPUComputePipeline(device_,sky_multi_scattering_pipeline_);
+    if(sky_view_pipeline_)SDL_ReleaseGPUComputePipeline(device_,sky_view_pipeline_);
+    if(sky_transmittance_lut_)SDL_ReleaseGPUTexture(device_,sky_transmittance_lut_);
+    if(sky_multi_scattering_lut_)SDL_ReleaseGPUTexture(device_,sky_multi_scattering_lut_);
+    if(sky_view_lut_)SDL_ReleaseGPUTexture(device_,sky_view_lut_);
+    if(sky_lut_sampler_)SDL_ReleaseGPUSampler(device_,sky_lut_sampler_);
     if (fxaa_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,fxaa_pipeline_);
     if (taa_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,taa_pipeline_);
     if (vfx_alpha_draw_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,vfx_alpha_draw_pipeline_);
@@ -4505,7 +4761,10 @@ void SceneRenderer::release() {
     local_light_upload_=nullptr;light_cluster_upload_=nullptr;light_cluster_index_upload_=nullptr;
     bloom_downsample_pipeline_=nullptr;bloom_upsample_pipeline_=nullptr;gtao_pipeline_=nullptr;ao_denoise_pipeline_=nullptr;
     ao_composite_pipeline_=nullptr;auto_exposure_pipeline_=nullptr;
-    tone_map_pipeline_=nullptr; fxaa_pipeline_=nullptr; taa_pipeline_=nullptr; vfx_alpha_draw_pipeline_=nullptr;
+    tone_map_pipeline_=nullptr;sky_atmosphere_pipeline_=nullptr;fxaa_pipeline_=nullptr;taa_pipeline_=nullptr;vfx_alpha_draw_pipeline_=nullptr;
+    sky_transmittance_pipeline_=nullptr;sky_multi_scattering_pipeline_=nullptr;sky_view_pipeline_=nullptr;
+    sky_transmittance_lut_=nullptr;sky_multi_scattering_lut_=nullptr;sky_view_lut_=nullptr;sky_lut_sampler_=nullptr;
+    sky_lut_valid_=false;sky_lut_identity_.clear();sky_lut_width_=sky_lut_height_=0;
     vfx_additive_draw_pipeline_=nullptr;vfx_compute_pipeline_=nullptr;gpu_visibility_pipeline_=nullptr;
     gpu_driven_instance_buffer_=nullptr;gpu_driven_batch_buffer_=nullptr;gpu_driven_visible_index_buffer_=nullptr;
     gpu_driven_indirect_buffer_=nullptr;gpu_driven_upload_buffer_=nullptr;vfx_spawn_pipeline_=nullptr;

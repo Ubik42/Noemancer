@@ -535,6 +535,8 @@ std::string Application::load_editor_project_json(const std::filesystem::path& p
             source.is_object()?source.value("revision",1ULL):1ULL);
     }
     hybrid_pixel_profile_=loaded.project->hybrid_pixel_profile;
+    sky_atmosphere_=loaded.project->sky_atmosphere.value_or(
+        make_sky_atmosphere_settings(SkyAtmosphereQuality::high));
     ++hybrid_pixel_profile_revision_;
     project_hybrid_pixel_session_=std::make_unique<ProjectHybridPixelAuthoring>(
         hybrid_pixel_profile_,loaded.project->root/"noemancer.project.json");
@@ -1802,6 +1804,7 @@ int Application::run_interactive() {
     std::uint64_t applied_hybrid_pixel_profile_revision=hybrid_pixel_profile_revision_;
     scene_renderer->set_gpu_driven_enabled(!options_.disable_gpu_driven);
     scene_renderer->set_ambient_occlusion_enabled(!options_.disable_ambient_occlusion);
+    scene_renderer->set_sky_atmosphere(sky_atmosphere_);
     scene_renderer->set_texture_streaming_budget_kib(options_.texture_streaming_budget_kib);
     scene_renderer->set_texture_streaming_resident_budget_kib(options_.texture_streaming_resident_budget_kib);
     scene_renderer->set_texture_streaming_workload(options_.texture_streaming_workload);

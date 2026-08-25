@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +39,7 @@ namespace noemancer {
 // be consumed by the Editor, Runtime, CLI and Agent observation layers.
 inline constexpr std::string_view sky_atmosphere_schema =
     "noemancer.sky-atmosphere/0.1";
+inline constexpr std::size_t sky_atmosphere_max_source_bytes = 256U * 1024U;
 
 enum class SkyAtmosphereQuality : std::uint8_t {
     off,
@@ -160,6 +162,30 @@ struct SkyAtmosphereSettings final {
     std::array<float, 3> sun_direction{0.0F, 0.70710677F, 0.70710677F};
     std::array<float, 3> sun_irradiance{1.0F, 1.0F, 1.0F};
     float sun_angular_radius_rad{0.004675F};
+};
+
+struct SkyAtmosphereParseResult final {
+    std::optional<SkyAtmosphereSettings> document;
+    std::vector<SkyAtmosphereDiagnostic> errors;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return document.has_value() && errors.empty();
+    }
+};
+
+// The codec is the only JSON-facing part of this feature.  Its public
+// boundary still exposes only engine-owned values and diagnostics; nlohmann
+// JSON remains private to the implementation, just like the other engine
+// document codecs.
+class SkyAtmosphereSettingsCodec final {
+public:
+    [[nodiscard]] static SkyAtmosphereParseResult parse_json(std::string_view source);
+    [[nodiscard]] static std::vector<SkyAtmosphereDiagnostic> validate(
+        const SkyAtmosphereSettings& settings);
+    [[nodiscard]] static std::string write_canonical_json(
+        const SkyAtmosphereSettings& settings);
+    [[nodiscard]] static std::string fingerprint(
+        const SkyAtmosphereSettings& settings);
 };
 
 [[nodiscard]] SkyAtmosphereSettings make_sky_atmosphere_settings(
