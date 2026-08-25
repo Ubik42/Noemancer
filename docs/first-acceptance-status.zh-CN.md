@@ -102,7 +102,7 @@
 ## 下一阶段边界
 
 1. `production.cooked-animation-artifact` 与 `production.cooked-geometry-runtime` 均已用真实 Package→Player 闭环退出；Editor 源资产成功不再替代包内 Runtime 证据。
-2. 已完成项以 `docs/current-state.json.completedMilestones` 为准。RenderLab 公开合同、外部 glTF/JPEG、大场景准备、动态天空、共享 HiZ/History/Temporal Denoising、生产 SSR/SSGI、GPU Scene/HiZ 遮挡决策与阴影扩展/VSM 决策均已退出；bindless 因缺乏 descriptor-bound 收益证据明确延后，VSM 因现有压力证据推荐 `extend-atlas` 而延后。当前进入 Native D3D12/Vulkan Ray Tracing 基础，再推进 RTGI。高 DPI 与可再分发多语字体仍在队列中；本机缺 NASM，故不能宣称 JPEG SIMD 性能已成立。
+2. 已完成项以 `docs/current-state.json.completedMilestones` 为准。RenderLab 公开合同、外部 glTF/JPEG、大场景准备、动态天空、共享 HiZ/History/Temporal Denoising、生产 SSR/SSGI、GPU Scene/HiZ 遮挡决策与阴影扩展/VSM 决策均已退出；bindless 因缺乏 descriptor-bound 收益证据明确延后，VSM 因现有压力证据推荐 `extend-atlas` 而延后。Native Ray Tracing 当前只完成 Engine 能力/所有权合同与 Runtime 只读设备探测：本机 RTX 4080 真实返回 D3D12 DXR 1.1 以及 Vulkan acceleration-structure/ray-tracing-pipeline/deferred-host-operations/buffer-device-address 扩展与 Feature；两项聚焦测试和结构化 CLI 探针通过。尚无持久 Native Device、BLAS/TLAS、SBT、Trace Dispatch 或 RTGI，因此这些能力仍明确为 false；下一批是双后端真实 BLAS/TLAS 最小纵切。高 DPI 与可再分发多语字体仍在队列中；本机缺 NASM，故不能宣称 JPEG SIMD 性能已成立。
 3. Project-attached Agent transport 已成立；对另一个已打开 Editor 的远程会话、跨进程共享 durable journal、独立机器矩阵、签名和安装器仍是独立后续工作，不混入当前 VFS 迁移批次。
 
 ## 游戏迁移节奏

@@ -3,7 +3,7 @@
   "updated": "2026-08-25",
   "status": "active-development",
   "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "author-native-d3d12-vulkan-raytracing-capability-and-ownership-contract",
+  "currentStep": "build-real-native-d3d12-vulkan-blas-tlas-vertical-slice",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",

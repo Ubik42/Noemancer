@@ -10,6 +10,7 @@ add_executable(noemancer
     audio_output_backend.cpp
     miniaudio_render_graph.cpp
     miniaudio_vfs_adapter.cpp
+    native_raytracing_capability_adapter.cpp
     package_vfs_bootstrap.cpp
     main.cpp
     performance_evidence.cpp

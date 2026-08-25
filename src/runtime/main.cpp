@@ -8,6 +8,7 @@
 #include "engine/world.hpp"
 #include "runtime/application.hpp"
 #include "runtime/performance_evidence.hpp"
+#include "runtime/native_raytracing_capability_adapter.hpp"
 #include "runtime/windows_package_service.hpp"
 
 #include <nlohmann/json.hpp>
@@ -87,6 +88,7 @@ void print_usage() {
         << "  noemancer player --profile PATH [--frames N] [--gpu-backend auto|direct3d12|vulkan|metal]\n"
         << "  noemancer schema|world [--format human|json]\n"
         << "  noemancer bindings csharp\n"
+        << "  noemancer rhi capabilities [--format json]\n"
         << "  noemancer tools list [--format json]\n"
         << "  noemancer tool call <name> [--input JSON]\n"
         << "  noemancer serve [--project PATH] --format jsonl\n"
@@ -341,6 +343,57 @@ int run_network_session_cli(const int argc,char** argv,const bool server) {
     return !parsed.is_discarded()&&parsed.value("success",false)?0:30;
 }
 
+nlohmann::json native_raytracing_capability_json(
+    const noemancer::NativeRayTracingCapability& capability) {
+    return {
+        {"schema",capability.schema},
+        {"backend",capability.backend},
+        {"state",noemancer::native_raytracing_probe_state_name(capability.state)},
+        {"code",capability.code},{"detail",capability.detail},
+        {"deviceName",capability.device_name},
+        {"loaderAvailable",capability.loader_available},
+        {"deviceQueryCompleted",capability.device_query_completed},
+        {"featureQueryCompleted",capability.feature_query_completed},
+        {"deviceCount",capability.device_count},
+        {"supportedDeviceCount",capability.supported_device_count},
+        {"nativeDeviceCreated",capability.native_device_created},
+        {"apiVersion",{{"major",capability.api_version_major},
+            {"minor",capability.api_version_minor},{"patch",capability.api_version_patch}}},
+        {"d3d12",{{"rayTracingTier",capability.ray_tracing_tier}}},
+        {"vulkan",{
+            {"extensions",{{"accelerationStructure",capability.acceleration_structure_extension},
+                {"rayTracingPipeline",capability.ray_tracing_pipeline_extension},
+                {"deferredHostOperations",capability.deferred_host_operations_extension},
+                {"bufferDeviceAddress",capability.buffer_device_address_extension}}},
+            {"features",{{"accelerationStructure",capability.acceleration_structure_feature},
+                {"rayTracingPipeline",capability.ray_tracing_pipeline_feature},
+                {"bufferDeviceAddress",capability.buffer_device_address_feature}}}}}
+    };
+}
+
+int run_rhi_cli(const int argc,char** argv) {
+    if(argc<3||std::string_view(argv[2])!="capabilities") {
+        std::cerr<<"Expected: noemancer rhi capabilities [--format json]\n";return 2;
+    }
+    for(int index=3;index<argc;++index) {
+        if(std::string_view(argv[index])=="--format"&&index+1<argc&&
+           std::string_view(argv[index+1])=="json") { ++index;continue; }
+        std::cerr<<"Unknown RHI capability argument: "<<argv[index]<<'\n';return 2;
+    }
+    const auto d3d12=noemancer::probe_d3d12_raytracing_capability();
+    const auto vulkan=noemancer::probe_vulkan_raytracing_capability();
+    const auto document=nlohmann::json{
+        {"schemaVersion","noemancer.native-rhi-capability-matrix/0.1"},
+        {"success",true},{"observationOnly",true},
+        {"nativeRhiReady",false},{"blasTlasRuntimeReady",false},{"rtgiReady",false},
+        {"capabilities",nlohmann::json::array({
+            native_raytracing_capability_json(d3d12),
+            native_raytracing_capability_json(vulkan)})},
+        {"boundary","Temporary read-only native probes; no persistent native device, acceleration structure, shader binding table, dispatch, or RTGI path exists."}};
+    std::cout<<document.dump()<<'\n';
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -355,6 +408,7 @@ int main(int argc, char** argv) {
         if(first_argument=="project")return run_project_cli(argc,argv);
         if(first_argument=="network-server") return run_network_session_cli(argc,argv,true);
         if(first_argument=="network-client") return run_network_session_cli(argc,argv,false);
+        if(first_argument=="rhi") return run_rhi_cli(argc,argv);
         if (first_argument == "serve") {
             return run_agent_server(argc, argv);
         }
