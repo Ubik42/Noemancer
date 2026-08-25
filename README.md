@@ -17,9 +17,32 @@
 
 ![Noemancer 中文编辑器](docs/media/editor-preview.webp)
 
+<p align="center"><sub>中文 Editor：Scene View、World Outliner、声明式 Inspector、Asset Browser 与 Agent Context 共用同一份场景权威状态。</sub></p>
+
+## 最新渲染画面
+
+| 商业 Raster 基准 | 动态天空与大气 |
+| --- | --- |
+| ![PBR、材质响应、阴影、Bloom 与 Tone Mapping](docs/media/renderlab-commercial-raster.webp) | ![四 LUT 动态天空与 Aerial Perspective](docs/media/renderlab-sky-atmosphere.webp) |
+
+![RenderLab 中启用 SSR 与 SSGI 的公开经典资产场景](docs/media/renderlab-ssr-ssgi.webp)
+
+以上图片来自 Release 隐藏捕获，不是离线渲染或概念图。对应场景走正式 Project → Cook → Package → Player 路径；D3D12 与 Vulkan 分别留有画面、Render Graph、Shader 指纹、逐 Pass GPU 时间和结构化回执。当前 RenderLab 仍是工程验证场景，不代表最终美术品质。
+
 Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 Editor、游戏 Runtime、资产 Cook、独立 Player 打包、C# 项目脚本，以及由同一套引擎命令驱动的 CLI 和 MCP 接口。
 
 当前版本可以从 Project Hub 创建或打开工程，在 Editor 中编辑 Scene、组件、输入和项目 UI，进入隔离的 Play World 运行 C# 游戏逻辑，再把资产与运行时依赖打成可独立启动的 Windows Player。引擎仍处于 **pre-alpha**：公开 API 会变化，只完整验证了 Windows x64；硬件光追、RTGI、VSM 与跨平台发行仍不能写成现有能力。
+
+### 2026-08-25 能力快照
+
+| 领域 | 当前可用 | 尚未完成 |
+| --- | --- | --- |
+| Editor | Project Hub、中文界面、Scene/Outliner/Inspector/Asset Browser、Play World、Apply Back、项目 UI/Input 作者工具 | 完整高 DPI 响应式布局、可再分发 CJK/Arabic 字体、稳定插件 SDK |
+| Runtime | Flecs ECS、Jolt、ozz、C#/.NET 10、RmlUi、miniaudio、GPU VFX | 深度网络、完整导航、跨平台产品化 |
+| Raster | Forward PBR、CSM/局部阴影、动态天空、HiZ、SSR、SSGI、TAA/GTAO/Bloom/ACES、GPU Scene 可见性 | Virtual Shadow Maps、descriptor-bound bindless 收益闭环 |
+| Native RT | D3D12/Vulkan 能力探测；双后端真实三角形 BLAS/单实例 TLAS Build Probe | 持久 Native RHI、SBT、Trace Dispatch、Render Graph 接入、RTGI 与时域降噪 |
+| 资产/发布 | GLB/FBX、PNG/JPEG→KTX2、Mesh/Animation Cook、确定性 Package、独立 Windows Player、许可证闭包 | 签名安装器、独立机器发行矩阵 |
+| AI 原生 | 稳定 ID/Schema/revision、Plan/Apply/Receipt、CLI/MCP、运行中 Editor 会话、结构化渲染/编译/诊断证据 | 更深硬件调试工具、跨进程 durable journal、Agent 自动性能归因 |
 
 ## 当前能力
 
@@ -47,6 +70,8 @@ Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 
 - Hybrid Pixel / HD2D Profile 支持虚拟分辨率、整数倍显示、像素对齐 Sprite/VFX、2D/3D 混合光照和受控后处理。
 
 当前默认 Raster 路径已经启用动态天空、SSR 与 SSGI，并在 RenderLab 取得 D3D12/Vulkan 的固定画面和逐 Pass GPU 时间证据。Ray Tracing、RTGI 与 VSM 仍在开发计划中；未进入真实 Render Graph、跨后端验证和性能证据的能力不会列为已完成。
+
+Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vulkan Handle 泄漏进 Scene 或 Agent API。RTX 4080 已确认 DXR 1.1 与 Vulkan RT Extension/Feature，并在两端真实完成三角形 BLAS、单实例 TLAS、Barrier、Queue/Fence 和资源释放。该纵切只是短生命周期 Build Probe，只证明资源与同步边界成立，不等于已经拥有持久 Native RHI、可见光追画面或 RTGI。
 
 ### 资产与发布
 
@@ -172,7 +197,7 @@ docs/           架构、ADR、开发计划与验收索引
 
 ## 开发状态
 
-当前主线是商业 Raster 强化：先在 `NoemancerRenderLab` 中建立真实经典 GLB 场景的 D3D12/Vulkan Golden、Render Graph/Shader/资产指纹和性能预算，再推进外部 glTF/JPEG、大型场景、动态天空大气、统一 HiZ/history/Temporal Denoising、SSR 与 SSGI。硬件光追会在原生 D3D12/Vulkan RT 基础与降级路径被真实验证后再进入 RTGI。
+商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的能力矩阵与真实 BLAS/TLAS Build Probe 已成立；下一阶段才是统一执行 Receipt 接线、持久资源所有权、SBT/Trace Dispatch、Render Graph 集成与 RTGI，不能把当前 Build Probe 提前描述成光追画面。
 
 仍未完成的产品边界包括：稳定 SDK/插件生态、完整高 DPI 编辑器响应式布局、可再分发 CJK/Arabic 字体、签名安装器、独立机器矩阵、生产网络与跨平台支持。
 

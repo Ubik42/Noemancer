@@ -68,6 +68,7 @@ add_library(noemancer_engine STATIC
     screen_space_global_illumination.cpp
     gpu_occlusion_policy.cpp
     raytracing_capability_contract.cpp
+    raytracing_execution_receipt.cpp
     shadow_page_contract.cpp
     shadow_scalability_policy.cpp
     shadow_scalability_stress_scene.cpp

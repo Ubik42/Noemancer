@@ -1,9 +1,9 @@
 {
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-25",
-  "status": "active-development",
+  "status": "paused-for-user-review",
   "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "build-real-native-d3d12-vulkan-blas-tlas-vertical-slice",
+  "currentStep": "wire-native-execution-receipts-and-build-sbt-trace-dispatch",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",

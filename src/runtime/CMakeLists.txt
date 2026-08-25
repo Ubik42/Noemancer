@@ -11,6 +11,8 @@ add_executable(noemancer
     miniaudio_render_graph.cpp
     miniaudio_vfs_adapter.cpp
     native_raytracing_capability_adapter.cpp
+    native_d3d12_raytracing_executor.cpp
+    native_vulkan_raytracing_executor.cpp
     package_vfs_bootstrap.cpp
     main.cpp
     performance_evidence.cpp
@@ -24,6 +26,8 @@ add_executable(noemancer
     windows_runtime_dependencies.cpp
     vfs_asset_reader.cpp
 )
+target_include_directories(noemancer PRIVATE
+    ${SDL3_SOURCE_DIR}/src/video/khronos)
 target_link_libraries(noemancer PRIVATE noemancer::editor noemancer::engine noemancer_imgui noemancer_miniaudio nlohmann_json::nlohmann_json)
 if(TARGET noemancer_managed_host)
     add_dependencies(noemancer noemancer_managed_host)
