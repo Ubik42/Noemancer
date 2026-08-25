@@ -235,7 +235,7 @@ int main() {
     const bool has_retained_asset_browser=retained_asset_browser.find(
             R"("documentId":"editor.asset-browser")")!=std::string::npos&&
         retained_asset_browser.find(R"("role":"griditem")")!=std::string::npos&&
-        retained_asset_browser.find(R"("requestedLimit":256)")!=std::string::npos&&
+        retained_asset_browser.find(R"("requestedLimit":64)")!=std::string::npos&&
         asset_browser_origin&&asset_browser_pointer&&asset_browser_pointer->x>=0&&asset_browser_pointer->x<960&&
         asset_browser_pointer->y>=0&&asset_browser_pointer->y<320&&
         !editor.retained_asset_browser_window_at(-1,0)&&editor.requested_asset_browser_width()>=320&&
@@ -304,6 +304,58 @@ int main() {
         paused_snapshot.find("noemancer.inspector-document/0.1")!=std::string::npos &&
         !editor.render_camera_override().has_value();
     const bool produced_draw_data = ImGui::GetDrawData() != nullptr;
+
+    const auto bulk_root=std::filesystem::absolute("generated/editor-ui-bulk-assets");
+    std::filesystem::remove_all(bulk_root);std::filesystem::create_directories(bulk_root);
+    const auto write_bulk_registry=[&](const std::size_t count) {
+        std::ofstream output(bulk_root/"registry.json",std::ios::binary|std::ios::trunc);
+        output<<R"({"schema":"noemancer.assets/0.1","assets":[)";
+        for(std::size_t index=0;index<count;++index) {
+            if(index!=0U)output<<',';
+            const auto suffix=std::to_string(10000U+index).substr(1U);
+            output<<R"({"id":"asset.bulk.)"<<suffix<<R"(","displayName":"Bulk )"<<suffix
+                  <<R"(","kind":"Texture","uri":"builtin://texture/white","license":"CC0","redistribution":"allowed"})";
+        }
+        output<<"]}";
+    };
+    write_bulk_registry(600U);
+    noemancer::AssetRegistry bulk_assets(bulk_root);noemancer::World bulk_world;
+    if(!bulk_world.load_scene(noemancer::make_bootstrap_scene_document()).success)return 51;
+    noemancer::EditorUi bulk_editor(bulk_world,bulk_assets);
+    bulk_editor.set_asset_browser_page_size(128U);
+    const auto bulk_first=bulk_editor.retained_asset_browser_document_json();
+    const auto moved_second=bulk_editor.asset_browser_next_page();
+    const auto bulk_second=bulk_editor.retained_asset_browser_document_json();
+    const auto moved_third=bulk_editor.asset_browser_next_page();
+    const auto moved_fourth=bulk_editor.asset_browser_next_page();
+    const auto moved_last=bulk_editor.asset_browser_next_page();
+    const auto bulk_last=bulk_editor.retained_asset_browser_document_json();
+    const auto no_page_after_last=bulk_editor.asset_browser_next_page();
+    const auto returned_page=bulk_editor.asset_browser_previous_page();
+    if(bulk_first.find(R"("matched":600)")==std::string::npos||bulk_first.find(R"("returned":128)")==std::string::npos||!moved_second||
+       bulk_second.find(R"("cursor":128)")==std::string::npos||bulk_second.find("asset.bulk.0128")==std::string::npos||
+       !moved_third||!moved_fourth||!moved_last||bulk_last.find(R"("cursor":512)")==std::string::npos||
+       bulk_last.find(R"("returned":88)")==std::string::npos||bulk_last.find(R"("nextCursor":null)")==std::string::npos||
+       no_page_after_last||!returned_page||bulk_editor.asset_browser_cursor()!=384U) {
+        std::cerr<<"Asset Browser could not navigate a >256 Asset Registry deterministically\n";return 52;
+    }
+    bulk_editor.set_asset_browser_query("asset.bulk.0599");
+    const auto filtered_bulk=bulk_editor.retained_asset_browser_document_json();
+    if(bulk_editor.asset_browser_cursor()!=0U||filtered_bulk.find(R"("matched":1)")==std::string::npos||
+       filtered_bulk.find("asset.bulk.0599")==std::string::npos)return 53;
+    bulk_editor.set_asset_browser_query("");bulk_editor.set_asset_browser_page_size(10000U);
+    bulk_editor.set_asset_browser_cursor(512U);
+    static_cast<void>(bulk_editor.select_asset("asset.bulk.0001"));
+    write_bulk_registry(100U);
+    if(!bulk_assets.refresh())return 54;
+    bulk_editor.refresh_visible_state();
+    const auto normalized_bulk=bulk_editor.retained_asset_browser_document_json();
+    if(bulk_editor.asset_browser_page_size()!=256U||bulk_editor.asset_browser_cursor()!=0U||
+       normalized_bulk.find(R"("matched":100)")==std::string::npos||
+       normalized_bulk.find(R"("selection":{"assetId":"asset.bulk.0001"})")==std::string::npos) {
+        std::cerr<<"Registry revision did not normalize the page while preserving stable selection\n";return 55;
+    }
+    std::filesystem::remove_all(bulk_root);
     ImGui::DestroyContext();
 
     if (!has_live_selection || !has_gizmo_contract || !has_tile_brush_contract || !has_palette_rule_contract || !has_editor_camera || !has_project_context || !has_hybrid_profile_authoring || !has_editor_chrome || !has_retained_outliner || !has_retained_asset_browser || !has_scene_lifecycle || !has_scripting_context || !has_play_state || !produced_draw_data || editor.requested_exposure() != 2.0F ||

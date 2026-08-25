@@ -453,8 +453,17 @@ void EditorUi::set_asset_thumbnail_texture(std::string asset_id,const std::uintp
 }
 std::vector<EditorAssetThumbnailArtifact> EditorUi::asset_thumbnail_artifacts() const {
     std::vector<EditorAssetThumbnailArtifact> result;
-    for(const auto& asset:model_.assets())if(asset.thumbnail_cached&&!asset.thumbnail_uri.empty())
-        result.push_back({asset.id,asset.thumbnail_uri});
+    const auto document=nlohmann::json::parse(retained_asset_browser_document_json(),nullptr,false);
+    if(!document.is_object())return result;
+    for(const auto& node:document.value("nodes",nlohmann::json::array())) {
+        if(!node.is_object()||node.value("role",std::string{})!="griditem")continue;
+        const auto asset=node.value("asset",nlohmann::json::object());
+        const auto thumbnail=asset.value("thumbnail",nlohmann::json::object());
+        const auto asset_id=asset.value("id",std::string{});
+        const auto uri=thumbnail.value("uri",std::string{});
+        if(!asset_id.empty()&&thumbnail.value("cached",false)&&!uri.empty())
+            result.push_back({asset_id,uri});
+    }
     return result;
 }
 void EditorUi::set_project_context(EditorProjectContext context) {
@@ -742,10 +751,75 @@ std::string EditorUi::retained_outliner_document_json() const {
 }
 std::uint32_t EditorUi::requested_asset_browser_width() const noexcept {return requested_asset_browser_width_;}
 std::uint32_t EditorUi::requested_asset_browser_height() const noexcept {return requested_asset_browser_height_;}
-std::string EditorUi::retained_asset_browser_document_json() const {
-    return model_.asset_browser_semantic_ui_document_json({
-        .query=std::string_view(asset_browser_filter_.data()),.cursor=0U,.page_limit=256U});
+void EditorUi::synchronize_asset_browser_navigation() const {
+    const auto visible_query = std::string(asset_browser_filter_.data());
+    if (visible_query != asset_browser_query_) {
+        asset_browser_query_ = visible_query;
+        asset_browser_cursor_ = 0U;
+    }
+    asset_browser_page_size_ = std::clamp<std::size_t>(asset_browser_page_size_, 1U, 256U);
+    const auto projection = nlohmann::json::parse(model_.asset_browser_semantic_ui_document_json({
+        .query = asset_browser_query_, .cursor = asset_browser_cursor_,
+        .page_limit = asset_browser_page_size_}), nullptr, false);
+    if (!projection.is_object()) {
+        asset_browser_cursor_ = 0U;
+        return;
+    }
+    const auto revision = projection.value("revision", 0ULL);
+    const auto page = projection.value("page", nlohmann::json::object());
+    const auto matched = page.value("matched", std::size_t{});
+    if (revision != asset_browser_registry_revision_) {
+        asset_browser_registry_revision_ = revision;
+        if (matched == 0U) asset_browser_cursor_ = 0U;
+        else if (asset_browser_cursor_ >= matched)
+            asset_browser_cursor_ = ((matched - 1U) / asset_browser_page_size_) * asset_browser_page_size_;
+    } else if (asset_browser_cursor_ >= matched && matched > 0U) {
+        asset_browser_cursor_ = matched == 0U ? 0U :
+            ((matched - 1U) / asset_browser_page_size_) * asset_browser_page_size_;
+    }
 }
+std::string EditorUi::retained_asset_browser_document_json() const {
+    synchronize_asset_browser_navigation();
+    return model_.asset_browser_semantic_ui_document_json({
+        .query=asset_browser_query_,.cursor=asset_browser_cursor_,.page_limit=asset_browser_page_size_});
+}
+void EditorUi::set_asset_browser_query(const std::string_view query) {
+    const auto count = std::min(query.size(), asset_browser_filter_.size() - 1U);
+    const auto normalized = std::string(query.substr(0U, count));
+    std::fill(asset_browser_filter_.begin(), asset_browser_filter_.end(), '\0');
+    std::memcpy(asset_browser_filter_.data(), normalized.data(), normalized.size());
+    asset_browser_query_ = normalized;
+    asset_browser_cursor_ = 0U;
+}
+void EditorUi::set_asset_browser_cursor(const std::size_t cursor) noexcept {
+    const auto page_size = std::max<std::size_t>(asset_browser_page_size_, 1U);
+    asset_browser_cursor_ = (cursor / page_size) * page_size;
+}
+void EditorUi::set_asset_browser_page_size(const std::size_t page_size) noexcept {
+    const auto normalized = std::clamp<std::size_t>(page_size, 1U, 256U);
+    if (normalized == asset_browser_page_size_) return;
+    asset_browser_page_size_ = normalized;
+    asset_browser_cursor_ = 0U;
+}
+bool EditorUi::asset_browser_next_page() {
+    synchronize_asset_browser_navigation();
+    const auto projection = nlohmann::json::parse(retained_asset_browser_document_json(), nullptr, false);
+    if (!projection.is_object()) return false;
+    const auto next = projection.value("page", nlohmann::json::object()).value(
+        "nextCursor", nlohmann::json(nullptr));
+    if (!next.is_number_unsigned()) return false;
+    asset_browser_cursor_ = next.get<std::size_t>();
+    return true;
+}
+bool EditorUi::asset_browser_previous_page() {
+    synchronize_asset_browser_navigation();
+    if (asset_browser_cursor_ == 0U) return false;
+    asset_browser_cursor_ = asset_browser_cursor_ > asset_browser_page_size_ ?
+        asset_browser_cursor_ - asset_browser_page_size_ : 0U;
+    return true;
+}
+std::size_t EditorUi::asset_browser_cursor() const noexcept { return asset_browser_cursor_; }
+std::size_t EditorUi::asset_browser_page_size() const noexcept { return asset_browser_page_size_; }
 float EditorUi::requested_exposure() const { return requested_exposure_; }
 void EditorUi::set_exposure(const float exposure) { requested_exposure_=std::clamp(exposure,0.125F,8.0F); }
 std::optional<RenderCameraSnapshot> EditorUi::render_camera_override() const {
@@ -2789,7 +2863,8 @@ void EditorUi::draw_asset_browser() {
     draw_status_badge(revision_label.c_str(),color_accent);
     ImGui::TextDisabled("%s  |  %zu source root(s)",project_context_.root.c_str(),source_root_count);
     ImGui::SetNextItemWidth(std::max(120.0F,ImGui::GetContentRegionAvail().x-82.0F));
-    ImGui::InputTextWithHint("##asset-filter","Search name, type, state, or ID",asset_browser_filter_.data(),asset_browser_filter_.size());
+    if(ImGui::InputTextWithHint("##asset-filter","Search name, type, state, or ID",asset_browser_filter_.data(),asset_browser_filter_.size()))
+        set_asset_browser_query(asset_browser_filter_.data());
     ImGui::SameLine();
     if(ImGui::Button("Rescan",{-1.0F,0.0F}))last_action_status_=model_.refresh_assets().detail;
     ImGui::BeginDisabled(model_.selected_asset()==nullptr);
@@ -2797,6 +2872,19 @@ void EditorUi::draw_asset_browser() {
     ImGui::SameLine();if(ImGui::Button("Inspect"))last_action_status_=model_.inspect_selected_asset().detail;
     ImGui::SameLine();if(ImGui::Button("Build Preview"))last_action_status_=model_.generate_selected_asset_thumbnail().detail;
     ImGui::SameLine();if(ImGui::Button("Cook Selected"))last_action_status_=model_.cook_selected_asset().detail;
+    ImGui::EndDisabled();
+    const auto browser_document=nlohmann::json::parse(retained_asset_browser_document_json(),nullptr,false);
+    const auto browser_page=browser_document.is_object()?browser_document.value("page",nlohmann::json::object()):nlohmann::json::object();
+    const auto browser_matched=browser_page.value("matched",std::size_t{});
+    const auto browser_returned=browser_page.value("returned",std::size_t{});
+    const auto browser_first=browser_returned==0U?0U:asset_browser_cursor_+1U;
+    const auto browser_last=asset_browser_cursor_+browser_returned;
+    ImGui::BeginDisabled(asset_browser_cursor_==0U);
+    if(ImGui::SmallButton("Previous Page"))static_cast<void>(asset_browser_previous_page());
+    ImGui::EndDisabled();ImGui::SameLine();
+    ImGui::TextDisabled("%zu-%zu of %zu",browser_first,browser_last,browser_matched);ImGui::SameLine();
+    ImGui::BeginDisabled(!browser_page.value("truncated",false));
+    if(ImGui::SmallButton("Next Page"))static_cast<void>(asset_browser_next_page());
     ImGui::EndDisabled();
     const auto asset_job=nlohmann::json::parse(model_.active_asset_job_json(),nullptr,false);
     if(asset_job.is_object()&&asset_job.value("valid",false)) {
@@ -2841,11 +2929,11 @@ void EditorUi::draw_asset_browser() {
     retained_asset_browser_canvas_height_=0.0F;
     constexpr float card_width=144.0F;
     std::vector<std::size_t> visible_assets;
-    const std::string_view search{asset_browser_filter_.data()};
-    for(std::size_t index=0;index<model_.assets().size();++index) {
-        const auto& asset = model_.assets().at(index);
-        if(contains_case_insensitive(asset.name,search)||contains_case_insensitive(asset.id,search)||
-            contains_case_insensitive(asset.kind,search)||contains_case_insensitive(asset.import_state,search))visible_assets.push_back(index);
+    if(browser_document.is_object())for(const auto& node:browser_document.value("nodes",nlohmann::json::array())) {
+        if(!node.is_object()||node.value("role",std::string{})!="griditem")continue;
+        const auto asset_id=node.value("asset",nlohmann::json::object()).value("id",std::string{});
+        const auto found=std::ranges::find(model_.assets(),asset_id,&EditorAsset::id);
+        if(found!=model_.assets().end())visible_assets.push_back(static_cast<std::size_t>(std::distance(model_.assets().begin(),found)));
     }
     const auto column_count=std::clamp(static_cast<int>((ImGui::GetContentRegionAvail().x+ImGui::GetStyle().ItemSpacing.x)/
         (card_width+ImGui::GetStyle().ItemSpacing.x)),1,8);

@@ -50,6 +50,8 @@
 #include <memory>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef _WIN32
@@ -1926,6 +1928,8 @@ int Application::run_interactive() {
         editor_capture_width=next_width;editor_capture_height=next_height;return editor_capture_texture!=nullptr;
     };
     AssetThumbnailGpuCache thumbnail_gpu_cache(device,texture_resources);
+    std::unordered_map<std::string,std::uint64_t> retained_thumbnail_generations;
+    std::unordered_set<std::string> retained_thumbnail_refresh_pending;
     constexpr std::uint32_t audio_sample_rate=48000;
     AudioOutputBackend audio_output;
     std::vector<AudioOutputSource> audio_sources;
@@ -2243,6 +2247,21 @@ int Application::run_interactive() {
         }
 
         for(const auto& action:retained_ui.consume_action_events()) {
+            if(!options_.player_mode&&action.surface_id=="editor.asset-browser"&&
+               (action.action_id=="asset-browser.previous-page"||action.action_id=="asset-browser.next-page")) {
+                const auto binding=nlohmann::json::parse(action.binding_json,nullptr,false);
+                const auto page_limit=binding.is_object()?binding.value("pageLimit",std::size_t{}):0U;
+                if(!binding.is_object()||binding.value("kind",std::string{})!="editor-asset-browser-page"||
+                   !binding.contains("cursor")||!binding["cursor"].is_number_unsigned()||page_limit==0U||
+                   page_limit>256U||page_limit!=editor_ui_.asset_browser_page_size()) {
+                    logger_.error("ui.asset_browser_navigation","Invalid or stale retained Asset Browser page binding.");
+                } else {
+                    editor_ui_.set_asset_browser_cursor(binding["cursor"].get<std::size_t>());
+                    retained_asset_browser_document_cache.clear();
+                    editor_ui_.set_last_action_status("Changed the retained Asset Browser page.");
+                }
+                continue;
+            }
             if(!options_.player_mode&&action.surface_id=="editor.asset-browser"&&action.action_id=="asset.select") {
                 const auto binding=nlohmann::json::parse(action.binding_json,nullptr,false);
                 if(!binding.is_object()||binding.value("kind",std::string{})!="editor-asset-selection"||
@@ -2349,6 +2368,33 @@ int Application::run_interactive() {
             logger_.error("ui.retained_update",retained_ui.last_error()); break;
         }
         if(!runtime_surface_mode) {
+            const auto visible_thumbnails=editor_ui_.asset_thumbnail_artifacts();
+            std::unordered_set<std::string> visible_thumbnail_sources;
+            visible_thumbnail_sources.reserve(visible_thumbnails.size());
+            bool retained_thumbnail_set_changed{};
+            for(const auto& artifact:visible_thumbnails) {
+                visible_thumbnail_sources.insert(artifact.uri);
+                if(retained_thumbnail_generations.contains(artifact.uri)&&
+                   !retained_thumbnail_refresh_pending.contains(artifact.asset_id))continue;
+                auto snapshot=thumbnail_gpu_cache.cpu_snapshot(artifact.asset_id,8U*1024U*1024U);
+                if(!snapshot.success)continue;
+                const auto receipt=retained_ui.register_image_rgba8(
+                    artifact.uri,snapshot.width,snapshot.height,snapshot.rgba8);
+                if(!receipt.success) {
+                    logger_.error("ui.asset_browser_thumbnail",receipt.code+":"+receipt.detail);
+                    continue;
+                }
+                retained_thumbnail_generations.insert_or_assign(artifact.uri,snapshot.generation);
+                retained_thumbnail_refresh_pending.erase(artifact.asset_id);
+                retained_thumbnail_set_changed=true;
+            }
+            for(auto iterator=retained_thumbnail_generations.begin();iterator!=retained_thumbnail_generations.end();) {
+                if(visible_thumbnail_sources.contains(iterator->first)){++iterator;continue;}
+                static_cast<void>(retained_ui.remove_image(iterator->first));
+                iterator=retained_thumbnail_generations.erase(iterator);
+                retained_thumbnail_set_changed=true;
+            }
+            if(retained_thumbnail_set_changed)retained_asset_browser_document_cache.clear();
             const auto inspector_width=editor_ui_.requested_inspector_width();
             const auto inspector_height=editor_ui_.requested_inspector_height();
             const auto outliner_width=editor_ui_.requested_outliner_width();
@@ -2467,6 +2513,8 @@ int Application::run_interactive() {
             const auto sync=thumbnail_gpu_cache.sync(command_buffer,thumbnail_requests);
             for(const auto& request:thumbnail_requests)editor_ui_.set_asset_thumbnail_texture(request.asset_id,
                 reinterpret_cast<std::uintptr_t>(thumbnail_gpu_cache.texture_for(request.asset_id)));
+            for(const auto& result:sync.results)if(result.success&&result.uploaded)
+                retained_thumbnail_refresh_pending.insert(result.asset_id);
             if(sync.uploaded_count>0U)logger_.info("editor.thumbnail_gpu",thumbnail_gpu_cache.status_json());
             if(!sync.success&&sync.failed_count>0U)logger_.error("editor.thumbnail_gpu",thumbnail_gpu_cache.status_json());
         }

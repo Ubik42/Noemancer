@@ -223,12 +223,63 @@ int main() {
         const auto grid_document=nlohmann::json{{"schemaVersion","noemancer.ui-document/0.1"},
             {"documentId","ui.grid"},{"designTokens",{{"gridColumns",2}}},{"nodes",std::move(grid_nodes)}};
         const auto grid_rml=noemancer::retained_ui_rml_from_semantic_document(grid_document.dump());
+        const std::array<std::uint8_t,16> preview_pixels{
+            255U,0U,0U,255U, 0U,255U,0U,255U, 0U,0U,255U,255U, 255U,255U,255U,255U};
+        const auto invalid_image_dimensions=binary_runtime.register_image_rgba8("preview://invalid",0U,2U,preview_pixels);
+        const auto invalid_image_bytes=binary_runtime.register_image_rgba8("preview://invalid",2U,2U,
+            std::span<const std::uint8_t>(preview_pixels).first(8U));
+        const auto exceeded_image_bytes=binary_runtime.register_image_rgba8("preview://too-large",2048U,2048U,
+            std::span<const std::uint8_t>(preview_pixels).first(4U));
+        const auto registered_preview=binary_runtime.register_image_rgba8("preview://item/0",2U,2U,preview_pixels);
+        if(invalid_image_dimensions.success||invalid_image_dimensions.code!="ui.image-dimensions-invalid"||
+           invalid_image_bytes.success||invalid_image_bytes.code!="ui.image-bytes-mismatch"||
+           exceeded_image_bytes.success||exceeded_image_bytes.code!="ui.image-bytes-exceeded"||
+           !registered_preview.success||registered_preview.code!="ui.image-registered"||
+           registered_preview.resident_bytes!=preview_pixels.size())return 54;
         if(grid_rml.find("data-grid-columns=\"3\"")==std::string::npos||
            grid_rml.find("style=\"width:33.3333%\"")==std::string::npos||
            grid_rml.find("data-image-source=\"preview://item/0\"")==std::string::npos||
+           grid_rml.find("src=\"preview://item/0\"")==std::string::npos||
            grid_rml.find("status: Ready")==std::string::npos||
            !binary_runtime.load_document("ui.grid",grid_rml)||!binary_runtime.render()||
            !binary_runtime.focus_node("ui.grid","item.0"))return 49;
+        if(!binary_runtime.create_surface("ui.gallery",420U,320U)||
+           !binary_runtime.load_surface_document("ui.gallery","ui.gallery.document",grid_rml)||
+           !binary_runtime.render_surface("ui.gallery"))return 55;
+        const auto registered_texture=[](const noemancer::RetainedUiRenderPacket& packet,
+                                         const std::span<const std::uint8_t> expected,
+                                         const std::uint32_t width,const std::uint32_t height) {
+            return std::ranges::any_of(packet.textures,[&](const auto& texture) {
+                return texture.width==width&&texture.height==height&&
+                    std::ranges::equal(texture.rgba8,expected);
+            });
+        };
+        if(!registered_texture(binary_runtime.render_packet(),preview_pixels,2U,2U)||
+           !registered_texture(binary_runtime.surface_render_packet("ui.gallery"),preview_pixels,2U,2U)||
+           !std::ranges::any_of(binary_runtime.surface_render_packet("ui.gallery").draws,
+                [](const auto& draw){return draw.texture_id!=0U;}))return 56;
+        const std::array<std::uint8_t,4> replacement_pixels{17U,34U,51U,255U};
+        const auto replaced_preview=binary_runtime.register_image_rgba8("preview://item/0",1U,1U,replacement_pixels);
+        if(!replaced_preview.success||replaced_preview.code!="ui.image-replaced"||
+           replaced_preview.revision<=registered_preview.revision||replaced_preview.resident_bytes!=4U||
+           !binary_runtime.render_surface("ui.gallery")||
+           !registered_texture(binary_runtime.surface_render_packet("ui.gallery"),replacement_pixels,1U,1U))return 57;
+        const auto removed_preview=binary_runtime.remove_image("preview://item/0");
+        const auto removed_again=binary_runtime.remove_image("preview://item/0");
+        if(!removed_preview.success||removed_preview.code!="ui.image-removed"||removed_preview.resident_bytes!=0U||
+           removed_again.success||removed_again.code!="ui.image-not-found"||
+           !binary_runtime.render_surface("ui.gallery")||
+           registered_texture(binary_runtime.surface_render_packet("ui.gallery"),replacement_pixels,1U,1U)||
+           !binary_runtime.destroy_surface("ui.gallery"))return 58;
+        noemancer::RetainedUiRuntime image_budget_runtime;
+        constexpr std::array<std::uint8_t,4> one_pixel{1U,2U,3U,255U};
+        for(std::size_t index=0;index<256U;++index) {
+            const auto receipt=image_budget_runtime.register_image_rgba8(
+                "budget://"+std::to_string(index),1U,1U,one_pixel);
+            if(!receipt.success)return 59;
+        }
+        const auto image_count_exceeded=image_budget_runtime.register_image_rgba8("budget://overflow",1U,1U,one_pixel);
+        if(image_count_exceeded.success||image_count_exceeded.code!="ui.image-count-exceeded")return 60;
         static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::right,true));
         static_cast<void>(binary_runtime.key(noemancer::RetainedUiKey::down,true));
         auto grid_observation=nlohmann::json::parse(binary_runtime.observation_json("ui.grid"));

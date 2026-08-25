@@ -31,6 +31,10 @@ public:
         std::size_t max_resident_bytes{256U * 1024U * 1024U};
         std::size_t max_resident_textures{512U};
         std::size_t max_batch_requests{256U};
+        // CPU RGBA snapshots are a separate, bounded retained-UI cache. They
+        // reuse successful upload decodes and never keep decoder/GPU handles.
+        std::size_t max_cpu_snapshot_bytes{64U * 1024U * 1024U};
+        std::size_t max_cpu_snapshot_count{256U};
     };
 
     struct Request final {
@@ -65,6 +69,18 @@ public:
         std::string detail;
     };
 
+    struct CpuSnapshotResult final {
+        bool success{};
+        std::string code;
+        std::string detail;
+        std::string asset_id;
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::string source_fingerprint;
+        std::uint64_t generation{};
+        std::vector<std::uint8_t> rgba8;
+    };
+
     explicit AssetThumbnailGpuCache(SDL_GPUDevice* device);
     AssetThumbnailGpuCache(SDL_GPUDevice* device, Limits limits);
     AssetThumbnailGpuCache(SDL_GPUDevice* device, TextureResourceTable& texture_resources);
@@ -88,10 +104,17 @@ public:
 
     [[nodiscard]] SDL_GPUTexture* texture_for(std::string_view asset_id) const noexcept;
     [[nodiscard]] RequestResult lookup(std::string_view asset_id) const;
+    // Returns a copy so callers cannot outlive or mutate cache residency.
+    // The byte budget is checked before allocating/publishing the copy.
+    [[nodiscard]] CpuSnapshotResult cpu_snapshot(
+        std::string_view asset_id,
+        std::size_t byte_budget = 64U * 1024U * 1024U);
     [[nodiscard]] std::string status_json(std::size_t max_bytes = 16U * 1024U) const;
     [[nodiscard]] const std::string& last_error() const noexcept { return last_error_; }
     [[nodiscard]] std::size_t resident_count() const noexcept { return entries_.size(); }
     [[nodiscard]] std::size_t resident_bytes() const noexcept { return resident_bytes_; }
+    [[nodiscard]] std::size_t cpu_snapshot_count() const noexcept { return cpu_snapshots_.size(); }
+    [[nodiscard]] std::size_t cpu_snapshot_bytes() const noexcept { return cpu_snapshot_bytes_; }
     [[nodiscard]] bool initialized() const noexcept { return device_ != nullptr; }
 
     // Safe to call more than once.  It releases all owned textures but does
@@ -133,6 +156,23 @@ private:
         std::uint64_t previous_last_access{};
     };
 
+    struct CpuSnapshotEntry final {
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::string source_fingerprint;
+        std::uint64_t generation{};
+        std::uint64_t last_access{};
+        std::vector<std::uint8_t> rgba8;
+    };
+
+    struct PendingCpuSnapshot final {
+        std::string asset_id;
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::string source_fingerprint;
+        std::vector<std::uint8_t> rgba8;
+    };
+
     [[nodiscard]] static bool source_fingerprint(
         const std::filesystem::path& path,
         SourceFingerprint& fingerprint,
@@ -151,6 +191,7 @@ private:
     void set_failure(RequestResult& result, std::string_view code, std::string_view detail,
                      const Entry* stale_entry = nullptr);
     void set_sync_failure(SyncResult& result, std::string_view code, std::string_view detail);
+    void publish_cpu_snapshot(PendingCpuSnapshot snapshot);
 
     SDL_GPUDevice* device_{};
     TextureResourceTable local_texture_resources_;
@@ -158,8 +199,13 @@ private:
     Limits limits_{};
     std::unordered_map<std::string, Entry> entries_;
     std::vector<PendingResourceUpdate> pending_resource_updates_;
+    std::vector<PendingCpuSnapshot> pending_cpu_snapshots_;
     std::vector<std::string> pending_evictions_;
     std::size_t resident_bytes_{};
+    std::unordered_map<std::string, CpuSnapshotEntry> cpu_snapshots_;
+    std::size_t cpu_snapshot_bytes_{};
+    std::uint64_t cpu_snapshot_generation_{};
+    std::uint64_t cpu_snapshot_access_serial_{};
     std::uint64_t access_serial_{};
     std::uint64_t upload_count_{};
     std::uint64_t cache_hit_count_{};

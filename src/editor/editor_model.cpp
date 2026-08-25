@@ -295,11 +295,23 @@ std::string EditorModel::asset_browser_semantic_ui_document_json(
     const auto page_end = cursor + returned;
     const auto has_more = page_end < matched.size();
 
+    Json panel_actions = Json::array();
+    if (cursor > 0U) panel_actions.push_back({
+        {"id", "asset-browser.previous-page"}, {"label", "Previous Page"},
+        {"dispatch", "editor-ui-ephemeral"}, {"handler", "EditorUi.set_asset_browser_cursor"},
+        {"binding", {{"kind", "editor-asset-browser-page"}, {"direction", "previous"},
+            {"cursor", cursor > page_limit ? cursor - page_limit : 0U}, {"pageLimit", page_limit}}}});
+    if (has_more) panel_actions.push_back({
+        {"id", "asset-browser.next-page"}, {"label", "Next Page"},
+        {"dispatch", "editor-ui-ephemeral"}, {"handler", "EditorUi.set_asset_browser_cursor"},
+        {"binding", {{"kind", "editor-asset-browser-page"}, {"direction", "next"},
+            {"cursor", page_end}, {"pageLimit", page_limit}}}});
     Json nodes = Json::array({Json{
         {"id", "editor.panel.assets"}, {"parentId", nullptr}, {"role", "grid"},
         {"label", "Asset Browser"},
         {"state", {{"visible", true}, {"enabled", true}, {"editable", false}}},
-        {"actions", Json::array()}}});
+        {"binding", {{"kind", "editor-asset-browser-query"}, {"query", query}}},
+        {"actions", std::move(panel_actions)}}});
     const auto handler_action = [](const std::string_view id, const std::string_view label,
                                    const std::string_view handler, const std::string& asset_id) {
         return Json{{"id", id}, {"label", label}, {"dispatch", "existing-editor-model"},
@@ -317,10 +329,12 @@ std::string EditorModel::asset_browser_semantic_ui_document_json(
         actions.push_back(handler_action("asset.build-preview", "Build Preview",
             "EditorModel.generate_selected_asset_thumbnail", asset.id));
         actions.push_back(handler_action("asset.cook", "Cook", "EditorModel.cook_selected_asset", asset.id));
+        Json presentation{{"kind", "asset-card"}};
+        if (!asset.thumbnail_uri.empty()) presentation["imageSource"] = asset.thumbnail_uri;
         nodes.push_back({
             {"id", "editor.asset." + asset.id}, {"parentId", "editor.panel.assets"},
             {"role", "griditem"}, {"label", asset.name},
-            {"presentation", {{"kind", "asset-card"}}},
+            {"presentation", std::move(presentation)},
             {"asset", {{"id", asset.id}, {"kind", asset.kind}, {"source", asset.source},
                 {"available", asset.available}, {"importState", asset.import_state},
                 {"license", asset.license},

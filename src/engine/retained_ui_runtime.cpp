@@ -568,7 +568,12 @@ public:
     struct Texture final {
         Rml::Vector2i dimensions{};
         std::uint64_t revision{1};
-        std::vector<std::uint8_t> rgba8;
+        std::shared_ptr<const std::vector<std::uint8_t>> rgba8;
+    };
+    struct RegisteredImage final {
+        Rml::Vector2i dimensions{};
+        std::uint64_t revision{};
+        std::shared_ptr<const std::vector<std::uint8_t>> rgba8;
     };
 
     Rml::CompiledGeometryHandle CompileGeometry(
@@ -594,9 +599,14 @@ public:
     }
 
     void ReleaseGeometry(const Rml::CompiledGeometryHandle geometry) override { geometries_.erase(geometry); }
-    Rml::TextureHandle LoadTexture(Rml::Vector2i& dimensions, const Rml::String&) override {
-        dimensions = {0, 0};
-        return 0;
+    Rml::TextureHandle LoadTexture(Rml::Vector2i& dimensions, const Rml::String& source) override {
+        const auto found=registered_images_.find(source);
+        if(found==registered_images_.end()){dimensions={0,0};return 0;}
+        dimensions=found->second.dimensions;
+        const auto handle=next_texture_++;
+        textures_.emplace(handle,Texture{dimensions,found->second.revision,found->second.rgba8});
+        texture_sources_.emplace(handle,source);
+        return handle;
     }
     Rml::TextureHandle GenerateTexture(const Rml::Span<const Rml::byte> source,
                                        const Rml::Vector2i dimensions) override {
@@ -608,10 +618,59 @@ public:
         textures_.emplace(handle, Texture{
             dimensions,
             1,
-            std::vector<std::uint8_t>(source.begin(), source.begin() + expected)});
+            std::make_shared<const std::vector<std::uint8_t>>(source.begin(),source.begin()+expected)});
         return handle;
     }
-    void ReleaseTexture(const Rml::TextureHandle texture) override { textures_.erase(texture); }
+    void ReleaseTexture(const Rml::TextureHandle texture) override {
+        textures_.erase(texture);texture_sources_.erase(texture);
+    }
+
+    [[nodiscard]] RetainedUiImageReceipt register_image(
+        const std::string_view source,const std::uint32_t width,const std::uint32_t height,
+        const std::span<const std::uint8_t> rgba8) {
+        if(source.empty()||source.size()>maximum_source_bytes||
+           !std::ranges::all_of(source,[](const unsigned char value){return value>=0x21U&&value<=0x7eU;}))
+            return {false,"ui.image-source-invalid","imageSource must be 1-1024 printable non-space ASCII bytes.",
+                std::string(source),image_revision_,resident_image_bytes_};
+        if(width==0U||height==0U||width>maximum_dimension||height>maximum_dimension)
+            return {false,"ui.image-dimensions-invalid","RGBA8 image dimensions must be within 1-2048.",
+                std::string(source),image_revision_,resident_image_bytes_};
+        const auto expected=static_cast<std::uint64_t>(width)*static_cast<std::uint64_t>(height)*4ULL;
+        if(expected>maximum_image_bytes||rgba8.size()!=expected)
+            return {false,expected>maximum_image_bytes?"ui.image-bytes-exceeded":"ui.image-bytes-mismatch",
+                expected>maximum_image_bytes?"RGBA8 image exceeds the 8 MiB per-image budget.":
+                    "RGBA8 byte count must exactly equal width * height * 4.",
+                std::string(source),image_revision_,resident_image_bytes_};
+        const auto key=std::string(source);
+        const auto existing=registered_images_.find(key);
+        const auto replacing=existing!=registered_images_.end();
+        if(!replacing&&registered_images_.size()>=maximum_images)
+            return {false,"ui.image-count-exceeded","The retained image registry reached its 256-image budget.",
+                key,image_revision_,resident_image_bytes_};
+        const auto prior=replacing?existing->second.rgba8->size():0U;
+        if(expected>maximum_resident_image_bytes-(resident_image_bytes_-prior))
+            return {false,"ui.image-resident-bytes-exceeded","The retained image registry exceeds its 64 MiB resident budget.",
+                key,image_revision_,resident_image_bytes_};
+        auto pixels=std::make_shared<const std::vector<std::uint8_t>>(rgba8.begin(),rgba8.end());
+        const auto revision=++image_revision_;
+        registered_images_[key]={{static_cast<int>(width),static_cast<int>(height)},revision,pixels};
+        resident_image_bytes_=resident_image_bytes_-prior+pixels->size();
+        for(const auto& [handle,texture_source]:texture_sources_)if(texture_source==key)
+            textures_[handle]={{static_cast<int>(width),static_cast<int>(height)},revision,pixels};
+        return {true,replacing?"ui.image-replaced":"ui.image-registered",
+            replacing?"RGBA8 image replaced deterministically.":"RGBA8 image registered.",
+            key,revision,resident_image_bytes_};
+    }
+
+    [[nodiscard]] RetainedUiImageReceipt remove_image(const std::string_view source) {
+        const auto found=registered_images_.find(std::string(source));
+        if(found==registered_images_.end())return {false,"ui.image-not-found","imageSource is not registered.",
+            std::string(source),image_revision_,resident_image_bytes_};
+        resident_image_bytes_-=found->second.rgba8->size();registered_images_.erase(found);
+        const auto revision=++image_revision_;
+        for(const auto& [handle,texture_source]:texture_sources_)if(texture_source==source)textures_.erase(handle);
+        return {true,"ui.image-removed","RGBA8 image removed.",std::string(source),revision,resident_image_bytes_};
+    }
     void EnableScissorRegion(const bool enabled) override { scissor_enabled_ = enabled; }
     void SetScissorRegion(const Rml::Rectanglei region) override { scissor_ = region; }
 
@@ -645,9 +704,10 @@ public:
         }
         packet.textures.reserve(textures_.size());
         for (const auto& [id, texture] : textures_) {
+            if(!texture.rgba8)continue;
             packet.textures.push_back({static_cast<std::uint64_t>(id),
                 static_cast<std::uint32_t>(texture.dimensions.x),
-                static_cast<std::uint32_t>(texture.dimensions.y), texture.revision, texture.rgba8});
+                static_cast<std::uint32_t>(texture.dimensions.y), texture.revision, *texture.rgba8});
         }
         std::ranges::sort(packet.textures, {}, &RetainedUiTexture::id);
         return packet;
@@ -659,7 +719,16 @@ private:
     Json draws_{Json::array()};
     std::vector<DrawRecord> draw_records_;
     std::unordered_map<Rml::TextureHandle, Texture> textures_;
+    std::unordered_map<std::string,RegisteredImage> registered_images_;
+    std::unordered_map<Rml::TextureHandle,std::string> texture_sources_;
     Rml::TextureHandle next_texture_{1};
+    std::uint64_t image_revision_{};
+    std::size_t resident_image_bytes_{};
+    static constexpr std::size_t maximum_source_bytes=1024U;
+    static constexpr std::uint32_t maximum_dimension=2048U;
+    static constexpr std::uint64_t maximum_image_bytes=8ULL*1024ULL*1024ULL;
+    static constexpr std::size_t maximum_images=256U;
+    static constexpr std::size_t maximum_resident_image_bytes=64U*1024U*1024U;
     bool scissor_enabled_{};
     Rml::Rectanglei scissor_{};
 };
@@ -919,6 +988,20 @@ RetainedUiKeyboardRequest RetainedUiRuntime::keyboard_request() const noexcept {
 
 std::vector<RetainedUiActionEvent> RetainedUiRuntime::consume_action_events() {
     return impl_?impl_->actions.consume():std::vector<RetainedUiActionEvent>{};
+}
+
+RetainedUiImageReceipt RetainedUiRuntime::register_image_rgba8(
+    const std::string_view image_source,const std::uint32_t width,const std::uint32_t height,
+    const std::span<const std::uint8_t> rgba8) {
+    return impl_?impl_->render.register_image(image_source,width,height,rgba8):
+        RetainedUiImageReceipt{false,"ui.runtime-unavailable","Retained UI runtime state is unavailable.",
+            std::string(image_source),0U,0U};
+}
+
+RetainedUiImageReceipt RetainedUiRuntime::remove_image(const std::string_view image_source) {
+    return impl_?impl_->render.remove_image(image_source):
+        RetainedUiImageReceipt{false,"ui.runtime-unavailable","Retained UI runtime state is unavailable.",
+            std::string(image_source),0U,0U};
 }
 
 bool RetainedUiRuntime::create_surface(const std::string_view surface_id,const std::uint32_t width,
@@ -1204,7 +1287,7 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
               ".selectable-card.selected{background:#294461;border-color:" << escape_markup(accent_color) << ";color:#ffffff;}.selectable-card.disabled{opacity:0.48;}"
               ".selectable-card>.label{width:100%;margin-top:4px;color:" << escape_markup(text_color) << ";overflow:hidden;}"
               ".selectable-card>.value{width:100%;margin-top:2px;overflow:hidden;}"
-              ".collection-card-image{box-sizing:border-box;width:100%;height:48px;padding:15px 4px;background:#0c1118;color:#66768b;text-align:center;font-size:11px;border-width:1px;border-color:#253143;}"
+              ".collection-card-image{box-sizing:border-box;width:100%;height:48px;background:#0c1118;border-width:1px;border-color:#253143;}"
               ".collection-card-metadata{display:flex;flex-direction:column;width:100%;margin-top:3px;color:#91a0b4;font-size:11px;}"
               ".collection-card-meta{width:100%;overflow:hidden;}"
               ".tree-row{flex-direction:column;align-items:stretch;min-height:0;padding:0;background:transparent;}"
@@ -1306,8 +1389,9 @@ std::string retained_ui_rml_from_semantic_document(const std::string_view source
             return;
         }
         if(grid_item&&!image_source.empty())
-            output << "<div class=\"collection-card-image\" data-image-source=\"" << escape_markup(image_source)
-                   << "\">image</div>";
+            output << "<img class=\"collection-card-image\" data-image-source=\"" << escape_markup(image_source)
+                   << "\" src=\"" << escape_markup(image_source) << "\" alt=\""
+                   << escape_markup(node.value("label",id)) << "\"/>";
         if(!(embedded_surface&&role=="inspector"))
             output << "<span class=\"label\">" << escape_markup(node.value("label", id)) << "</span>";
         if (role=="meter" && node.contains("value") && node.at("value").is_object()) {

@@ -60,6 +60,13 @@ int main() {
         return 42;
     }
     const auto& asset_nodes = asset_browser.at("nodes");
+    const auto& next_page_action = asset_nodes.at(0).at("actions").at(0);
+    if (next_page_action.at("binding").value("kind", "") != "editor-asset-browser-page" ||
+        next_page_action.at("binding").value("direction", "") != "next" ||
+        next_page_action.at("binding").value("cursor", 0U) != 5U) {
+        std::cerr << "Asset Browser did not expose retained next-page navigation\n";
+        return 48;
+    }
     for (std::size_t index = 2U; index < asset_nodes.size(); ++index) {
         if (asset_nodes.at(index - 1U).at("asset").value("id", "") >=
             asset_nodes.at(index).at("asset").value("id", "")) {
@@ -76,6 +83,12 @@ int main() {
         std::cerr << "Asset card selection binding or existing action handlers are incomplete\n";
         return 44;
     }
+    if (!first_card.at("asset").at("thumbnail").value("uri", "").empty() &&
+        first_card.at("presentation").value("imageSource", "") !=
+            first_card.at("asset").at("thumbnail").value("uri", "")) {
+        std::cerr << "Asset card did not project its existing thumbnail artifact identity\n";
+        return 49;
+    }
     const auto next_cursor = asset_browser.at("page").at("nextCursor").get<std::size_t>();
     const auto second_page_source = model.asset_browser_semantic_ui_document_json(
         {.cursor = next_cursor, .page_limit = 5U});
@@ -87,6 +100,8 @@ int main() {
         std::cerr << "Asset Browser pagination is overlapping or non-deterministic\n";
         return 45;
     }
+    if (second_page.at("nodes").at(0).at("actions").at(0).at("binding").value("direction", "") !=
+        "previous") return 50;
     const auto selected_asset_id = model.selected_asset()->id;
     const auto filtered_browser = nlohmann::json::parse(model.asset_browser_semantic_ui_document_json(
         {.query = selected_asset_id, .page_limit = 8U}));

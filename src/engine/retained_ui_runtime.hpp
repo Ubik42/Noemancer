@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -73,6 +74,15 @@ struct RetainedUiActionEvent final {
     std::string value_json;
 };
 
+struct RetainedUiImageReceipt final {
+    bool success{};
+    std::string code;
+    std::string detail;
+    std::string image_source;
+    std::uint64_t revision{};
+    std::size_t resident_bytes{};
+};
+
 class RetainedUiRuntime final {
 public:
     RetainedUiRuntime();
@@ -97,6 +107,12 @@ public:
     [[nodiscard]] bool focus_node(std::string_view document_id, std::string_view semantic_node_id);
     [[nodiscard]] RetainedUiKeyboardRequest keyboard_request() const noexcept;
     [[nodiscard]] std::vector<RetainedUiActionEvent> consume_action_events();
+    // Registers renderer-neutral RGBA8 pixels behind a stable imageSource.
+    // The registry is process-local, bounded, and shared by every named UI surface.
+    [[nodiscard]] RetainedUiImageReceipt register_image_rgba8(
+        std::string_view image_source, std::uint32_t width, std::uint32_t height,
+        std::span<const std::uint8_t> rgba8);
+    [[nodiscard]] RetainedUiImageReceipt remove_image(std::string_view image_source);
 
     [[nodiscard]] bool create_surface(std::string_view surface_id,std::uint32_t width,std::uint32_t height,float density_scale=1.0F);
     [[nodiscard]] bool destroy_surface(std::string_view surface_id);

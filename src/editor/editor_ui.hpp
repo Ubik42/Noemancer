@@ -196,6 +196,13 @@ public:
     [[nodiscard]] std::uint32_t requested_asset_browser_width() const noexcept;
     [[nodiscard]] std::uint32_t requested_asset_browser_height() const noexcept;
     [[nodiscard]] std::string retained_asset_browser_document_json() const;
+    void set_asset_browser_query(std::string_view query);
+    void set_asset_browser_cursor(std::size_t cursor) noexcept;
+    void set_asset_browser_page_size(std::size_t page_size) noexcept;
+    [[nodiscard]] bool asset_browser_next_page();
+    [[nodiscard]] bool asset_browser_previous_page();
+    [[nodiscard]] std::size_t asset_browser_cursor() const noexcept;
+    [[nodiscard]] std::size_t asset_browser_page_size() const noexcept;
     [[nodiscard]] float requested_exposure() const;
     void set_exposure(float exposure);
     [[nodiscard]] std::optional<RenderCameraSnapshot> render_camera_override() const;
@@ -242,6 +249,7 @@ private:
     void draw_world_outliner();
     void draw_inspector();
     void draw_asset_browser();
+    void synchronize_asset_browser_navigation() const;
     void draw_animation_graph();
     void draw_console();
     void draw_agent_context();
@@ -362,6 +370,10 @@ private:
     std::array<char,96> outliner_filter_{};
     std::array<char,96> inspector_filter_{};
     std::array<char,96> asset_browser_filter_{};
+    mutable std::string asset_browser_query_;
+    mutable std::size_t asset_browser_cursor_{};
+    mutable std::size_t asset_browser_page_size_{64U};
+    mutable std::uint64_t asset_browser_registry_revision_{};
     std::optional<AnimationGraphDocument> animation_graph_document_;
     AnimationGraphCanvasModel animation_graph_canvas_;
     std::string animation_graph_asset_id_;

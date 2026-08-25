@@ -1,5 +1,6 @@
 #include "runtime/asset_thumbnail_gpu_cache.hpp"
 
+#include "engine/content_hash.hpp"
 #include "engine/image_decoder.hpp"
 
 #include <nlohmann/json.hpp>
@@ -29,6 +30,8 @@ constexpr std::size_t kDefaultDecodedBytes = 64U * 1024U * 1024U;
 constexpr std::size_t kDefaultResidentBytes = 256U * 1024U * 1024U;
 constexpr std::size_t kDefaultResidentTextures = 512U;
 constexpr std::size_t kDefaultBatchRequests = 256U;
+constexpr std::size_t kDefaultCpuSnapshotBytes = 64U * 1024U * 1024U;
+constexpr std::size_t kDefaultCpuSnapshotCount = 256U;
 
 std::string bounded_text(const std::string_view value) {
     if (value.size() <= kMaxDiagnosticBytes) return std::string(value);
@@ -209,6 +212,15 @@ bool valid_decoded_budget(const std::uint32_t width, const std::uint32_t height,
     return true;
 }
 
+template <typename Fingerprint>
+std::string opaque_source_fingerprint(const Fingerprint& source) {
+    const auto material = source.path.generic_string() + "\n" +
+        std::to_string(source.modified.time_since_epoch().count()) + "\n" +
+        std::to_string(source.bytes);
+    const auto hash = sha256_bytes(std::as_bytes(std::span(material)));
+    return hash.success ? hash.value : std::string{};
+}
+
 } // namespace
 
 AssetThumbnailGpuCache::AssetThumbnailGpuCache(SDL_GPUDevice* device)
@@ -224,6 +236,8 @@ AssetThumbnailGpuCache::AssetThumbnailGpuCache(SDL_GPUDevice* device, Limits lim
     if (limits_.max_resident_bytes == 0U) limits_.max_resident_bytes = kDefaultResidentBytes;
     if (limits_.max_resident_textures == 0U) limits_.max_resident_textures = kDefaultResidentTextures;
     if (limits_.max_batch_requests == 0U) limits_.max_batch_requests = kDefaultBatchRequests;
+    if (limits_.max_cpu_snapshot_bytes == 0U) limits_.max_cpu_snapshot_bytes = kDefaultCpuSnapshotBytes;
+    if (limits_.max_cpu_snapshot_count == 0U) limits_.max_cpu_snapshot_count = kDefaultCpuSnapshotCount;
 }
 
 AssetThumbnailGpuCache::AssetThumbnailGpuCache(
@@ -342,7 +356,8 @@ void AssetThumbnailGpuCache::set_sync_failure(SyncResult& result, const std::str
 AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
     SDL_GPUCommandBuffer* command, const std::span<const Request> requests) {
     SyncResult result;
-    if (!pending_resource_updates_.empty() || !pending_evictions_.empty()) {
+    if (!pending_resource_updates_.empty() || !pending_cpu_snapshots_.empty() ||
+        !pending_evictions_.empty()) {
         set_sync_failure(result, "thumbnail-gpu.submit-result-required",
                          "The previous thumbnail upload must be committed or rolled back before another sync.");
         return result;
@@ -395,7 +410,8 @@ AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
             ++result.failed_count;
             continue;
         }
-        if (existing != entries_.end() && same_source(existing->second.source, source)) {
+        const auto source_unchanged=existing != entries_.end()&&same_source(existing->second.source,source);
+        if (source_unchanged&&cpu_snapshots_.contains(request.asset_id)) {
             current.success = true;
             current.cache_hit = true;
             current.texture = texture_resources_->resolve(existing->second.handle);
@@ -409,7 +425,7 @@ AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
             continue;
         }
 
-        ++result.changed_count;
+        if(!source_unchanged)++result.changed_count;
         std::vector<std::byte> encoded;
         if (!read_png(request.artifact_path, limits_.max_encoded_bytes, encoded, code, detail)) {
             set_failure(current, code, detail, existing == entries_.end() ? nullptr : &existing->second);
@@ -432,7 +448,7 @@ AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
             ++result.failed_count;
             continue;
         }
-        const auto decoded = decode_png_rgba8(
+        auto decoded = decode_png_rgba8(
             std::span<const std::byte>(encoded.data(), encoded.size()));
         if (!decoded.valid || decoded.width != header_width || decoded.height != header_height ||
             decoded.rgba8.size() != payload_bytes) {
@@ -456,7 +472,7 @@ AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
             .source = std::move(source),
             .width = decoded.width,
             .height = decoded.height,
-            .rgba8 = decoded.rgba8});
+            .rgba8 = std::move(decoded.rgba8)});
     }
 
     if (pending.empty()) {
@@ -504,6 +520,7 @@ AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
         return result;
     }
 
+    pending_cpu_snapshots_.reserve(pending.size());
     auto* copy_pass = SDL_BeginGPUCopyPass(command);
     if (copy_pass == nullptr) {
         for (const auto& upload : pending) {
@@ -528,7 +545,7 @@ AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
     for (const auto& request : requests)
         if (!request.asset_id.empty()) protected_asset_ids.push_back(request.asset_id);
 
-    for (const auto& upload : pending) {
+    for (auto& upload : pending) {
         auto& current = result.results[upload.result_index];
         std::string code;
         std::string detail;
@@ -653,6 +670,12 @@ AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
         current.height = upload.height;
         current.code = "thumbnail-gpu.uploaded";
         current.detail = "The PNG artifact was decoded and uploaded to an RGBA8 GPU texture.";
+        pending_cpu_snapshots_.push_back(PendingCpuSnapshot{
+            .asset_id = current.asset_id,
+            .width = upload.width,
+            .height = upload.height,
+            .source_fingerprint = opaque_source_fingerprint(upload.source),
+            .rgba8 = std::move(upload.rgba8)});
         ++result.uploaded_count;
     }
     SDL_EndGPUCopyPass(copy_pass);
@@ -669,6 +692,51 @@ AssetThumbnailGpuCache::SyncResult AssetThumbnailGpuCache::sync(
     return result;
 }
 
+void AssetThumbnailGpuCache::publish_cpu_snapshot(PendingCpuSnapshot snapshot) {
+    const auto incoming_bytes = snapshot.rgba8.size();
+    if (incoming_bytes > limits_.max_cpu_snapshot_bytes || limits_.max_cpu_snapshot_count == 0U)
+        return;
+
+    const auto existing = cpu_snapshots_.find(snapshot.asset_id);
+    const auto existing_bytes = existing == cpu_snapshots_.end() ? 0U : existing->second.rgba8.size();
+    auto projected_count = cpu_snapshots_.size() - (existing == cpu_snapshots_.end() ? 0U : 1U) + 1U;
+    auto projected_bytes = cpu_snapshot_bytes_ - existing_bytes + incoming_bytes;
+    std::vector<std::string> victims;
+    while (projected_count > limits_.max_cpu_snapshot_count ||
+           projected_bytes > limits_.max_cpu_snapshot_bytes) {
+        auto victim = cpu_snapshots_.end();
+        for (auto iterator = cpu_snapshots_.begin(); iterator != cpu_snapshots_.end(); ++iterator) {
+            if (iterator->first == snapshot.asset_id ||
+                std::ranges::find(victims, iterator->first) != victims.end()) continue;
+            if (victim == cpu_snapshots_.end() ||
+                iterator->second.last_access < victim->second.last_access) victim = iterator;
+        }
+        if (victim == cpu_snapshots_.end()) return;
+        victims.push_back(victim->first);
+        if (projected_count > 0U) --projected_count;
+        projected_bytes = projected_bytes >= victim->second.rgba8.size()
+            ? projected_bytes - victim->second.rgba8.size() : 0U;
+    }
+    for (const auto& asset_id : victims) {
+        const auto found = cpu_snapshots_.find(asset_id);
+        if (found == cpu_snapshots_.end()) continue;
+        cpu_snapshot_bytes_ -= found->second.rgba8.size();
+        cpu_snapshots_.erase(found);
+    }
+    if (existing != cpu_snapshots_.end()) {
+        cpu_snapshot_bytes_ -= existing->second.rgba8.size();
+        cpu_snapshots_.erase(existing);
+    }
+    cpu_snapshot_bytes_ += incoming_bytes;
+    cpu_snapshots_.emplace(std::move(snapshot.asset_id), CpuSnapshotEntry{
+        .width = snapshot.width,
+        .height = snapshot.height,
+        .source_fingerprint = std::move(snapshot.source_fingerprint),
+        .generation = ++cpu_snapshot_generation_,
+        .last_access = ++cpu_snapshot_access_serial_,
+        .rgba8 = std::move(snapshot.rgba8)});
+}
+
 void AssetThumbnailGpuCache::commit_uploads() {
     for (const auto& update : pending_resource_updates_) {
         if (!update.created)
@@ -676,8 +744,11 @@ void AssetThumbnailGpuCache::commit_uploads() {
                 SDL_ReleaseGPUTexture(device_, previous);
         ++upload_count_;
     }
+    for (auto& snapshot : pending_cpu_snapshots_)
+        publish_cpu_snapshot(std::move(snapshot));
     for (const auto& asset_id : pending_evictions_) release_entry(entries_.find(asset_id));
     pending_resource_updates_.clear();
+    pending_cpu_snapshots_.clear();
     pending_evictions_.clear();
 }
 
@@ -704,6 +775,7 @@ void AssetThumbnailGpuCache::rollback_uploads() {
         }
     }
     pending_resource_updates_.clear();
+    pending_cpu_snapshots_.clear();
     pending_evictions_.clear();
 }
 
@@ -738,6 +810,41 @@ AssetThumbnailGpuCache::RequestResult AssetThumbnailGpuCache::lookup(
     return result;
 }
 
+AssetThumbnailGpuCache::CpuSnapshotResult AssetThumbnailGpuCache::cpu_snapshot(
+    const std::string_view asset_id, const std::size_t byte_budget) {
+    CpuSnapshotResult result;
+    result.asset_id = std::string(asset_id.substr(0U, kMaxAssetIdBytes));
+    std::string code;
+    std::string detail;
+    if (!valid_asset_id(asset_id, code, detail)) {
+        result.code = code == "thumbnail-gpu.asset-id-required"
+            ? "thumbnail-cpu.asset-id-required" : "thumbnail-cpu.asset-id-too-long";
+        result.detail = detail;
+        return result;
+    }
+    const auto found = cpu_snapshots_.find(std::string(asset_id));
+    if (found == cpu_snapshots_.end()) {
+        result.code = "thumbnail-cpu.not-resident";
+        result.detail = "No committed CPU RGBA8 snapshot is resident for the requested asset.";
+        return result;
+    }
+    if (found->second.rgba8.size() > byte_budget) {
+        result.code = "thumbnail-cpu.byte-budget-exceeded";
+        result.detail = "The committed CPU RGBA8 snapshot exceeds the caller's copy budget.";
+        return result;
+    }
+    found->second.last_access = ++cpu_snapshot_access_serial_;
+    result.success = true;
+    result.code = "thumbnail-cpu.snapshot";
+    result.detail = "A bounded copy of the committed CPU RGBA8 snapshot was returned.";
+    result.width = found->second.width;
+    result.height = found->second.height;
+    result.source_fingerprint = found->second.source_fingerprint;
+    result.generation = found->second.generation;
+    result.rgba8 = found->second.rgba8;
+    return result;
+}
+
 std::string AssetThumbnailGpuCache::status_json(const std::size_t max_bytes) const {
     const Json status = {
         {"schema", "noemancer.asset-thumbnail-gpu-status/0.2"},
@@ -748,7 +855,11 @@ std::string AssetThumbnailGpuCache::status_json(const std::size_t max_bytes) con
         {"cacheHitCount", cache_hit_count_},
         {"failureCount", failure_count_},
         {"pendingUploads", pending_resource_updates_.size()},
+        {"pendingCpuSnapshots", pending_cpu_snapshots_.size()},
         {"pendingEvictions", pending_evictions_.size()},
+        {"cpuSnapshotCount", cpu_snapshots_.size()},
+        {"cpuSnapshotBytes", cpu_snapshot_bytes_},
+        {"cpuSnapshotGeneration", cpu_snapshot_generation_},
         {"textureResources", Json::parse(texture_resources_->observe_json("ui.editor.thumbnail"))},
         {"limits", {
             {"maxEncodedBytes", limits_.max_encoded_bytes},
@@ -758,7 +869,9 @@ std::string AssetThumbnailGpuCache::status_json(const std::size_t max_bytes) con
             {"maxPixels", limits_.max_pixels},
             {"maxResidentBytes", limits_.max_resident_bytes},
             {"maxResidentTextures", limits_.max_resident_textures},
-            {"maxBatchRequests", limits_.max_batch_requests}}},
+            {"maxBatchRequests", limits_.max_batch_requests},
+            {"maxCpuSnapshotBytes", limits_.max_cpu_snapshot_bytes},
+            {"maxCpuSnapshotCount", limits_.max_cpu_snapshot_count}}},
         {"lastCode", last_code_},
         {"lastDetail", last_detail_}
     };
@@ -773,6 +886,8 @@ void AssetThumbnailGpuCache::shutdown() noexcept {
                 SDL_ReleaseGPUTexture(device_, texture);
     entries_.clear();
     resident_bytes_ = 0U;
+    cpu_snapshots_.clear();
+    cpu_snapshot_bytes_ = 0U;
     device_ = nullptr;
 }
 

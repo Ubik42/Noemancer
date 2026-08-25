@@ -87,6 +87,15 @@ add_executable(noemancer_asset_thumbnail_tests asset_thumbnail_tests.cpp)
 target_link_libraries(noemancer_asset_thumbnail_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.asset_thumbnail COMMAND noemancer_asset_thumbnail_tests)
 
+add_executable(noemancer_asset_thumbnail_gpu_cache_tests
+    asset_thumbnail_gpu_cache_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/asset_thumbnail_gpu_cache.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/texture_resource_table.cpp)
+target_include_directories(noemancer_asset_thumbnail_gpu_cache_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_asset_thumbnail_gpu_cache_tests PRIVATE
+    noemancer::engine SDL3::SDL3 nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.asset_thumbnail_gpu_cache COMMAND noemancer_asset_thumbnail_gpu_cache_tests)
+
 add_executable(noemancer_asset_workflow_tests asset_workflow_tests.cpp)
 target_link_libraries(noemancer_asset_workflow_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.asset_workflow COMMAND noemancer_asset_workflow_tests)

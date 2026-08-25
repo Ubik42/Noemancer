@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-24",
   "status": "active-development",
-  "currentSlice": "editor.retained-outliner-and-asset-browser",
-  "currentStep": "complete-retained-asset-browser-images-and-large-library-navigation",
+  "currentSlice": "editor.retained-authoring-actions",
+  "currentStep": "route-outliner-and-asset-browser-authoring-actions-through-shared-authority",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,7 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "editor.retained-outliner-and-asset-browser"
+    "editor.retained-authoring-actions"
   ],
   "externalEvidencePending": [
     "performance.gpu-telemetry-compatible-host"
@@ -37,7 +37,8 @@
     "production.virtual-filesystem-and-package-mount",
     "production.vfs-project-and-cooked-asset-migration",
     "editor.retained-outliner",
-    "editor.retained-asset-browser-collection"
+    "editor.retained-asset-browser-collection",
+    "editor.retained-asset-browser"
   ],
   "closedExperiments": [
     {
