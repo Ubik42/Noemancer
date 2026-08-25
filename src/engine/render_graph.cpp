@@ -96,7 +96,14 @@ CompiledRenderGraph RenderGraphCompiler::compile(
 }
 
 CompiledRenderGraph make_forward_render_graph() {
-    auto graph = RenderGraphCompiler::compile("render.graph.forward.v13",
+    // v14 keeps every existing resource/pass identity intact while making the
+    // screen-space inputs explicit.  The depth pyramid is one logical
+    // RG32_FLOAT mip-chain resource: seed writes mip 0 and reduce fills the
+    // remaining mips through an explicit read/modify/write edge.  Keeping the
+    // chain behind one stable resource ID lets SSR, SSGI and future occlusion
+    // consumers attach to the same graph contract instead of creating local
+    // HiZ resources.
+    auto graph = RenderGraphCompiler::compile("render.graph.forward.v14",
         {{"render.resource.shadow-depth", "D32_FLOAT", true, "2d-array", 4, false, "shadow"}, {"render.resource.scene-hdr", "RGBA16_FLOAT", true},
          {"render.resource.atmosphere-camera-volume", "RGBA16_FLOAT", false, "3d", 1, true, "camera-volume"},
          {"render.resource.scene-hdr-aerial", "RGBA16_FLOAT", true},
@@ -119,6 +126,8 @@ CompiledRenderGraph make_forward_render_graph() {
          {"render.resource.reactive-mask", "R8_UNORM", false},
          {"render.resource.temporal-history", "RGBA16_FLOAT", false, "2d", 1, true, "output"},
          {"render.resource.temporal-depth-history", "R32_FLOAT", false, "2d", 1, true, "output"},
+         {"render.resource.previous-normal-history", "RGBA16_FLOAT", false, "2d", 1, true, "output"},
+         {"render.resource.scene-depth-pyramid", "RG32_FLOAT", true, "2d", 1, false, "render"},
          {"render.resource.scene-depth", "D32_FLOAT", false}, {"render.resource.object-id", "R32_UINT", false},
          {"render.resource.world-normal", "RGBA16_FLOAT", false},
          {"render.resource.gpu-scene-instances","STRUCTURED-224",false,"buffer",1,true,"scalar"},
@@ -134,8 +143,12 @@ CompiledRenderGraph make_forward_render_graph() {
          {"render.pass.opaque-lit", "render.pipeline.pbr-forward", {"render.resource.scene-hdr","render.resource.shadow-depth","render.resource.gpu-scene-instances","render.resource.gpu-visible-indices","render.resource.gpu-indirect-commands"},
           {"render.resource.scene-hdr", "render.resource.scene-indirect", "render.resource.scene-depth", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"},
           {"render.pass.gpu-visibility", "render.pass.sky-atmosphere"}},
+         {"render.pass.depth-pyramid-seed", "render.pipeline.depth-pyramid-seed", {"render.resource.scene-depth"},
+          {"render.resource.scene-depth-pyramid"}, {"render.pass.opaque-lit"}},
+         {"render.pass.depth-pyramid-reduce", "render.pipeline.depth-pyramid-reduce", {"render.resource.scene-depth-pyramid"},
+          {"render.resource.scene-depth-pyramid"}, {"render.pass.depth-pyramid-seed"}},
          {"render.pass.ambient-occlusion", "render.pipeline.gtao", {"render.resource.scene-depth", "render.resource.world-normal"},
-          {"render.resource.ambient-occlusion"}, {"render.pass.opaque-lit"}},
+           {"render.resource.ambient-occlusion"}, {"render.pass.opaque-lit", "render.pass.depth-pyramid-reduce"}},
          {"render.pass.ambient-occlusion-denoise-horizontal", "render.pipeline.ao-bilateral-horizontal",
           {"render.resource.ambient-occlusion", "render.resource.scene-depth", "render.resource.world-normal"},
           {"render.resource.ambient-occlusion-temp"}, {"render.pass.ambient-occlusion"}},
@@ -144,14 +157,14 @@ CompiledRenderGraph make_forward_render_graph() {
           {"render.resource.ambient-occlusion-filtered"}, {"render.pass.ambient-occlusion-denoise-horizontal"}},
          {"render.pass.aerial-perspective", "render.pipeline.aerial-perspective",
           {"render.resource.scene-hdr", "render.resource.scene-depth", "render.resource.atmosphere-camera-volume"},
-          {"render.resource.scene-hdr-aerial"}, {"render.pass.opaque-lit"}},
+          {"render.resource.scene-hdr-aerial"}, {"render.pass.opaque-lit", "render.pass.depth-pyramid-reduce"}},
          {"render.pass.ambient-occlusion-composite", "render.pipeline.ao-indirect-composite",
           {"render.resource.scene-hdr-aerial", "render.resource.scene-indirect", "render.resource.ambient-occlusion-filtered"},
           {"render.resource.scene-hdr-ao"}, {"render.pass.ambient-occlusion-denoise-vertical", "render.pass.aerial-perspective"}},
          {"render.pass.transparent-lit", "render.pipeline.pbr-forward-alpha", {"render.resource.shadow-depth", "render.resource.scene-hdr-ao", "render.resource.scene-indirect", "render.resource.scene-depth", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"},
           {"render.resource.scene-hdr-ao", "render.resource.scene-indirect", "render.resource.object-id", "render.resource.world-normal", "render.resource.motion-vectors", "render.resource.reactive-mask"}, {"render.pass.ambient-occlusion-composite", "render.pass.opaque-lit"}},
-         {"render.pass.temporal-resolve", "render.pipeline.taa", {"render.resource.scene-hdr-ao", "render.resource.motion-vectors", "render.resource.scene-depth", "render.resource.temporal-history", "render.resource.temporal-depth-history", "render.resource.reactive-mask"},
-          {"render.resource.scene-resolved", "render.resource.temporal-history", "render.resource.temporal-depth-history"}, {"render.pass.transparent-lit"}},
+         {"render.pass.temporal-resolve", "render.pipeline.shared-temporal-denoise", {"render.resource.scene-hdr-ao", "render.resource.motion-vectors", "render.resource.scene-depth", "render.resource.scene-depth-pyramid", "render.resource.world-normal", "render.resource.temporal-history", "render.resource.temporal-depth-history", "render.resource.previous-normal-history", "render.resource.reactive-mask"},
+          {"render.resource.scene-resolved", "render.resource.temporal-history", "render.resource.temporal-depth-history", "render.resource.previous-normal-history"}, {"render.pass.transparent-lit", "render.pass.depth-pyramid-reduce"}},
          {"render.pass.auto-exposure", "render.pipeline.log-luminance-exposure", {"render.resource.scene-resolved", "render.resource.exposure-history"},
           {"render.resource.exposure-history"}, {"render.pass.temporal-resolve"}},
          {"render.pass.bloom-downsample-half", "render.pipeline.bloom-downsample-half", {"render.resource.scene-resolved"},

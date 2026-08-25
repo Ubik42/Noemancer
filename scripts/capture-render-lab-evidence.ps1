@@ -127,7 +127,7 @@ function Invoke-RenderEvidence {
     Require (Test-Path -LiteralPath $perf -PathType Leaf) 'render.performance-missing' $stage 'Performance evidence missing.'
     $quality=Read-Json $qualityPath;$performance=Read-Json $perf;$renderer=$quality.renderer
     Require ($quality.pass -eq $true -and $quality.dimensionsMatch -eq $true -and [int]$quality.width -eq $Width -and [int]$quality.height -eq $Height) 'render.quality-failed' $stage 'Image quality or fixed dimensions failed.'
-    Require ([string]$renderer.schemaVersion -eq 'noemancer.renderer-status.v25') 'render.status-schema' $stage 'Renderer Status v25 missing.'
+    Require ([string]$renderer.schemaVersion -eq 'noemancer.renderer-status.v26') 'render.status-schema' $stage 'Renderer Status v26 missing.'
     Require ([string]$renderer.device.backend -eq $Backend) 'render.backend-mismatch' $stage 'Requested/reported backend mismatch.'
     Require ([string]$renderer.activeCameraId -eq 'entity.classic.camera') 'render.camera-mismatch' $stage 'Fixed classic camera was not active.'
     Require (@($renderer.graph.errors).Count -eq 0 -and @($renderer.graph.executionOrder).Count -ge 18) 'render.graph-invalid' $stage 'Render Graph is incomplete or invalid.'

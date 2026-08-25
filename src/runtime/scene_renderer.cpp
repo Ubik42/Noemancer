@@ -374,15 +374,19 @@ struct alignas(16) FxaaSettings {
     float edge_threshold_min{0.0312F};
 };
 
-struct alignas(16) TaaSettings {
-    std::array<float,2> inverse_resolution{};
-    float history_weight{0.90F};
-    float history_valid{};
-    float near_clip{0.1F};
-    float far_clip{100.0F};
-    float reactive_scale{1.0F};
-    float debug_mode{};
+struct alignas(16) TemporalDenoiseSettings final {
+    std::array<float,4> resolution_and_history{};
+    std::array<float,4> projection_parameters{};
+    std::array<float,4> rejection_parameters{};
+    std::array<float,4> output_parameters{};
 };
+static_assert(sizeof(TemporalDenoiseSettings)==64,
+    "TemporalDenoiseSettings must match temporal_denoise.frag.hlsl b0");
+
+struct alignas(16) DepthPyramidSeedSettings final {std::array<float,4> depth_parameters{};};
+struct alignas(16) DepthPyramidReduceSettings final {std::array<std::uint32_t,4> reduce_parameters{};};
+static_assert(sizeof(DepthPyramidSeedSettings)==16&&sizeof(DepthPyramidReduceSettings)==16,
+    "Depth-pyramid settings must match compute shader b0");
 
 struct alignas(16) VfxCameraData {
     Mat4 view_projection;
@@ -1569,6 +1573,29 @@ SDL_GPUComputePipeline* load_atmosphere_compute_pipeline(SDL_GPUDevice* device,
     return SDL_CreateGPUComputePipeline(device,&info);
 }
 
+SDL_GPUComputePipeline* load_screen_space_compute_pipeline(SDL_GPUDevice* device,
+                                                            const std::string_view shader_name) {
+    const auto formats=SDL_GetGPUShaderFormats(device);
+    const bool use_dxil=(formats&SDL_GPU_SHADERFORMAT_DXIL)!=0;
+    const bool use_spirv=!use_dxil&&(formats&SDL_GPU_SHADERFORMAT_SPIRV)!=0;
+    if(!use_dxil&&!use_spirv)return nullptr;
+    const auto artifact=runtime_shader_artifacts().load(ShaderArtifactRequest{
+        .stem=std::string(shader_name),.stage=ShaderArtifactStage::compute,
+        .resources={.uniform_buffers=1,.samplers=1,.storage_textures=1}},
+        use_dxil?ShaderArtifactBackend::dxil:ShaderArtifactBackend::spv);
+    if(!artifact.success) {
+        shader_artifact_failure=artifact.code+": "+artifact.detail;
+        return nullptr;
+    }
+    SDL_GPUComputePipelineCreateInfo info{};
+    info.code=reinterpret_cast<const Uint8*>(artifact.bytes.data());
+    info.code_size=artifact.bytes.size();info.entrypoint=artifact.entrypoint.c_str();
+    info.format=use_dxil?SDL_GPU_SHADERFORMAT_DXIL:SDL_GPU_SHADERFORMAT_SPIRV;
+    info.num_samplers=1;info.num_readwrite_storage_textures=1;info.num_uniform_buffers=1;
+    info.threadcount_x=8;info.threadcount_y=8;info.threadcount_z=1;
+    return SDL_CreateGPUComputePipeline(device,&info);
+}
+
 Mat4 inverse_or_identity(const Mat4& source) {
     std::array<std::array<double,8>,4> augmented{};
     for(std::size_t row=0;row<4;++row) {
@@ -1897,6 +1924,13 @@ bool SceneRenderer::create_imported_geometry() {
 
 bool SceneRenderer::create_pipelines() {
     shader_artifact_failure.clear();
+    depth_pyramid_seed_pipeline_=load_screen_space_compute_pipeline(device_,"depth_pyramid_seed.comp");
+    depth_pyramid_reduce_pipeline_=load_screen_space_compute_pipeline(device_,"depth_pyramid_reduce.comp");
+    if(!depth_pyramid_seed_pipeline_||!depth_pyramid_reduce_pipeline_) {
+        last_error_="Unable to create shared depth-pyramid pipelines: "+
+            (shader_artifact_failure.empty()?std::string(SDL_GetError()):shader_artifact_failure);
+        return false;
+    }
     SDL_GPUShader* lit_vertex = load_shader(device_, "scene_lit.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 4);
     SDL_GPUShader* gpu_driven_lit_vertex=load_shader(device_,"scene_gpu_driven.vert",SDL_GPU_SHADERSTAGE_VERTEX,0,1,2);
     SDL_GPUShader* lit_fragment = load_shader(device_, "scene_lit.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 10, 1, 3);
@@ -1920,7 +1954,7 @@ bool SceneRenderer::create_pipelines() {
     SDL_GPUShader* fxaa_vertex = load_shader(device_, "fxaa.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* fxaa_fragment = load_shader(device_, "fxaa.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     SDL_GPUShader* taa_vertex = load_shader(device_, "taa.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
-    SDL_GPUShader* taa_fragment = load_shader(device_, "taa.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 6, 1);
+    SDL_GPUShader* taa_fragment = load_shader(device_, "temporal_denoise.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 8, 1);
     SDL_GPUShader* vfx_vertex = load_shader(device_, "vfx_billboard.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 2);
     SDL_GPUShader* vfx_fragment = load_shader(device_, "vfx_billboard.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
     if (!lit_vertex || !lit_fragment || !sprite_vertex || !sprite_fragment || !sprite_shadow_vertex || !shadow_vertex || !shadow_fragment || !tone_vertex || !tone_fragment || !sky_vertex || !sky_fragment || !sky_analytic_fragment || !aerial_fragment || !gtao_fragment || !ao_denoise_fragment || !ao_composite_fragment || !auto_exposure_fragment || !bloom_downsample_fragment || !bloom_upsample_fragment || !fxaa_vertex || !fxaa_fragment || !taa_vertex || !taa_fragment || !vfx_vertex || !vfx_fragment) {
@@ -2105,8 +2139,9 @@ bool SceneRenderer::create_pipelines() {
     tone_target.format=color_format;
     tone_info.vertex_shader=fxaa_vertex; tone_info.fragment_shader=fxaa_fragment;
     fxaa_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
-    std::array<SDL_GPUColorTargetDescription,3> taa_targets{};
-    taa_targets[0].format=normal_format; taa_targets[1].format=normal_format; taa_targets[2].format=history_depth_format;
+    std::array<SDL_GPUColorTargetDescription,4> taa_targets{};
+    taa_targets[0].format=normal_format;taa_targets[1].format=normal_format;
+    taa_targets[2].format=history_depth_format;taa_targets[3].format=normal_format;
     tone_info.vertex_shader=taa_vertex; tone_info.fragment_shader=taa_fragment;
     tone_info.target_info={taa_targets.data(),static_cast<Uint32>(taa_targets.size()),SDL_GPU_TEXTUREFORMAT_INVALID,false,0,0,0};
     taa_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
@@ -2175,6 +2210,9 @@ bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_
     info.width=post_width_; info.height=post_height_;
     info.format=history_depth_format;
     taa_history_depth_textures_[0]=SDL_CreateGPUTexture(device_,&info); taa_history_depth_textures_[1]=SDL_CreateGPUTexture(device_,&info);
+    info.format=normal_format;
+    temporal_history_normal_textures_[0]=SDL_CreateGPUTexture(device_,&info);
+    temporal_history_normal_textures_[1]=SDL_CreateGPUTexture(device_,&info);
     info.width=std::max(1U,render_width_/2U); info.height=std::max(1U,render_height_/2U);
     info.format=ambient_occlusion_format; info.usage=SDL_GPU_TEXTUREUSAGE_COLOR_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER;
     ambient_occlusion_texture_=SDL_CreateGPUTexture(device_,&info);
@@ -2191,7 +2229,19 @@ bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_
     info.format=motion_format; info.usage=SDL_GPU_TEXTUREUSAGE_COLOR_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER; motion_texture_=SDL_CreateGPUTexture(device_,&info);
     info.format=reactive_mask_format; info.usage=SDL_GPU_TEXTUREUSAGE_COLOR_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER; reactive_mask_texture_=SDL_CreateGPUTexture(device_,&info);
     info.format=depth_format; info.usage=SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER; depth_texture_=SDL_CreateGPUTexture(device_, &info);
-    info.type=SDL_GPU_TEXTURETYPE_2D_ARRAY; info.layer_count_or_depth=shadow_cascade_count;
+    depth_pyramid_mip_count_=1U;
+    for(auto extent=std::max(render_width_,render_height_);extent>1U;extent=(extent+1U)/2U)++depth_pyramid_mip_count_;
+    info.type=SDL_GPU_TEXTURETYPE_2D;info.layer_count_or_depth=1U;info.width=render_width_;info.height=render_height_;
+    info.num_levels=depth_pyramid_mip_count_;info.format=SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT;
+    info.usage=SDL_GPU_TEXTUREUSAGE_SAMPLER|SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
+    depth_pyramid_texture_=SDL_CreateGPUTexture(device_,&info);
+    depth_pyramid_working_set_bytes_=0U;
+    for(std::uint32_t mip=0U,mip_width=render_width_,mip_height=render_height_;mip<depth_pyramid_mip_count_;++mip) {
+        depth_pyramid_working_set_bytes_+=static_cast<std::uint64_t>(mip_width)*mip_height*8U;
+        mip_width=std::max(1U,(mip_width+1U)/2U);mip_height=std::max(1U,(mip_height+1U)/2U);
+    }
+    info.num_levels=1U;
+    info.type=SDL_GPU_TEXTURETYPE_2D_ARRAY;info.format=depth_format;info.layer_count_or_depth=shadow_cascade_count;
     info.usage=SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET|SDL_GPU_TEXTUREUSAGE_SAMPLER; info.width=shadow_size; info.height=shadow_size;
     shadow_texture_=SDL_CreateGPUTexture(device_, &info);
     info.layer_count_or_depth=local_shadow_layer_count;info.width=local_shadow_resolution_;info.height=local_shadow_resolution_;
@@ -2201,7 +2251,9 @@ bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_
         std::ranges::any_of(bloom_upsample_textures_,[](const auto* texture){return texture==nullptr;}) ||
         !ambient_occlusion_texture_ || !ambient_occlusion_temp_texture_ || !ambient_occlusion_filtered_texture_ ||
         !exposure_history_textures_[0] || !exposure_history_textures_[1] || !taa_history_textures_[0] || !taa_history_textures_[1] ||
-        !taa_history_depth_textures_[0] || !taa_history_depth_textures_[1] || !depth_texture_ || !shadow_texture_ || !local_shadow_texture_) return false;
+        !taa_history_depth_textures_[0] || !taa_history_depth_textures_[1] ||
+        !temporal_history_normal_textures_[0]||!temporal_history_normal_textures_[1]||
+        !depth_texture_||!depth_pyramid_texture_||!shadow_texture_||!local_shadow_texture_)return false;
     const std::array<SDL_GPUTexture*,27> named_textures{color_texture_,tone_mapped_texture_,taa_resolved_texture_,
         taa_history_textures_[0],taa_history_textures_[1],bloom_downsample_textures_[0],bloom_downsample_textures_[1],
         bloom_downsample_textures_[2],bloom_downsample_textures_[3],bloom_upsample_textures_[0],
@@ -2219,12 +2271,17 @@ bool SceneRenderer::create_targets(const std::uint32_t width, const std::uint32_
     for (std::size_t index=0;index<named_textures.size();++index)
         SDL_SetGPUTextureName(device_,named_textures[index],texture_names[index]);
     SDL_SetGPUTextureName(device_,depth_texture_,"render.scene-depth");
+    SDL_SetGPUTextureName(device_,depth_pyramid_texture_,"render.scene-depth-pyramid");
+    SDL_SetGPUTextureName(device_,temporal_history_normal_textures_[0],"render.temporal-normal-history-a");
+    SDL_SetGPUTextureName(device_,temporal_history_normal_textures_[1],"render.temporal-normal-history-b");
     SDL_SetGPUTextureName(device_,shadow_texture_,"render.shadow-cascades");
     SDL_SetGPUTextureName(device_,local_shadow_texture_,"render.local-shadow-array");
     local_shadow_texture_bytes_=static_cast<std::uint64_t>(local_shadow_resolution_)*local_shadow_resolution_*local_shadow_layer_count*4U;
     directional_shadow_cascade_cache_valid_.fill(false);
     local_shadow_face_cache_valid_.fill(false);
-    temporal_history_valid_=false; ++taa_history_resets_; taa_history_index_=0; exposure_history_valid_=false; exposure_history_index_=0;
+    temporal_history_valid_=false;
+    taa_history_resets_=temporal_history_authority_.state(TemporalHistoryConsumer::taa).reset_count;
+    taa_history_index_=0; exposure_history_valid_=false; exposure_history_index_=0;
     width_=width; height_=height; allocated_render_scale_=render_scale_;
     return true;
 }
@@ -2503,7 +2560,9 @@ void SceneRenderer::record_texture_streaming(SDL_GPUCommandBuffer* command,const
 
 void SceneRenderer::set_temporal_debug_mode(const std::string& mode) {
     temporal_debug_mode_name_=mode;
-    temporal_debug_mode_=mode=="motion"?1U:(mode=="reactive"?2U:(mode=="disocclusion"?3U:(mode=="history-weight"?4U:0U)));
+    temporal_debug_mode_=mode=="motion"?1U:(mode=="reactive"?2U:(mode=="disocclusion"?3U:
+        (mode=="history-weight"?4U:(mode=="history-clamp"?5U:(mode=="linear-depth"?6U:(mode=="normal"?7U:0U))))));
+    if(temporal_debug_mode_==0U)temporal_debug_mode_name_="final";
 }
 
 void SceneRenderer::set_capture_contract_json(std::string contract_json) {
@@ -2643,18 +2702,34 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     const Mat4 camera_projection{jittered_projection};
     const Mat4 view_projection=multiply(camera_projection,camera_view);
     const Mat4 unjittered_view_projection=multiply(unjittered_camera_projection,camera_view);
-    const bool frame_discontinuity=temporal_history_valid_ &&
-        (frame_index_ < previous_temporal_frame_ || frame_index_ > previous_temporal_frame_+1U);
-    const bool camera_changed=temporal_history_valid_ && previous_camera_id_!=active_camera_id_;
     float view_projection_delta{};
     if (temporal_history_valid_)
         for (std::size_t index=0;index<view_projection.value.size();++index)
             view_projection_delta=std::max(view_projection_delta,std::abs(view_projection.value[index]-previous_view_projection_[index]));
     const bool camera_cut=temporal_history_valid_ && view_projection_delta>2.0F;
-    if (frame_discontinuity || camera_changed || camera_cut) {
-        temporal_history_valid_=false;
-        ++taa_history_resets_;
+    if(camera_cut)++temporal_camera_cut_epoch_;
+    std::ostringstream temporal_projection_identity;
+    temporal_projection_identity << (camera_orthographic?"orthographic":"perspective")
+        << ":near=" << std::setprecision(7) << camera_near << ":far=" << camera_far
+        << (camera_orthographic?":height=":":vfov=")
+        << (camera_orthographic?camera_orthographic_height:camera_fov)
+        << ":cut=" << temporal_camera_cut_epoch_;
+    std::ostringstream temporal_quality_identity;
+    temporal_quality_identity << "shared-temporal-denoise/0.1:render=" << render_width_ << 'x' << render_height_
+        << ":output=" << post_width_ << 'x' << post_height_ << ":scale=" << std::setprecision(6) << render_scale_;
+    const TemporalHistoryRequest temporal_request{
+        TemporalHistoryConsumer::taa,
+        {{post_width_,post_height_},"rgba16f+r32f+rgba16f",frame_index_,
+            active_camera_id_.empty()?"camera.unowned":active_camera_id_,temporal_projection_identity.str(),
+            hybrid_pixel_profile_?"hybrid:"+hybrid_pixel_profile_->profile_id:"raster",
+            temporal_quality_identity.str()},
+        !hybrid_pixel_active(),std::nullopt};
+    const auto temporal_history_plan=temporal_history_authority_.plan(temporal_request);
+    if(!temporal_history_plan.valid) {
+        last_error_=temporal_history_plan.code+": "+temporal_history_plan.detail;
+        return;
     }
+    temporal_history_valid_=temporal_history_plan.use_previous;
     CascadedShadowConfig shadow_config;
     shadow_config.resolution=shadow_size;
     shadow_config.maximum_distance=std::min(80.0F,camera_far);
@@ -3431,6 +3506,26 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         }
     };
     bloom_record_microseconds_=0.0;ao_denoise_record_microseconds_=0.0;
+    const auto temporal_begin=temporal_history_authority_.begin(temporal_history_plan);
+    if(!temporal_begin.success) {
+        last_error_=temporal_begin.code+": "+temporal_begin.detail;
+        return;
+    }
+    bool temporal_history_committed=false;
+    const auto commit_temporal_history=[&](const bool produced_history,
+        const TemporalHistoryResetMask output_reset_reasons=0U) {
+        if(temporal_history_committed)return true;
+        const auto commit=temporal_history_authority_.commit({TemporalHistoryConsumer::taa,
+            temporal_begin.transaction_id,temporal_begin.base_revision,produced_history,output_reset_reasons});
+        if(!commit.success) {
+            last_error_=commit.code+": "+commit.detail;
+            return false;
+        }
+        temporal_history_committed=true;
+        temporal_history_valid_=commit.current_valid;
+        taa_history_resets_=temporal_history_authority_.state(TemporalHistoryConsumer::taa).reset_count;
+        return true;
+    };
     (void)gpu_pass_timestamps_.begin_frame(command,frame_index_,render_graph_.execution_order);
     for (const auto& pass_id : render_graph_.execution_order) {
     gpu_pass_timestamps_.begin_pass(command,pass_id);
@@ -3489,7 +3584,8 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         shadow_target.load_op=SDL_GPU_LOADOP_CLEAR; shadow_target.store_op=SDL_GPU_STOREOP_STORE;
         shadow_target.stencil_load_op=SDL_GPU_LOADOP_DONT_CARE; shadow_target.stencil_store_op=SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,nullptr,0,&shadow_target);
-        if(!pass){last_error_=SDL_GetError();gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;}
+        if(!pass){last_error_=SDL_GetError();(void)commit_temporal_history(false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;}
         std::vector<bool> submitted(objects.size(),false);
         for (std::size_t object_index=0;object_index<objects.size();++object_index) {
             if (submitted[object_index] || !cascade_visible[object_index]) continue;
@@ -3580,7 +3676,8 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
         shadow_target.load_op=SDL_GPU_LOADOP_CLEAR;shadow_target.store_op=SDL_GPU_STOREOP_STORE;
         shadow_target.stencil_load_op=SDL_GPU_LOADOP_DONT_CARE;shadow_target.stencil_store_op=SDL_GPU_STOREOP_DONT_CARE;
         SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,nullptr,0,&shadow_target);
-        if(!pass){last_error_=SDL_GetError();gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;}
+        if(!pass){last_error_=SDL_GetError();(void)commit_temporal_history(false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;}
         ++local_shadow_faces_rendered_;
         std::vector<bool> submitted(objects.size(),false);
         for(std::size_t object_index=0;object_index<objects.size();++object_index) {
@@ -3754,6 +3851,42 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     }
     draw_sprite_batches(pass,false);
     SDL_EndGPURenderPass(pass);
+    } else if(pass_id=="render.pass.depth-pyramid-seed") {
+    const DepthPyramidSeedSettings settings{{camera_near,camera_far,0.0F,0.0F}};
+    SDL_PushGPUComputeUniformData(command,0,&settings,sizeof(settings));
+    const SDL_GPUStorageTextureReadWriteBinding target{depth_pyramid_texture_,0U,0U,false,0U,0U,0U};
+    auto* pass=SDL_BeginGPUComputePass(command,&target,1U,nullptr,0U);
+    if(!pass) {
+        last_error_=SDL_GetError();(void)commit_temporal_history(false,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
+    }
+    SDL_BindGPUComputePipeline(pass,depth_pyramid_seed_pipeline_);
+    const SDL_GPUTextureSamplerBinding source{depth_texture_,shadow_sampler_};
+    SDL_BindGPUComputeSamplers(pass,0U,&source,1U);
+    SDL_DispatchGPUCompute(pass,(render_width_+7U)/8U,(render_height_+7U)/8U,1U);
+    SDL_EndGPUComputePass(pass);++depth_pyramid_seed_dispatches_;
+    } else if(pass_id=="render.pass.depth-pyramid-reduce") {
+    std::uint32_t source_width=render_width_,source_height=render_height_;
+    for(std::uint32_t destination_mip=1U;destination_mip<depth_pyramid_mip_count_;++destination_mip) {
+        const std::uint32_t destination_width=std::max(1U,(source_width+1U)/2U);
+        const std::uint32_t destination_height=std::max(1U,(source_height+1U)/2U);
+        const DepthPyramidReduceSettings settings{{destination_mip-1U,source_width,source_height,depth_pyramid_mip_count_}};
+        SDL_PushGPUComputeUniformData(command,0,&settings,sizeof(settings));
+        const SDL_GPUStorageTextureReadWriteBinding target{depth_pyramid_texture_,destination_mip,0U,false,0U,0U,0U};
+        auto* pass=SDL_BeginGPUComputePass(command,&target,1U,nullptr,0U);
+        if(!pass) {
+            last_error_=SDL_GetError();(void)commit_temporal_history(false,
+                temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+            SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
+        }
+        SDL_BindGPUComputePipeline(pass,depth_pyramid_reduce_pipeline_);
+        const SDL_GPUTextureSamplerBinding source{depth_pyramid_texture_,tone_map_sampler_};
+        SDL_BindGPUComputeSamplers(pass,0U,&source,1U);
+        SDL_DispatchGPUCompute(pass,(destination_width+7U)/8U,(destination_height+7U)/8U,1U);
+        SDL_EndGPUComputePass(pass);++depth_pyramid_reduce_dispatches_;
+        source_width=destination_width;source_height=destination_height;
+    }
     } else if (pass_id == "render.pass.ambient-occlusion") {
     SDL_GPUColorTargetInfo color_target{}; color_target.texture=ambient_occlusion_texture_;
     color_target.clear_color={1,1,1,1}; color_target.load_op=SDL_GPU_LOADOP_CLEAR; color_target.store_op=SDL_GPU_STOREOP_STORE;
@@ -3886,30 +4019,42 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     } else if (pass_id == "render.pass.temporal-resolve") {
     const std::uint32_t history_read=taa_history_index_;
     const std::uint32_t history_write=1U-history_read;
-    std::array<SDL_GPUColorTargetInfo,3> color_targets{};
+    std::array<SDL_GPUColorTargetInfo,4> color_targets{};
     color_targets[0].texture=taa_resolved_texture_;
     color_targets[1].texture=taa_history_textures_[history_write];
     color_targets[2].texture=taa_history_depth_textures_[history_write];
+    color_targets[3].texture=temporal_history_normal_textures_[history_write];
     for (auto& target:color_targets) {
         target.clear_color={0,0,0,1}; target.load_op=SDL_GPU_LOADOP_CLEAR; target.store_op=SDL_GPU_STOREOP_STORE;
     }
     SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,color_targets.data(),static_cast<Uint32>(color_targets.size()),nullptr);
+    if(!pass) {
+        last_error_=SDL_GetError();
+        (void)commit_temporal_history(false,temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid));
+        SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);
+        return;
+    }
     SDL_BindGPUGraphicsPipeline(pass,taa_pipeline_);
-    const std::array<SDL_GPUTextureSamplerBinding,6> bindings{{
+    const std::array<SDL_GPUTextureSamplerBinding,8> bindings{{
         {ao_composited_hdr_texture_,tone_map_sampler_},{motion_texture_,tone_map_sampler_},{depth_texture_,shadow_sampler_},
-        {taa_history_textures_[history_read],tone_map_sampler_},{taa_history_depth_textures_[history_read],shadow_sampler_},
+        {normal_texture_,tone_map_sampler_},{taa_history_textures_[history_read],tone_map_sampler_},
+        {taa_history_depth_textures_[history_read],shadow_sampler_},{temporal_history_normal_textures_[history_read],tone_map_sampler_},
         {reactive_mask_texture_,tone_map_sampler_}
     }};
     SDL_BindGPUFragmentSamplers(pass,0,bindings.data(),static_cast<Uint32>(bindings.size()));
     const bool hybrid_pixel = hybrid_pixel_active();
-    const TaaSettings settings{{1.0F/static_cast<float>(render_width_),1.0F/static_cast<float>(render_height_)},
-        hybrid_pixel?0.0F:0.90F,
-        !hybrid_pixel&&temporal_history_valid_?1.0F:0.0F,camera_near,camera_far,1.0F,static_cast<float>(temporal_debug_mode_)};
+    const TemporalDenoiseSettings settings{
+        {1.0F/static_cast<float>(post_width_),1.0F/static_cast<float>(post_height_),hybrid_pixel?0.0F:0.90F,
+            !hybrid_pixel&&temporal_begin.use_previous?1.0F:0.0F},
+        {camera_near,camera_far,0.0F,0.0F},{0.02F,0.85F,64.0F,1.0F},
+        {1.0F,static_cast<float>(temporal_debug_mode_),0.0F,0.0F}};
     SDL_PushGPUFragmentUniformData(command,0,&settings,sizeof(settings));
     SDL_DrawGPUPrimitives(pass,3,1,0,0);
     SDL_EndGPURenderPass(pass);
     taa_history_index_=history_write;
-    temporal_history_valid_=!hybrid_pixel;
+    if(!commit_temporal_history(true)) {
+        SDL_PopGPUDebugGroup(command);gpu_pass_timestamps_.end_pass(command,pass_id);gpu_pass_timestamps_.end_frame(command);return;
+    }
     } else if (pass_id == "render.pass.auto-exposure") {
     const std::uint32_t history_read=exposure_history_index_;
     const std::uint32_t history_write=1U-history_read;
@@ -4053,6 +4198,8 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     else if (pass_id=="render.pass.tone-map") tone_map_record_microseconds_=record_duration;
     else if (pass_id=="render.pass.fxaa") fxaa_record_microseconds_=record_duration;
     }
+    if(!temporal_history_committed && !commit_temporal_history(false,
+        temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid)))return;
     gpu_pass_timestamps_.end_frame(command);
     previous_view_projection_=view_projection.value;
     previous_temporal_frame_=frame_index_;
@@ -4418,6 +4565,7 @@ std::string SceneRenderer::last_pixel_evidence_json() const {
 std::string SceneRenderer::status_json() const {
     const auto& shader_contract=runtime_shader_artifacts();
     const auto gpu_timestamp_evidence=nlohmann::json::parse(gpu_pass_timestamps_.status_json());
+    const auto temporal_history_evidence=nlohmann::json::parse(temporal_history_authority_.canonical_evidence());
     const nlohmann::json device_evidence{
         {"backend",gpu_backend_}, {"adapter",gpu_device_name_}, {"driverName",gpu_driver_name_},
         {"driverVersion",gpu_driver_version_}, {"driverInfo",gpu_driver_info_},
@@ -4510,7 +4658,7 @@ std::string SceneRenderer::status_json() const {
                 {"right", pixel_presentation_.letterbox.right}, {"bottom", pixel_presentation_.letterbox.bottom}}}};
     }
     std::ostringstream out;
-    out << "{\"schemaVersion\":\"noemancer.renderer-status.v25\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
+    out << "{\"schemaVersion\":\"noemancer.renderer-status.v26\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
         << ",\"pipeline\":\"forward-lit\",\"builtInPrimitives\":{\"sphere\":{\"topology\":\"uv-sphere\",\"segments\":"
         << builtin_sphere_segments << ",\"rings\":" << builtin_sphere_rings << ",\"triangles\":"
         << builtin_sphere_index_count/3U << "}},\"surface\":{\"width\":" << width_
@@ -4545,12 +4693,20 @@ std::string SceneRenderer::status_json() const {
         << ",\"skyViewLutRegenerations\":" << sky_view_lut_regenerations_
         << ",\"cameraVolumeRegenerations\":" << sky_camera_volume_regenerations_ << ",\"contract\":"
         << sky_atmosphere_canonical_evidence(sky_atmosphere_) << "},"
-        << "\"temporal\":{\"mode\":\"" << (hybrid_pixel_active()?"spatial-pixel-stable":"TAAU")
-        << "\",\"debugView\":\"" << temporal_debug_mode_name_ << "\",\"debugViews\":[\"final\",\"motion\",\"reactive\",\"disocclusion\",\"history-weight\"],\"upscalingActive\":"
+        << "\"screenSpaceFoundation\":{\"schema\":\"noemancer.screen-space-foundation/0.1\",\"depthPyramid\":{\"ready\":"
+        << (depth_pyramid_texture_&&depth_pyramid_seed_pipeline_&&depth_pyramid_reduce_pipeline_?"true":"false")
+        << ",\"format\":\"RG32_FLOAT\",\"encoding\":\"linear-view-depth-min-max\",\"baseExtent\":[" << render_width_ << ',' << render_height_
+        << "],\"mipCount\":" << depth_pyramid_mip_count_ << ",\"workingSetBytes\":" << depth_pyramid_working_set_bytes_
+        << ",\"seedDispatches\":" << depth_pyramid_seed_dispatches_ << ",\"reduceDispatches\":" << depth_pyramid_reduce_dispatches_
+        << ",\"oddExtentPolicy\":\"ceil-half-clamped-2x2\",\"consumers\":[\"GTAO-ordering\",\"temporal-denoise-ordering\",\"SSR-ready\",\"SSGI-ready\"]}"
+        << ",\"historyAuthority\":" << temporal_history_evidence.dump()
+        << ",\"fallback\":\"history-rejected-current-frame-spatial-resolve\"},"
+        << "\"temporal\":{\"mode\":\"" << (hybrid_pixel_active()?"spatial-pixel-stable":"shared-temporal-denoise")
+        << "\",\"debugView\":\"" << temporal_debug_mode_name_ << "\",\"debugViews\":[\"final\",\"motion\",\"reactive\",\"disocclusion\",\"history-weight\",\"history-clamp\",\"linear-depth\",\"normal\"],\"upscalingActive\":"
         << (!hybrid_pixel_active()&&render_scale_<0.999F?"true":"false")
         << ",\"motionVectorFormat\":\"RG16_FLOAT\",\"historyFormat\":\"RGBA16_FLOAT\",\"historyDepthFormat\":\"R32_FLOAT\",\"reactiveMaskFormat\":\"R8_UNORM\",\"workingSetBytes\":"
         << static_cast<std::uint64_t>(render_width_)*render_height_*5ULL+static_cast<std::uint64_t>(post_width_)*post_height_*32ULL
-        << ",\"historyWeight\":" << (hybrid_pixel_active()?0.0F:0.9F) << ",\"historyValid\":" << (temporal_history_valid_?"true":"false")
+        << ",\"historyNormalFormat\":\"RGBA16_FLOAT\",\"historyWeight\":" << (hybrid_pixel_active()?0.0F:0.9F) << ",\"historyValid\":" << (temporal_history_valid_?"true":"false")
         << ",\"historyIndex\":" << taa_history_index_ << ",\"historyResets\":" << taa_history_resets_
         << ",\"previousCamera\":true,\"previousModel\":true,\"previousSkinnedPose\":true,\"projectionJitter\":" << (hybrid_pixel_active()?"false":"true")
         << ",\"jitterSequence\":\"" << (hybrid_pixel_active()?"disabled":"Halton(2,3)/8") << "\",\"jitterSample\":" << temporal_jitter_sample_
@@ -4751,6 +4907,12 @@ std::string SceneRenderer::status_json() const {
 }
 
 void SceneRenderer::release_targets() {
+    const auto temporal_state=temporal_history_authority_.state(TemporalHistoryConsumer::taa);
+    if(temporal_state.current_valid) {
+        const auto reset=temporal_history_authority_.reset({TemporalHistoryConsumer::taa,temporal_state.revision,
+            temporal_history_reset_mask(TemporalHistoryResetReason::output_invalid)});
+        if(reset.success)taa_history_resets_=temporal_history_authority_.state(TemporalHistoryConsumer::taa).reset_count;
+    }
     if (color_texture_) SDL_ReleaseGPUTexture(device_,color_texture_);
     if (hdr_texture_) SDL_ReleaseGPUTexture(device_,hdr_texture_);
     if(aerial_hdr_texture_)SDL_ReleaseGPUTexture(device_,aerial_hdr_texture_);
@@ -4770,7 +4932,9 @@ void SceneRenderer::release_targets() {
     for (auto* history:exposure_history_textures_) if (history) SDL_ReleaseGPUTexture(device_,history);
     for (auto* history:taa_history_textures_) if (history) SDL_ReleaseGPUTexture(device_,history);
     for (auto* history:taa_history_depth_textures_) if (history) SDL_ReleaseGPUTexture(device_,history);
+    for(auto* history:temporal_history_normal_textures_)if(history)SDL_ReleaseGPUTexture(device_,history);
     if (depth_texture_) SDL_ReleaseGPUTexture(device_,depth_texture_);
+    if(depth_pyramid_texture_)SDL_ReleaseGPUTexture(device_,depth_pyramid_texture_);
     if (shadow_texture_) SDL_ReleaseGPUTexture(device_,shadow_texture_);
     if (local_shadow_texture_) SDL_ReleaseGPUTexture(device_,local_shadow_texture_);
     color_texture_=nullptr;hdr_texture_=nullptr;aerial_hdr_texture_=nullptr;ao_composited_hdr_texture_=nullptr;indirect_lighting_texture_=nullptr;
@@ -4780,7 +4944,9 @@ void SceneRenderer::release_targets() {
     bloom_downsample_textures_.fill(nullptr);bloom_upsample_textures_.fill(nullptr);bloom_working_set_bytes_=0;
     exposure_history_textures_.fill(nullptr); taa_history_textures_.fill(nullptr);
     taa_history_depth_textures_.fill(nullptr);
-    depth_texture_=nullptr; shadow_texture_=nullptr; local_shadow_texture_=nullptr;
+    temporal_history_normal_textures_.fill(nullptr);
+    depth_texture_=nullptr;depth_pyramid_texture_=nullptr;shadow_texture_=nullptr;local_shadow_texture_=nullptr;
+    depth_pyramid_mip_count_=0U;depth_pyramid_working_set_bytes_=0U;
     width_=height_=render_width_=render_height_=post_width_=post_height_=0;
     pixel_presentation_={};
     temporal_history_valid_=false; taa_history_index_=0; exposure_history_valid_=false; exposure_history_index_=0;
@@ -4904,6 +5070,8 @@ void SceneRenderer::release() {
     if(sky_lut_sampler_)SDL_ReleaseGPUSampler(device_,sky_lut_sampler_);
     if (fxaa_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,fxaa_pipeline_);
     if (taa_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,taa_pipeline_);
+    if(depth_pyramid_seed_pipeline_)SDL_ReleaseGPUComputePipeline(device_,depth_pyramid_seed_pipeline_);
+    if(depth_pyramid_reduce_pipeline_)SDL_ReleaseGPUComputePipeline(device_,depth_pyramid_reduce_pipeline_);
     if (vfx_alpha_draw_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,vfx_alpha_draw_pipeline_);
     if (vfx_additive_draw_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,vfx_additive_draw_pipeline_);
     if (vfx_compute_pipeline_) SDL_ReleaseGPUComputePipeline(device_,vfx_compute_pipeline_);
@@ -4946,7 +5114,8 @@ void SceneRenderer::release() {
     local_light_upload_=nullptr;light_cluster_upload_=nullptr;light_cluster_index_upload_=nullptr;
     bloom_downsample_pipeline_=nullptr;bloom_upsample_pipeline_=nullptr;gtao_pipeline_=nullptr;ao_denoise_pipeline_=nullptr;
     ao_composite_pipeline_=nullptr;auto_exposure_pipeline_=nullptr;
-    tone_map_pipeline_=nullptr;sky_atmosphere_pipeline_=nullptr;sky_atmosphere_analytic_pipeline_=nullptr;aerial_perspective_pipeline_=nullptr;fxaa_pipeline_=nullptr;taa_pipeline_=nullptr;vfx_alpha_draw_pipeline_=nullptr;
+    tone_map_pipeline_=nullptr;sky_atmosphere_pipeline_=nullptr;sky_atmosphere_analytic_pipeline_=nullptr;aerial_perspective_pipeline_=nullptr;fxaa_pipeline_=nullptr;taa_pipeline_=nullptr;
+    depth_pyramid_seed_pipeline_=nullptr;depth_pyramid_reduce_pipeline_=nullptr;vfx_alpha_draw_pipeline_=nullptr;
     sky_transmittance_pipeline_=nullptr;sky_multi_scattering_pipeline_=nullptr;sky_view_pipeline_=nullptr;sky_camera_volume_pipeline_=nullptr;
     sky_transmittance_lut_=nullptr;sky_multi_scattering_lut_=nullptr;sky_view_lut_=nullptr;sky_camera_volume_lut_=nullptr;sky_lut_sampler_=nullptr;
     sky_medium_lut_valid_=false;sky_lut_valid_=false;sky_medium_lut_identity_.clear();

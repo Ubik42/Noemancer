@@ -202,6 +202,10 @@ add_executable(noemancer_temporal_aa_tests temporal_aa_tests.cpp)
 target_link_libraries(noemancer_temporal_aa_tests PRIVATE noemancer::engine)
 add_test(NAME noemancer.temporal_aa COMMAND noemancer_temporal_aa_tests)
 
+add_executable(noemancer_temporal_history_tests temporal_history_tests.cpp)
+target_link_libraries(noemancer_temporal_history_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.temporal_history COMMAND noemancer_temporal_history_tests)
+
 add_executable(noemancer_image_decoder_tests image_decoder_tests.cpp)
 target_link_libraries(noemancer_image_decoder_tests PRIVATE noemancer::engine)
 add_test(NAME noemancer.image_decoder COMMAND noemancer_image_decoder_tests)

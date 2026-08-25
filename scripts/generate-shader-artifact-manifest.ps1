@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 
 $SourceContractSchema = 'noemancer.shader-artifact-source-contract/0.1'
 $ManifestSchema = 'noemancer.shader-artifact-manifest/0.1'
-$ExpectedShaderCount = 37
+$ExpectedShaderCount = 40
 $ResourceNames = @(
     'samplers',
     'uniformBuffers',
@@ -278,6 +278,8 @@ try {
         'vfx_sim.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 7; threadGroupX = 64 }
         'vfx_sort_alpha.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 3; threadGroupX = 256 }
         'vfx_spawn.comp' = [ordered]@{ uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 7; threadGroupX = 64 }
+        'depth_pyramid_seed.comp' = [ordered]@{ samplers = 1; uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 0; storageTextures = 1; threadGroupX = 8; threadGroupY = 8; threadGroupZ = 1 }
+        'depth_pyramid_reduce.comp' = [ordered]@{ samplers = 1; uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 0; storageTextures = 1; threadGroupX = 8; threadGroupY = 8; threadGroupZ = 1 }
         'sky_atmosphere_transmittance.comp' = [ordered]@{ samplers = 0; uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 0; storageTextures = 1; threadGroupX = 8; threadGroupY = 8; threadGroupZ = 1 }
         'sky_atmosphere_multi_scattering.comp' = [ordered]@{ samplers = 1; uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 0; storageTextures = 1; threadGroupX = 8; threadGroupY = 8; threadGroupZ = 1 }
         'sky_atmosphere_sky_view.comp' = [ordered]@{ samplers = 2; uniformBuffers = 1; readonlyStorageBuffers = 0; readwriteStorageBuffers = 0; storageTextures = 1; threadGroupX = 8; threadGroupY = 8; threadGroupZ = 1 }

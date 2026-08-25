@@ -572,7 +572,7 @@ function Invoke-HiddenVisualProbe {
     $tilemaps = Get-PropertyValue $status 'tilemaps'
     $vfxGpu = Get-PropertyValue $status 'vfxGpu'
     $submission = Get-PropertyValue $status 'submission'
-    & $addCheck 'schemaVersion' (Get-PropertyValue $status 'schemaVersion') ([string](Get-PropertyValue $status 'schemaVersion') -eq 'noemancer.renderer-status.v25')
+    & $addCheck 'schemaVersion' (Get-PropertyValue $status 'schemaVersion') ([string](Get-PropertyValue $status 'schemaVersion') -eq 'noemancer.renderer-status.v26')
     & $addCheck 'hybridPixel.active' (Get-PropertyValue $hybrid 'active') ((Get-PropertyValue $hybrid 'active') -eq $true)
     & $addCheck 'hybridPixel.profile.profileId' (Get-PropertyValue $profile 'profileId') ([string](Get-PropertyValue $profile 'profileId') -eq [string](Get-PropertyValue (Get-PropertyValue $script:StaticState 'manifest') 'hybridPixelProfile').profileId)
     & $addCheck 'hybridPixel.projection.valid' (Get-PropertyValue $projection 'valid') ((Get-PropertyValue $projection 'valid') -eq $true)

@@ -2633,7 +2633,7 @@ int Application::run_interactive() {
             applied_sky_atmosphere_revision=sky_atmosphere_revision_;
         }
         std::uint32_t requested_width=editor_ui_.requested_scene_width(),requested_height=editor_ui_.requested_scene_height();
-        if(runtime_surface_mode||!options_.capture_frame_path.empty()||!options_.reference_scene_id.empty()) {int width{},height{};SDL_GetWindowSizeInPixels(window,&width,&height);
+        if(performance_run||runtime_surface_mode||!options_.capture_frame_path.empty()||!options_.reference_scene_id.empty()) {int width{},height{};SDL_GetWindowSizeInPixels(window,&width,&height);
             requested_width=static_cast<std::uint32_t>(std::max(1,width));requested_height=static_cast<std::uint32_t>(std::max(1,height));}
         if (!scene_renderer->resize(requested_width,requested_height)) {
             logger_.error("render.scene_resize", scene_renderer->last_error());

@@ -47,7 +47,7 @@ $script:Package = $null
 $script:PackageHeadless = $null
 $script:ShaderClosure = $null
 $script:GameProfileContract = $null
-$script:ExpectedShaderCount = 37
+$script:ExpectedShaderCount = 40
 $script:SourceCaptures = [System.Collections.Generic.List[object]]::new()
 $script:PackageCaptures = [System.Collections.Generic.List[object]]::new()
 
@@ -615,8 +615,15 @@ function Get-HybridRendererSnapshot {
     )
 
     $statusVersion = [string](Get-PropertyValue $Status 'schemaVersion')
-    if ($statusVersion -ne 'noemancer.renderer-status.v25') {
-        Add-Issue -Code 'renderer.schema-invalid' -Stage $Stage -Path '/schemaVersion' -Message "Expected noemancer.renderer-status.v25, got '$statusVersion'."
+    if ($statusVersion -ne 'noemancer.renderer-status.v26') {
+        Add-Issue -Code 'renderer.schema-invalid' -Stage $Stage -Path '/schemaVersion' -Message "Expected noemancer.renderer-status.v26, got '$statusVersion'."
+    }
+    $graph = Get-PropertyValue $Status 'graph'
+    if ($null -eq $graph) {
+        Add-Issue -Code 'renderer.graph-missing' -Stage $Stage -Path '/graph' -Message 'Renderer Status does not expose the authoritative Render Graph projection.'
+    }
+    else {
+        Assert-Scalar (Get-PropertyValue $graph 'graphId') 'render.graph.forward.v14' '/graph/graphId' $Stage | Out-Null
     }
     $hybrid = Get-PropertyValue $Status 'hybridPixel'
     if ($null -eq $hybrid) {

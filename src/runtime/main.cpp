@@ -68,7 +68,7 @@ void print_usage() {
         << "                 [--shadow-quality low|medium|high]\n"
         << "                 [--texture-streaming-budget-kib N] [--texture-streaming-resident-budget-kib N]\n"
         << "                 [--texture-streaming-workload noemancer.texture-streaming.pressure/0.1]\n"
-        << "                 [--temporal-debug final|motion|reactive|disocclusion|history-weight]\n"
+        << "                 [--temporal-debug final|motion|reactive|disocclusion|history-weight|history-clamp|linear-depth|normal]\n"
         << "                 [--reference-scene commercial-raster-v1]\n"
         << "                 [--render-stress-instances N]\n"
         << "                 [--animation-physics-stress]\n"
@@ -463,7 +463,8 @@ int main(int argc, char** argv) {
             }
         } else if (argument == "--temporal-debug" && index < argc) {
             const std::string mode=argv[index++];
-            if (mode!="final" && mode!="motion" && mode!="reactive" && mode!="disocclusion" && mode!="history-weight") {
+            if (mode!="final" && mode!="motion" && mode!="reactive" && mode!="disocclusion" && mode!="history-weight" &&
+                mode!="history-clamp" && mode!="linear-depth" && mode!="normal") {
                 std::cerr << "Unknown temporal debug mode\n";
                 return 2;
             }

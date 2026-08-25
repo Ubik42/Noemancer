@@ -52,7 +52,7 @@ if (-not (Test-Path -LiteralPath $image -PathType Leaf) -or
 $sidecar = Get-Content -LiteralPath $sidecarPath -Raw | ConvertFrom-Json
 if (-not $sidecar.pass -or -not $sidecar.dimensionsMatch -or
     $sidecar.referenceContract.id -ne 'noemancer.commercial-raster-reference/1.8' -or
-    $sidecar.renderer.schemaVersion -ne 'noemancer.renderer-status.v25' -or
+    $sidecar.renderer.schemaVersion -ne 'noemancer.renderer-status.v26' -or
     $sidecar.renderer.graph.schemaVersion -ne 'noemancer.render-graph.v11' -or
     $sidecar.renderer.colorPipeline.toneMapper -ne 'ACES-RRT-ODT-fit/matrix' -or
     $sidecar.renderer.colorPipeline.toneMapInput -ne 'scene-linear-after-grading' -or

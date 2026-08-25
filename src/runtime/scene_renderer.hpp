@@ -12,6 +12,7 @@
 #include "engine/render_world.hpp"
 #include "engine/sky_atmosphere.hpp"
 #include "engine/stable_range_allocator.hpp"
+#include "engine/temporal_history.hpp"
 #include "engine/texture_streaming_demand.hpp"
 #include "engine/vfx_gpu_residency.hpp"
 #include "runtime/runtime_texture_upload.hpp"
@@ -241,6 +242,8 @@ private:
     std::string sky_lut_fallback_reason_;
     SDL_GPUGraphicsPipeline* fxaa_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* taa_pipeline_{nullptr};
+    SDL_GPUComputePipeline* depth_pyramid_seed_pipeline_{nullptr};
+    SDL_GPUComputePipeline* depth_pyramid_reduce_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* vfx_alpha_draw_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* vfx_additive_draw_pipeline_{nullptr};
     SDL_GPUComputePipeline* vfx_compute_pipeline_{nullptr};
@@ -306,6 +309,12 @@ private:
     std::array<SDL_GPUTexture*,2> exposure_history_textures_{};
     std::array<SDL_GPUTexture*,2> taa_history_textures_{};
     std::array<SDL_GPUTexture*,2> taa_history_depth_textures_{};
+    std::array<SDL_GPUTexture*,2> temporal_history_normal_textures_{};
+    SDL_GPUTexture* depth_pyramid_texture_{nullptr};
+    std::uint32_t depth_pyramid_mip_count_{};
+    std::uint64_t depth_pyramid_working_set_bytes_{};
+    std::uint64_t depth_pyramid_seed_dispatches_{};
+    std::uint64_t depth_pyramid_reduce_dispatches_{};
     SDL_GPUTexture* depth_texture_{nullptr};
     SDL_GPUTexture* shadow_texture_{nullptr};
     SDL_GPUTexture* local_shadow_texture_{nullptr};
@@ -621,6 +630,8 @@ private:
     std::uint32_t taa_history_index_{};
     std::uint64_t taa_history_resets_{};
     bool temporal_history_valid_{};
+    TemporalHistoryAuthority temporal_history_authority_;
+    std::uint64_t temporal_camera_cut_epoch_{};
     std::uint32_t temporal_jitter_sample_{};
     std::array<float,2> temporal_jitter_pixels_{};
     std::array<float,2> temporal_jitter_ndc_{};

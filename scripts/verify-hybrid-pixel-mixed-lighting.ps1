@@ -743,7 +743,7 @@ function Test-RendererStatusContract {
     )
     $before = $script:Issues.Count
     if ($null -eq $Status) { Add-Issue -Code 'renderer.status-missing' -Stage $Stage -Message 'Renderer Status payload is missing.'; return [ordered]@{ pass = $false; fingerprint = '' } }
-    Assert-Scalar (Get-PropertyValue $Status 'schemaVersion') 'noemancer.renderer-status.v25' '/schemaVersion' $Stage | Out-Null
+    Assert-Scalar (Get-PropertyValue $Status 'schemaVersion') 'noemancer.renderer-status.v26' '/schemaVersion' $Stage | Out-Null
     $hybrid = Get-PropertyValue $Status 'hybridPixel'
     if ($null -eq $hybrid) { Add-Issue -Code 'renderer.hybrid-pixel-missing' -Stage $Stage -Path '/hybridPixel' -Message 'Renderer Status does not expose Hybrid Pixel evidence.' }
     else {

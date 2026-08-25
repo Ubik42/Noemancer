@@ -73,6 +73,44 @@
       "threadGroup": null
     },
     {
+      "stem": "depth_pyramid_reduce.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 1,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0,
+        "storageTextures": 1
+      },
+      "threadGroup": [
+        8,
+        8,
+        1
+      ]
+    },
+    {
+      "stem": "depth_pyramid_seed.comp",
+      "stage": "compute",
+      "profile": "cs_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 1,
+        "uniformBuffers": 1,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0,
+        "storageTextures": 1
+      },
+      "threadGroup": [
+        8,
+        8,
+        1
+      ]
+    },
+    {
       "stem": "fxaa.frag",
       "stage": "fragment",
       "profile": "ps_6_0",
@@ -294,6 +332,20 @@
       "resources": {
         "samplers": 0,
         "uniformBuffers": 0,
+        "storageBuffers": 0,
+        "readonlyStorageBuffers": 0,
+        "readwriteStorageBuffers": 0
+      },
+      "threadGroup": null
+    },
+    {
+      "stem": "temporal_denoise.frag",
+      "stage": "fragment",
+      "profile": "ps_6_0",
+      "entrypoint": "main",
+      "resources": {
+        "samplers": 8,
+        "uniformBuffers": 1,
         "storageBuffers": 0,
         "readonlyStorageBuffers": 0,
         "readwriteStorageBuffers": 0
