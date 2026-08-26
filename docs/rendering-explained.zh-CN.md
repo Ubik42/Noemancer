@@ -1,7 +1,9 @@
 # Noemancer 当前开发程度与渲染小白说明
 
-> 性质：面向非渲染专业读者的当前实现解读  
-> 更新：2026-08-25  
+> 性质：面向非渲染专业读者的当前实现解读
+>
+> 更新：2026-08-25
+>
 > 准确状态仍以 [`current-state.json`](current-state.json)、[`first-acceptance-status.zh-CN.md`](first-acceptance-status.zh-CN.md) 和真实代码/验收证据为准。本页负责解释，不替代能力合同。
 
 ## 先说结论：它现在到底算什么程度？
