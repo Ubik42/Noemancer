@@ -781,11 +781,27 @@ void fastgltf_decode_images(const fastgltf::Asset& asset, GltfMeshData& result) 
         auto& decoded_image = result.images[image_index];
         fastgltf::MimeType mime_type = fastgltf::MimeType::None;
         const auto encoded = fastgltf_image_bytes(asset, asset.images[image_index], mime_type);
-        decoded_image.mime_type = std::string(fastgltf::getMimeTypeString(mime_type));
         if (encoded.empty()) {
             decoded_image.code = "image.external-uri-unavailable";
             continue;
         }
+        // JSON glTF commonly omits image.mimeType when the URI extension is
+        // sufficient. fastgltf has already staged and loaded the bounded
+        // dependency bytes at this point, so infer only the two formats owned
+        // by the engine image adapter instead of trusting a filename here.
+        if (mime_type == fastgltf::MimeType::None) {
+            constexpr std::array<std::byte, 8> png_signature{
+                std::byte{0x89}, std::byte{0x50}, std::byte{0x4e}, std::byte{0x47},
+                std::byte{0x0d}, std::byte{0x0a}, std::byte{0x1a}, std::byte{0x0a}};
+            if (encoded.size() >= png_signature.size() &&
+                std::equal(png_signature.begin(), png_signature.end(), encoded.begin())) {
+                mime_type = fastgltf::MimeType::PNG;
+            } else if (encoded.size() >= 3U && encoded[0] == std::byte{0xff} &&
+                       encoded[1] == std::byte{0xd8} && encoded[2] == std::byte{0xff}) {
+                mime_type = fastgltf::MimeType::JPEG;
+            }
+        }
+        decoded_image.mime_type = std::string(fastgltf::getMimeTypeString(mime_type));
         DecodedImage image;
         if (mime_type == fastgltf::MimeType::PNG) image = decode_image_rgba8(encoded, "image/png");
         else if (mime_type == fastgltf::MimeType::JPEG) image = decode_image_rgba8(encoded, "image/jpeg");

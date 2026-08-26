@@ -168,8 +168,9 @@ ExternalGltfFixture make_external_gltf_fixture(const bool jpeg=false){
         {"buffers",{{{"uri","geometry/mesh.bin"},{"byteLength",geometry.size()}}}},
         {"bufferViews",{{{"buffer",0},{"byteOffset",0},{"byteLength",geometry.size()}}}},
         {"accessors",{{{"bufferView",0},{"componentType",5126},{"count",3},{"type","VEC3"}}}},
-        {"images",{{{"uri",jpeg?"textures/base.jpg":"textures/base.png"},
-                       {"mimeType",jpeg?"image/jpeg":"image/png"}}}},
+        // URI-backed images are allowed to omit image.mimeType in glTF 2.0;
+        // the importer must recognize the bounded dependency by file signature.
+        {"images",{{{"uri",jpeg?"textures/base.jpg":"textures/base.png"}}}},
         {"textures",{{{"source",0}}}},
         {"materials",{{{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}}}}}}},
         {"meshes",{{{"primitives",{{{"attributes",{{"POSITION",0}}},{"material",0}}}}}}},

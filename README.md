@@ -21,28 +21,23 @@
 
 ## 最新渲染画面
 
-| 商业 Raster 基准 | 动态天空与大气 |
+![Intel Sponza 2022 宫殿中庭](docs/media/renderlab-sponza-atrium.webp)
+
+<p align="center"><sub>Intel Sponza 2022 中庭：约 205 万顶点、1124 万索引、405 个 primitive 与 72 张材质图；图示为 D3D12，Vulkan 已取得同构捕获。</sub></p>
+
+| Sponza 上层回廊 | 商业 Raster 基准 |
 | --- | --- |
-| ![PBR、材质响应、阴影、Bloom 与 Tone Mapping](docs/media/renderlab-commercial-raster.webp) | ![四 LUT 动态天空与 Aerial Perspective](docs/media/renderlab-sky-atmosphere.webp) |
+| ![Intel Sponza 2022 上层回廊](docs/media/renderlab-sponza-balcony.webp) | ![PBR、材质响应、阴影、Bloom 与 Tone Mapping](docs/media/renderlab-commercial-raster.webp) |
 
-![RenderLab 中启用 SSR 与 SSGI 的公开经典资产场景](docs/media/renderlab-ssr-ssgi.webp)
+| 动态天空与大气 | SSR 与 SSGI |
+| --- | --- |
+| ![四 LUT 动态天空与 Aerial Perspective](docs/media/renderlab-sky-atmosphere.webp) | ![RenderLab 中启用 SSR 与 SSGI 的公开经典资产场景](docs/media/renderlab-ssr-ssgi.webp) |
 
-以上图片来自 Release 隐藏捕获，不是离线渲染或概念图。对应场景走正式 Project → Cook → Package → Player 路径；D3D12 与 Vulkan 分别留有画面、Render Graph、Shader 指纹、逐 Pass GPU 时间和结构化回执。当前 RenderLab 仍是工程验证场景，不代表最终美术品质。
+以上图片来自 Release 隐藏捕获，不是离线渲染或概念图。Classic 基线已走通 Project → Cook → Package → Player；Sponza 当前证明的是正式外部 Source Project、JSON glTF 依赖闭包和 D3D12/Vulkan 实时画面，大型场景 Cook/Package 仍待收口。两后端分别留有画面、Render Graph、Shader 指纹和结构化回执。Sponza 2022 由 Frank Meinl 制作、Anton Kaplanyan 赞助并由 Intel 发布，采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)；RenderLab 使用保留完整几何、将材质派生为 1K 的外部测试版本，不把大型素材提交到引擎仓库。
 
 Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 Editor、游戏 Runtime、资产 Cook、独立 Player 打包、C# 项目脚本，以及由同一套引擎命令驱动的 CLI 和 MCP 接口。
 
 当前版本可以从 Project Hub 创建或打开工程，在 Editor 中编辑 Scene、组件、输入和项目 UI，进入隔离的 Play World 运行 C# 游戏逻辑，再把资产与运行时依赖打成可独立启动的 Windows Player。引擎仍处于 **pre-alpha**：公开 API 会变化，只完整验证了 Windows x64；硬件光追、RTGI、VSM 与跨平台发行仍不能写成现有能力。
-
-### 2026-08-25 能力快照
-
-| 领域 | 当前可用 | 尚未完成 |
-| --- | --- | --- |
-| Editor | Project Hub、中文界面、Scene/Outliner/Inspector/Asset Browser、Play World、Apply Back、项目 UI/Input 作者工具 | 完整高 DPI 响应式布局、可再分发 CJK/Arabic 字体、稳定插件 SDK |
-| Runtime | Flecs ECS、Jolt、ozz、C#/.NET 10、RmlUi、miniaudio、GPU VFX | 深度网络、完整导航、跨平台产品化 |
-| Raster | Forward PBR、CSM/局部阴影、动态天空、HiZ、SSR、SSGI、TAA/GTAO/Bloom/ACES、GPU Scene 可见性 | Virtual Shadow Maps、descriptor-bound bindless 收益闭环 |
-| Native RT | D3D12/Vulkan 能力探测；双后端真实三角形 BLAS/单实例 TLAS Build Probe | 持久 Native RHI、SBT、Trace Dispatch、Render Graph 接入、RTGI 与时域降噪 |
-| 资产/发布 | GLB/FBX、PNG/JPEG→KTX2、Mesh/Animation Cook、确定性 Package、独立 Windows Player、许可证闭包 | 签名安装器、独立机器发行矩阵 |
-| AI 原生 | 稳定 ID/Schema/revision、Plan/Apply/Receipt、CLI/MCP、运行中 Editor 会话、结构化渲染/编译/诊断证据 | 更深硬件调试工具、跨进程 durable journal、Agent 自动性能归因 |
 
 ## 当前能力
 
@@ -75,7 +70,7 @@ Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vu
 
 ### 资产与发布
 
-- GLB/FBX 离线导入，KTX2 BasisLZ/UASTC 纹理 Cook，meshoptimizer 几何处理，Sprite Atlas 与 Tilemap 增量数据。
+- GLB/JSON glTF/FBX 离线导入，KTX2 BasisLZ/UASTC 纹理 Cook，meshoptimizer 几何处理，Sprite Atlas 与 Tilemap 增量数据。
 - Cook 产物由源文件、配方、目标 Profile 和工具版本共同寻址；Runtime 在加载前检查范围、Schema 与 SHA-256。
 - 打包后的 Player 只加载 `.meshbin`、`.animbin`、KTX2 等运行时资产，不在玩家机器上解析源 GLB/FBX 或执行离线编译。
 - Windows 包包含 app-local .NET、VC Runtime、Shader Manifest、第三方许可证和 NOTICE；包体通过原子 staging 提交。

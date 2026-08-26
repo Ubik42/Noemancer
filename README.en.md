@@ -15,20 +15,32 @@
 
 ![Noemancer editor](docs/media/editor-preview.webp)
 
+## Latest rendering
+
+![Intel Sponza 2022 atrium rendered by Noemancer](docs/media/renderlab-sponza-atrium.webp)
+
+The scene contains roughly 2.05 million vertices, 11.24 million indices, 405 primitives, and 72 material images. The image above is the D3D12 capture; matching Vulkan captures were recorded for both published views.
+
+| Upper arcade | Raster material baseline |
+| --- | --- |
+| ![Intel Sponza 2022 upper arcade](docs/media/renderlab-sponza-balcony.webp) | ![PBR materials, shadows, Bloom and tone mapping](docs/media/renderlab-commercial-raster.webp) |
+
+These are hidden Release captures from the engine, not offline renders or concept images. The Classic baseline closes Project → Cook → Package → Player; Sponza currently proves the external Source Project, JSON glTF dependency closure, and live D3D12/Vulkan paths. Large-scene Cook and Package remain open. Sponza 2022 was created by Frank Meinl, sponsored by Anton Kaplanyan, published by Intel, and is used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). RenderLab keeps the full geometry in an external test project and derives 1K material textures; the large source asset is not committed to this repository.
+
 Noemancer is not an editor shell around an existing engine. The repository contains the native Editor, game Runtime, asset Cook, standalone Player packaging, C# project scripting, and one engine command layer exposed through CLI and MCP.
 
-The current build can create and open projects, author scenes, input and project UI, run C# game logic in an isolated Play World, and package a standalone Windows Player. It remains **pre-alpha**: contracts will change, Windows x64 is the only end-to-end verified platform, and unfinished work such as SSR, SSGI, dynamic atmosphere and hardware ray tracing is not presented as a current feature.
+The current build can create and open projects, author scenes, input and project UI, run C# game logic in an isolated Play World, and package a standalone Windows Player. It remains **pre-alpha**: contracts will change, Windows x64 is the only end-to-end verified platform, and unfinished work such as hardware ray tracing, RTGI and VSM is not presented as a current feature.
 
 ## Current capabilities
 
 - **Editor:** Project Hub, Scene View, Outliner, Inspector, Asset Browser, Console, Animation Graph, Agent Context, isolated Edit/Play Worlds, selective Apply Back, and revisioned undoable authoring. The official launcher defaults to Simplified Chinese and can switch to English.
 - **Runtime:** Flecs ECS, Jolt physics, ozz animation and GPU skinning, .NET 10 / C# scripts with hot-reload state migration, RmlUi/CSS project UI, HarfBuzz/ICU text, miniaudio, GPU VFX, Prefabs, Save and Replay.
-- **Rendering:** SDL_GPU D3D12/Vulkan, Forward PBR, split-sum IBL, CSM and Point/Spot shadows with caches, GPU frustum culling and indexed indirect draws for compatible static geometry, TAA, GTAO with bilateral filtering, Bloom, exposure/grading and ACES tone mapping.
+- **Rendering:** SDL_GPU D3D12/Vulkan, Forward PBR, split-sum IBL, CSM and Point/Spot shadows with caches, GPU frustum culling and indexed indirect draws for compatible static geometry, four-LUT dynamic atmosphere, shared HiZ, SSR, SSGI, TAA, GTAO with bilateral filtering, Bloom, exposure/grading and ACES tone mapping.
 - **Hybrid Pixel / HD2D:** virtual resolution, integer presentation, pixel-aligned Sprite/VFX output, mixed 2D/3D lighting and controlled post processing without a second renderer.
-- **Assets:** offline GLB/FBX import, KTX2 BasisLZ/UASTC, meshoptimizer geometry Cook, Sprite Atlas and Tilemap data, content/recipe-addressed artifacts, and schema/range/SHA-256 validation.
+- **Assets:** offline GLB/JSON glTF/FBX import, KTX2 BasisLZ/UASTC, meshoptimizer geometry Cook, Sprite Atlas and Tilemap data, content/recipe-addressed artifacts, and schema/range/SHA-256 validation.
 - **Distribution:** packaged Players consume runtime `.meshbin`, `.animbin` and KTX2 assets without source decode; Windows packages close app-local .NET, VC Runtime, shader manifests and third-party notices.
 
-The default Raster path does not currently provide SSR, SSGI, ray tracing, RTGI, VSM, or dynamic sky atmosphere.
+The default Raster path includes dynamic sky atmosphere, SSR and SSGI. Hardware ray tracing, RTGI and VSM remain in development.
 
 ## Editor, CLI, and Agent tools use the same commands
 

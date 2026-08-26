@@ -1862,7 +1862,7 @@ bool SceneRenderer::create_geometry() {
 bool SceneRenderer::create_imported_geometry() {
     for (const auto& asset : asset_registry_.records()) {
         if (!asset.available || (asset.extension != ".meshbin" && asset.extension != ".glb" &&
-            asset.extension != ".fbx")) continue;
+            asset.extension != ".gltf" && asset.extension != ".fbx")) continue;
         GltfMeshData decoded;
         if (asset.extension == ".meshbin") {
             constexpr std::uintmax_t maximum_mesh_artifact_bytes = 512U * 1024U * 1024U;
