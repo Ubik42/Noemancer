@@ -66,6 +66,8 @@ Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 
 
 当前默认 Raster 路径已经启用动态天空、SSR 与 SSGI，并在 RenderLab 取得 D3D12/Vulkan 的固定画面和逐 Pass GPU 时间证据。Ray Tracing、RTGI 与 VSM 仍在开发计划中；未进入真实 Render Graph、跨后端验证和性能证据的能力不会列为已完成。
 
+如果不熟悉 PBR、HiZ、SSR、SSGI、时域降噪或 Tone Mapping，可以阅读[当前开发程度与渲染小白说明](docs/rendering-explained.zh-CN.md)。它按一帧画面的真实加工顺序解释每项功能，也明确区分“已经形成画面”“只有底层基础”和“尚未实现”。
+
 Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vulkan Handle 泄漏进 Scene 或 Agent API。RTX 4080 已确认 DXR 1.1 与 Vulkan RT Extension/Feature，并在两端真实完成三角形 BLAS、单实例 TLAS、Barrier、Queue/Fence 和资源释放。该纵切只是短生命周期 Build Probe，只证明资源与同步边界成立，不等于已经拥有持久 Native RHI、可见光追画面或 RTGI。
 
 ### 资产与发布
