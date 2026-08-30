@@ -25,6 +25,7 @@
 #include "engine/project_ui_authoring.hpp"
 #include "engine/project_workspace.hpp"
 #include "engine/scene_document.hpp"
+#include "engine/physics_showcase_scene.hpp"
 #include "engine/shadow_scalability_stress_scene.hpp"
 #include "engine/retained_ui_runtime.hpp"
 #include "engine/semantic_ui.hpp"
@@ -604,6 +605,7 @@ Application::Application(RunOptions options)
         project_input_actions_=default_input_action_definitions();
         SceneDocument scene;
         if(!options_.reference_scene_id.empty())scene=make_commercial_raster_reference_scene_document();
+        else if(options_.physics_showcase)scene=make_physics_showcase_scene_document();
         else if(options_.animation_physics_stress)scene=make_animation_physics_stress_scene_document();
         else if(options_.gpu_occlusion_stress) {
             const auto generated=make_gpu_occlusion_stress_scene_document(
@@ -1576,7 +1578,7 @@ int Application::run() {
 
 void Application::tick_frame(const double delta_seconds) {
     engine_host_.run_frame(delta_seconds, [this] {
-        if (options_.headless||options_.player_mode||options_.animation_physics_stress||options_.gpu_occlusion_stress)
+        if (options_.headless||options_.player_mode||options_.animation_physics_stress||options_.physics_showcase||options_.gpu_occlusion_stress)
             world_.tick(1.0F / 60.0F);
         else if (play_world_ && (!play_paused_ || play_single_step_)) {
             play_world_->tick(1.0F / 60.0F);
@@ -1898,7 +1900,7 @@ int Application::run_headless() {
 
 int Application::run_interactive() {
     const bool performance_run=!options_.performance_evidence_path.empty();
-    const bool runtime_surface_mode=options_.player_mode||options_.animation_physics_stress;
+    const bool runtime_surface_mode=options_.player_mode||options_.animation_physics_stress||options_.physics_showcase;
     startup_telemetry_->begin_phase("sdl.initialize");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         logger_.error("sdl.init", SDL_GetError());

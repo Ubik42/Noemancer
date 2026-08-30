@@ -134,6 +134,16 @@ public sealed class ScriptWorldView(ulong revision, string selfJson, string inpu
         }
     }
 
+    public Float3? SelfAngularVelocity
+    {
+        get
+        {
+            using var document = JsonDocument.Parse(SelfJson);
+            if (!document.RootElement.TryGetProperty("angularVelocity", out var value)) return null;
+            return new(value.GetProperty("x").GetSingle(), value.GetProperty("y").GetSingle(), value.GetProperty("z").GetSingle());
+        }
+    }
+
     public CharacterMotor2DView? SelfCharacterMotor2D
     {
         get
@@ -301,6 +311,7 @@ public sealed class ScriptCommandBuffer
 {
     private readonly List<ScriptCommand> commands = [];
     private const string VelocityLinearPropertyId = "engine.entity.velocity.linear";
+    private const string VelocityAngularPropertyId = "engine.entity.velocity.angular";
     private const string SpriteVisiblePropertyId = "engine.entity.sprite.visible";
     public IReadOnlyList<ScriptCommand> Commands => commands;
 
@@ -317,6 +328,27 @@ public sealed class ScriptCommandBuffer
 
     public void SetVelocityLinear(EntityId entity, float x, float y, float z) =>
         SetVelocityLinear(entity, new Float3(x, y, z));
+
+    public void SetVelocityAngular(EntityId entity, Float3 angular) =>
+        SetProperty(entity, VelocityAngularPropertyId, EnsureFinite(angular, nameof(angular)));
+
+    public void SetVelocityAngular(EntityId entity, float x, float y, float z) =>
+        SetVelocityAngular(entity, new Float3(x, y, z));
+
+    public void ApplyForce(EntityId entity, Float3 force) =>
+        AddPhysicsVectorCommand("physics.force.apply", entity, force, nameof(force));
+
+    public void ApplyImpulse(EntityId entity, Float3 impulse) =>
+        AddPhysicsVectorCommand("physics.impulse.apply", entity, impulse, nameof(impulse));
+
+    public void ApplyAngularImpulse(EntityId entity, Float3 impulse) =>
+        AddPhysicsVectorCommand("physics.angular-impulse.apply", entity, impulse, nameof(impulse));
+
+    private void AddPhysicsVectorCommand(string operation, EntityId entity, Float3 value, string parameterName)
+    {
+        var finite = EnsureFinite(value, parameterName);
+        commands.Add(new(operation, entity.Value, new { x = finite.X, y = finite.Y, z = finite.Z }));
+    }
 
     public void SetSpriteVisible(EntityId entity, bool visible) =>
         SetProperty(entity, SpriteVisiblePropertyId, visible);

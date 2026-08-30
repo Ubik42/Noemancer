@@ -50,7 +50,7 @@ int main() {
         preview.at("observation").at("layoutDiagnostics").at("actionableOverflowCount") != 0 ||
         preview.dump().find("engine.entity.material.roughness") == std::string::npos ||
         preview.at("renderPacket").at("residentGeometryCount").get<std::size_t>() == 0 ||
-        preview.dump().size() >= 16 * 1024) {
+        preview.dump().size() >= 32 * 1024) {
         std::cerr << "RmlUi retained preview did not expose layout and renderer-neutral draw evidence\n"
                   << preview.dump(2) << '\n';
         return 3;

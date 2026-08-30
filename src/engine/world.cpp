@@ -179,6 +179,14 @@ const std::vector<InspectorPropertySchema>& inspector_property_schemas() {
         {"Transform","rotationEulerDegrees","engine.entity.transform.rotationEulerDegrees","Rotation","vector3","drag",{{"unit","deg"},{"step",0.25}}},
         {"Transform","scale","engine.entity.transform.scale","Scale","vector3","drag",{{"unit","ratio"},{"minimumExclusive",0.0},{"step",0.05}}},
         {"Velocity","linear","engine.entity.velocity.linear","Linear Velocity","vector3","drag",{{"unit","m/s"},{"step",0.05}}},
+        {"Velocity","angular","engine.entity.velocity.angular","Angular Velocity","vector3","drag",{{"unit","rad/s"},{"step",0.05}}},
+        {"RigidBody","motionType","engine.entity.rigidBody.motionType","Motion Type","enum","combo",{{"options",Json::array({"static","dynamic","kinematic"})}}},
+        {"RigidBody","mass","engine.entity.rigidBody.mass","Mass","f32","drag",{{"unit","kg"},{"minimumExclusive",0.0},{"step",0.05}}},
+        {"RigidBody","gravityFactor","engine.entity.rigidBody.gravityFactor","Gravity Factor","f32","drag",{{"minimum",-10.0},{"maximum",10.0},{"step",0.05}}},
+        {"RigidBody","linearDamping","engine.entity.rigidBody.linearDamping","Linear Damping","f32","slider",{{"minimum",0.0},{"maximum",1.0}}},
+        {"RigidBody","angularDamping","engine.entity.rigidBody.angularDamping","Angular Damping","f32","slider",{{"minimum",0.0},{"maximum",1.0}}},
+        {"RigidBody","continuousCollision","engine.entity.rigidBody.continuousCollision","Continuous Collision","bool","checkbox",Json::object()},
+        {"RigidBody","allowSleeping","engine.entity.rigidBody.allowSleeping","Allow Sleeping","bool","checkbox",Json::object()},
         {"PbrMaterial","baseColor","engine.entity.material.baseColor","Base Color","color3","color",{{"minimum",0.0},{"maximum",1.0}}},
         {"PbrMaterial","metallic","engine.entity.material.metallic","Metallic","f32","slider",{{"minimum",0.0},{"maximum",1.0}}},
         {"PbrMaterial","roughness","engine.entity.material.roughness","Roughness","f32","slider",{{"minimum",0.0},{"maximum",1.0}}},
@@ -236,7 +244,12 @@ std::optional<PhysicsBodyState> physics_state(const WorldEntityView& view) {
     state.rotation_x=view.transform->rotation_x;state.rotation_y=view.transform->rotation_y;
     state.rotation_z=view.transform->rotation_z;state.rotation_w=view.transform->rotation_w;
     state.velocity_x=velocity.x; state.velocity_y=velocity.y; state.velocity_z=velocity.z;
+    state.angular_velocity_x=velocity.angular_x;state.angular_velocity_y=velocity.angular_y;
+    state.angular_velocity_z=velocity.angular_z;
     state.gravity_factor=view.rigid_body->gravity_factor; state.linear_damping=view.rigid_body->linear_damping;
+    state.angular_damping=view.rigid_body->angular_damping;
+    state.continuous_collision=view.rigid_body->continuous_collision;
+    state.allow_sleeping=view.rigid_body->allow_sleeping;
     state.mass=view.rigid_body->mass;
     state.one_way=view.platform_2d&&view.platform_2d->collision_mode=="one-way";
     // CharacterMotor2D defines an XY platformer body. Keep this policy at the
@@ -423,12 +436,17 @@ SceneLoadResult World::load_scene_internal(const SceneDocument& document, const 
             entity.set<Velocity>({
                 static_cast<float>(source.velocity->linear.x),
                 static_cast<float>(source.velocity->linear.y),
-                static_cast<float>(source.velocity->linear.z)
+                static_cast<float>(source.velocity->linear.z),
+                static_cast<float>(source.velocity->angular.x),
+                static_cast<float>(source.velocity->angular.y),
+                static_cast<float>(source.velocity->angular.z)
             });
         }
         if (source.rigid_body) {
             entity.set<RigidBody>({motion_type(source.rigid_body->motion_type), static_cast<float>(source.rigid_body->mass),
-                static_cast<float>(source.rigid_body->gravity_factor), static_cast<float>(source.rigid_body->linear_damping)});
+                static_cast<float>(source.rigid_body->gravity_factor), static_cast<float>(source.rigid_body->linear_damping),
+                static_cast<float>(source.rigid_body->angular_damping),source.rigid_body->continuous_collision,
+                source.rigid_body->allow_sleeping});
         }
         if (source.box_collider) {
             entity.set<BoxCollider>({static_cast<float>(source.box_collider->half_extents.x), static_cast<float>(source.box_collider->half_extents.y),
@@ -813,7 +831,8 @@ void World::tick(const float delta_seconds) {
         entity.set<Transform>({body.position_x, body.position_y, body.position_z,
             current ? current->scale_x : 1.0F, current ? current->scale_y : 1.0F, current ? current->scale_z : 1.0F,
             body.rotation_x,body.rotation_y,body.rotation_z,body.rotation_w});
-        entity.set<Velocity>({body.velocity_x, body.velocity_y, body.velocity_z});
+        entity.set<Velocity>({body.velocity_x, body.velocity_y, body.velocity_z,
+            body.angular_velocity_x,body.angular_velocity_y,body.angular_velocity_z});
         physics_transforms_changed=true;
     }
     bool velocity_transforms_changed=false;
@@ -1269,11 +1288,14 @@ std::string World::observe_json(const ObservationQuery& query) const {
             entity["transform"] = {{"position", vector_json(semantic_vector(*view.transform))}};
         }
         if ((all_fields || fields.contains("velocity")) && view.velocity) {
-            entity["velocity"] = {{"linear", vector_json({view.velocity->x, view.velocity->y, view.velocity->z})}};
+            entity["velocity"] = {{"linear", vector_json({view.velocity->x, view.velocity->y, view.velocity->z})},
+                {"angular",vector_json({view.velocity->angular_x,view.velocity->angular_y,view.velocity->angular_z})}};
         }
         if ((all_fields || fields.contains("physics")) && view.rigid_body) {
             entity["rigidBody"] = {{"motionType", motion_type_name(view.rigid_body->motion_type)}, {"mass", view.rigid_body->mass},
-                {"gravityFactor", view.rigid_body->gravity_factor}, {"linearDamping", view.rigid_body->linear_damping}};
+                {"gravityFactor", view.rigid_body->gravity_factor}, {"linearDamping", view.rigid_body->linear_damping},
+                {"angularDamping",view.rigid_body->angular_damping},{"continuousCollision",view.rigid_body->continuous_collision},
+                {"allowSleeping",view.rigid_body->allow_sleeping}};
         }
         if ((all_fields || fields.contains("physics")) && view.box_collider) {
             entity["boxCollider"] = {{"halfExtents", vector_json({view.box_collider->half_x, view.box_collider->half_y, view.box_collider->half_z})},
@@ -1461,6 +1483,18 @@ std::optional<std::string> World::property_value_json(const std::string_view ent
     if(property=="engine.entity.velocity.linear") {
         if(const auto* value=entity.try_get<Velocity>())return vector_json({value->x,value->y,value->z}).dump();
     }
+    if(property=="engine.entity.velocity.angular") {
+        if(const auto* value=entity.try_get<Velocity>())return vector_json({value->angular_x,value->angular_y,value->angular_z}).dump();
+    }
+    if(const auto* value=entity.try_get<RigidBody>()) {
+        if(property=="engine.entity.rigidBody.motionType")return Json(motion_type_name(value->motion_type)).dump();
+        if(property=="engine.entity.rigidBody.mass")return Json(value->mass).dump();
+        if(property=="engine.entity.rigidBody.gravityFactor")return Json(value->gravity_factor).dump();
+        if(property=="engine.entity.rigidBody.linearDamping")return Json(value->linear_damping).dump();
+        if(property=="engine.entity.rigidBody.angularDamping")return Json(value->angular_damping).dump();
+        if(property=="engine.entity.rigidBody.continuousCollision")return Json(value->continuous_collision).dump();
+        if(property=="engine.entity.rigidBody.allowSleeping")return Json(value->allow_sleeping).dump();
+    }
     if (const auto* value = entity.try_get<PbrMaterial>()) {
         if (property == "engine.entity.material.baseColor") return vector_json({value->base_r, value->base_g, value->base_b}).dump();
         if (property == "engine.entity.material.metallic") return Json(value->metallic).dump();
@@ -1562,7 +1596,15 @@ PropertyChangePlan World::plan_property_update(const std::string_view entity_id,
     bool valid = false;
     if (property == "engine.entity.transform.position") valid = finite_vector();
     else if (property == "engine.entity.transform.rotationEulerDegrees") valid = finite_vector();
-    else if(property=="engine.entity.velocity.linear")valid=finite_vector();
+    else if(property=="engine.entity.velocity.linear"||property=="engine.entity.velocity.angular")valid=finite_vector();
+    else if(property=="engine.entity.rigidBody.motionType")valid=value.is_string()&&
+        (value.get_ref<const std::string&>()=="static"||value.get_ref<const std::string&>()=="dynamic"||
+         value.get_ref<const std::string&>()=="kinematic");
+    else if(property=="engine.entity.rigidBody.mass")valid=finite_number()&&value.get<double>()>0.0;
+    else if(property=="engine.entity.rigidBody.gravityFactor")valid=finite_number()&&value.get<double>()>=-10.0&&value.get<double>()<=10.0;
+    else if(property=="engine.entity.rigidBody.linearDamping"||property=="engine.entity.rigidBody.angularDamping")
+        valid=finite_number()&&value.get<double>()>=0.0&&value.get<double>()<=1.0;
+    else if(property=="engine.entity.rigidBody.continuousCollision"||property=="engine.entity.rigidBody.allowSleeping")valid=value.is_boolean();
     else if (property == "engine.entity.transform.scale") valid = finite_vector() && value.at("x").get<double>()>0.0 &&
         value.at("y").get<double>()>0.0 && value.at("z").get<double>()>0.0;
     else if (property == "engine.entity.material.baseColor") valid = finite_vector() && value.at("x").get<double>()>=0.0 &&
@@ -1738,7 +1780,24 @@ bool World::set_property_json(const std::string_view entity_id, const std::strin
         entity.set<Transform>(next);applied=true;
     }
     else if(property=="engine.entity.velocity.linear") {
-        const auto v=vector();entity.set<Velocity>({v.x,v.y,v.z});applied=true;
+        const auto v=vector();auto next=entity.get<Velocity>();next.x=v.x;next.y=v.y;next.z=v.z;entity.set<Velocity>(next);applied=true;
+    }
+    else if(property=="engine.entity.velocity.angular") {
+        const auto v=vector();auto next=entity.get<Velocity>();next.angular_x=v.x;next.angular_y=v.y;next.angular_z=v.z;
+        entity.set<Velocity>(next);applied=true;
+    }
+    else if(property.starts_with("engine.entity.rigidBody.")) {
+        auto* body=entity.try_get_mut<RigidBody>();
+        if(body!=nullptr) {
+            if(property=="engine.entity.rigidBody.motionType"){body->motion_type=motion_type(value.get<std::string>());applied=true;}
+            else if(property=="engine.entity.rigidBody.mass"){body->mass=value.get<float>();applied=true;}
+            else if(property=="engine.entity.rigidBody.gravityFactor"){body->gravity_factor=value.get<float>();applied=true;}
+            else if(property=="engine.entity.rigidBody.linearDamping"){body->linear_damping=value.get<float>();applied=true;}
+            else if(property=="engine.entity.rigidBody.angularDamping"){body->angular_damping=value.get<float>();applied=true;}
+            else if(property=="engine.entity.rigidBody.continuousCollision"){body->continuous_collision=value.get<bool>();applied=true;}
+            else if(property=="engine.entity.rigidBody.allowSleeping"){body->allow_sleeping=value.get<bool>();applied=true;}
+            if(applied)entity.modified<RigidBody>();
+        }
     }
     else if (auto* material = entity.try_get_mut<PbrMaterial>()) {
         if (property == "engine.entity.material.baseColor") { const auto v=vector(); material->base_r=v.x; material->base_g=v.y; material->base_b=v.z; applied=true; }
@@ -1854,6 +1913,19 @@ bool World::set_property_json(const std::string_view entity_id, const std::strin
         else if(property=="engine.entity.velocity.linear") {
             const auto v=vector();if(!document_entity.velocity)document_entity.velocity=SceneVelocity{};
             document_entity.velocity->linear={v.x,v.y,v.z};
+        }
+        else if(property=="engine.entity.velocity.angular") {
+            const auto v=vector();if(!document_entity.velocity)document_entity.velocity=SceneVelocity{};
+            document_entity.velocity->angular={v.x,v.y,v.z};
+        }
+        else if(document_entity.rigid_body&&property.starts_with("engine.entity.rigidBody.")) {
+            if(property=="engine.entity.rigidBody.motionType")document_entity.rigid_body->motion_type=value.get<std::string>();
+            else if(property=="engine.entity.rigidBody.mass")document_entity.rigid_body->mass=value.get<double>();
+            else if(property=="engine.entity.rigidBody.gravityFactor")document_entity.rigid_body->gravity_factor=value.get<double>();
+            else if(property=="engine.entity.rigidBody.linearDamping")document_entity.rigid_body->linear_damping=value.get<double>();
+            else if(property=="engine.entity.rigidBody.angularDamping")document_entity.rigid_body->angular_damping=value.get<double>();
+            else if(property=="engine.entity.rigidBody.continuousCollision")document_entity.rigid_body->continuous_collision=value.get<bool>();
+            else if(property=="engine.entity.rigidBody.allowSleeping")document_entity.rigid_body->allow_sleeping=value.get<bool>();
         }
         else if (document_entity.pbr_material) {
             if (property == "engine.entity.material.baseColor") { const auto v=vector(); document_entity.pbr_material->base_color={v.x,v.y,v.z}; }
@@ -2543,8 +2615,10 @@ SceneDocument World::runtime_authoring_scene_document() const {
             authored.transform->scale = {runtime->transform->scale_x, runtime->transform->scale_y,
                                          runtime->transform->scale_z};
         }
-        if(authored.velocity&&runtime->velocity)
+        if(authored.velocity&&runtime->velocity) {
             authored.velocity->linear={runtime->velocity->x,runtime->velocity->y,runtime->velocity->z};
+            authored.velocity->angular={runtime->velocity->angular_x,runtime->velocity->angular_y,runtime->velocity->angular_z};
+        }
     }
     return snapshot;
 }
@@ -2631,6 +2705,13 @@ std::string World::snapshot_json() const {
                     {"z", semantic_f32(velocity->z)},
                     {"unit", "m/s"},
                     {"coordinateSpace", "world.right-handed.y-up"}
+                }},
+                {"angular", {
+                    {"x",semantic_f32(velocity->angular_x)},
+                    {"y",semantic_f32(velocity->angular_y)},
+                    {"z",semantic_f32(velocity->angular_z)},
+                    {"unit","rad/s"},
+                    {"coordinateSpace","world.right-handed.y-up"}
                 }}
             };
         }
@@ -2712,7 +2793,8 @@ std::string World::snapshot_json() const {
         if (const auto* body = entity.try_get<RigidBody>()) {
             components["RigidBody"] = {{"schemaRef", "schema://noemancer/component/rigid-body/0.1"},
                 {"motionType", motion_type_name(body->motion_type)}, {"mass", body->mass}, {"gravityFactor", body->gravity_factor},
-                {"linearDamping", body->linear_damping}};
+                {"linearDamping", body->linear_damping},{"angularDamping",body->angular_damping},
+                {"continuousCollision",body->continuous_collision},{"allowSleeping",body->allow_sleeping}};
         }
         if (const auto* collider = entity.try_get<BoxCollider>()) {
             components["BoxCollider"] = {{"schemaRef", "schema://noemancer/component/box-collider/0.1"},
@@ -2821,11 +2903,14 @@ std::string World::physics_observation_json() const {
         if (!view.rigid_body || !view.transform) continue;
         Json body = {{"entityId", view.id}, {"motionType", motion_type_name(view.rigid_body->motion_type)},
             {"position", vector_json(semantic_vector(*view.transform))}, {"mass", view.rigid_body->mass},
-            {"gravityFactor", view.rigid_body->gravity_factor}, {"linearDamping", view.rigid_body->linear_damping}};
+            {"gravityFactor", view.rigid_body->gravity_factor}, {"linearDamping", view.rigid_body->linear_damping},
+            {"angularDamping",view.rigid_body->angular_damping},{"continuousCollision",view.rigid_body->continuous_collision},
+            {"allowSleeping",view.rigid_body->allow_sleeping}};
         body["rotationQuaternion"]={{"x",view.transform->rotation_x},{"y",view.transform->rotation_y},
             {"z",view.transform->rotation_z},{"w",view.transform->rotation_w}};
         body["rotationEulerDegrees"]=rotation_euler_json(*view.transform);
         if (view.velocity) body["linearVelocity"] = vector_json({view.velocity->x, view.velocity->y, view.velocity->z});
+        if(view.velocity)body["angularVelocity"]=vector_json({view.velocity->angular_x,view.velocity->angular_y,view.velocity->angular_z});
         if (view.box_collider) body["boxCollider"] = {{"halfExtents", vector_json({view.box_collider->half_x, view.box_collider->half_y, view.box_collider->half_z})},
             {"friction", view.box_collider->friction}, {"restitution", view.box_collider->restitution},{"isTrigger",view.box_collider->is_trigger}};
         if (view.sphere_collider) body["sphereCollider"] = {{"radius", view.sphere_collider->radius},
@@ -3584,7 +3669,11 @@ std::string World::scripting_invoke_json(const std::string_view instance_id,cons
                 {"rotationQuaternion",{{"x",found->transform->rotation_x},{"y",found->transform->rotation_y},
                     {"z",found->transform->rotation_z},{"w",found->transform->rotation_w}}},
                 {"scale",{{"x",found->transform->scale_x},{"y",found->transform->scale_y},{"z",found->transform->scale_z}}}};
-            if(found->velocity) self["velocity"]={{"x",found->velocity->x},{"y",found->velocity->y},{"z",found->velocity->z}};
+            if(found->velocity) {
+                self["velocity"]={{"x",found->velocity->x},{"y",found->velocity->y},{"z",found->velocity->z}};
+                self["angularVelocity"]={{"x",found->velocity->angular_x},{"y",found->velocity->angular_y},
+                    {"z",found->velocity->angular_z}};
+            }
             if(found->character_motor_2d) {const auto& state=found->character_motor_2d->state;
                 self["characterMotor2D"]={{"grounded",state.grounded},{"moveInput",state.move_input},
                     {"decision",state.decision},{"reason",state.reason},{"groundEntityId",state.ground_entity_id},
@@ -3663,6 +3752,19 @@ std::string World::scripting_invoke_json(const std::string_view instance_id,cons
                !payload.contains("z")||!payload.at("z").is_number()) errors.push_back({{"code","scripting.invalid-position"},{"index",index}});
             else if(!world_.entity(entity_ids_.at(entity)).has<Transform>())
                 errors.push_back({{"code","world.component-not-found"},{"index",index},{"component","Transform"}});
+        } else if(operation=="physics.force.apply"||operation=="physics.impulse.apply"||
+                  operation=="physics.angular-impulse.apply") {
+            const auto& payload=command.at("payload");
+            const auto vector_valid=payload.contains("x")&&payload.at("x").is_number()&&
+                payload.contains("y")&&payload.at("y").is_number()&&payload.contains("z")&&payload.at("z").is_number()&&
+                std::isfinite(payload.at("x").get<double>())&&std::isfinite(payload.at("y").get<double>())&&
+                std::isfinite(payload.at("z").get<double>())&&std::abs(payload.at("x").get<double>())<=1'000'000.0&&
+                std::abs(payload.at("y").get<double>())<=1'000'000.0&&std::abs(payload.at("z").get<double>())<=1'000'000.0;
+            const auto* body=world_.entity(entity_ids_.at(entity)).try_get<RigidBody>();
+            if(!vector_valid)errors.push_back({{"code","scripting.invalid-physics-vector"},{"index",index}});
+            else if(body==nullptr)errors.push_back({{"code","world.component-not-found"},{"index",index},{"component","RigidBody"}});
+            else if(body->motion_type!=PhysicsMotionType::dynamic_body)
+                errors.push_back({{"code","physics.dynamic-body-required"},{"index",index},{"entityId",entity}});
         } else if(operation=="gameplay.event.emit") {
             const auto& payload=command.at("payload");
             if(!payload.contains("eventType")||!payload.at("eventType").is_string()||payload.at("eventType").get<std::string>().empty())
@@ -3766,6 +3868,15 @@ std::string World::scripting_invoke_json(const std::string_view instance_id,cons
             auto transform=*found->transform;transform.x=payload.at("x").get<float>();transform.y=payload.at("y").get<float>();transform.z=payload.at("z").get<float>();
             auto result=Json::parse(edit_transform_json(entity,transform,revision_,"scripting:"+std::string(instance_id),false));
             applied.push_back({{"index",index},{"operation",operation},{"receipt",std::move(result)}});
+        } else if(operation=="physics.force.apply"||operation=="physics.impulse.apply"||
+                  operation=="physics.angular-impulse.apply") {
+            const auto x=payload.at("x").get<float>(),y=payload.at("y").get<float>(),z=payload.at("z").get<float>();
+            const bool success=operation=="physics.force.apply"?physics_runtime_.apply_force(entity,x,y,z):
+                operation=="physics.impulse.apply"?physics_runtime_.apply_impulse(entity,x,y,z):
+                physics_runtime_.apply_angular_impulse(entity,x,y,z);
+            if(!success){errors.push_back({{"code","physics.body-not-ready"},{"index",index},{"entityId",entity}});break;}
+            applied.push_back({{"index",index},{"operation",operation},{"entityId",entity},
+                {"vector",{{"x",x},{"y",y},{"z",z}}}});
         } else if(operation=="gameplay.event.emit") {
             const auto payload_value=payload.value("payload",Json::object());
             const auto sequence=gameplay_runtime_.emit(payload.at("eventType").get<std::string>(),script_entity.value_or(std::string(instance_id)),entity,payload_value.dump());
@@ -3876,6 +3987,14 @@ std::string World::inspector_document_json(const std::string_view entity_id) con
     if(found->transform) sections.push_back({{"id","editor.inspector."+std::string(entity_id)+".section.transform"},{"role","group"},
         {"component","Transform"},{"label","Transform"},{"defaultExpanded",true},{"properties",Json::array({
             node("engine.entity.transform.position"),node("engine.entity.transform.rotationEulerDegrees"),node("engine.entity.transform.scale")})}});
+    if(found->velocity)sections.push_back({{"id","editor.inspector."+std::string(entity_id)+".section.velocity"},{"role","group"},
+        {"component","Velocity"},{"label","Velocity"},{"defaultExpanded",true},{"properties",Json::array({
+            node("engine.entity.velocity.linear"),node("engine.entity.velocity.angular")})}});
+    if(found->rigid_body)sections.push_back({{"id","editor.inspector."+std::string(entity_id)+".section.rigid-body"},{"role","group"},
+        {"component","RigidBody"},{"label","Rigid Body"},{"defaultExpanded",true},{"properties",Json::array({
+            node("engine.entity.rigidBody.motionType"),node("engine.entity.rigidBody.mass"),node("engine.entity.rigidBody.gravityFactor"),
+            node("engine.entity.rigidBody.linearDamping"),node("engine.entity.rigidBody.angularDamping"),
+            node("engine.entity.rigidBody.continuousCollision"),node("engine.entity.rigidBody.allowSleeping")})}});
     if(found->pbr_material) sections.push_back({{"id","editor.inspector."+std::string(entity_id)+".section.material"},{"role","group"},
         {"component","PbrMaterial"},{"label","Material"},{"defaultExpanded",true},{"properties",Json::array({
             node("engine.entity.material.baseColor"),node("engine.entity.material.metallic"),node("engine.entity.material.roughness"),
@@ -4056,7 +4175,8 @@ std::string World::schema_json() const {
                 {"fields", {
                     {"x", "engine.entity.velocity.linear.x"},
                     {"y", "engine.entity.velocity.linear.y"},
-                    {"z", "engine.entity.velocity.linear.z"}
+                    {"z", "engine.entity.velocity.linear.z"},
+                    {"angular", "engine.entity.velocity.angular"}
                 }}
             }},
             {"Camera", {{"schemaRef", "schema://noemancer/component/camera/0.1"}}},

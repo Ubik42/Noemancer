@@ -86,6 +86,17 @@ public static class EngineSchema
             public static readonly PropertyId<float> Roughness = new("engine.entity.material.roughness");
         }
 
+        public static class RigidBody
+        {
+            public static readonly PropertyId<bool> AllowSleeping = new("engine.entity.rigidBody.allowSleeping");
+            public static readonly PropertyId<float> AngularDamping = new("engine.entity.rigidBody.angularDamping");
+            public static readonly PropertyId<bool> ContinuousCollision = new("engine.entity.rigidBody.continuousCollision");
+            public static readonly PropertyId<float> GravityFactor = new("engine.entity.rigidBody.gravityFactor");
+            public static readonly PropertyId<float> LinearDamping = new("engine.entity.rigidBody.linearDamping");
+            public static readonly PropertyId<float> Mass = new("engine.entity.rigidBody.mass");
+            public static readonly PropertyId<string> MotionType = new("engine.entity.rigidBody.motionType");
+        }
+
         public static class SphereCollider
         {
             public static readonly PropertyId<float> Radius = new("engine.entity.collider.radius");
@@ -120,6 +131,7 @@ public static class EngineSchema
 
         public static class Velocity
         {
+            public static readonly PropertyId<Float3> Angular = new("engine.entity.velocity.angular");
             public static readonly PropertyId<Float3> Linear = new("engine.entity.velocity.linear");
         }
     }

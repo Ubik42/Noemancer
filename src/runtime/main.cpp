@@ -80,6 +80,7 @@ void print_usage() {
         << "                 [--gpu-occlusion-stress] [--gpu-occlusion-stress-instances N]\n"
         << "                 [--shadow-scalability-stress] [--shadow-scalability-stress-instances N]\n"
         << "                 [--animation-physics-stress]\n"
+        << "                 [--physics-showcase]\n"
         << "                 [--vfx-respawn-interval N]\n"
         << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--enable-gpu-occlusion] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr] [--disable-ssgi]\n"
         << "                 [--gpu-visibility-readback] [--render-stress-offscreen-percent N]\n"
@@ -604,6 +605,8 @@ int main(int argc, char** argv) {
             options.shadow_scalability_stress=true;
         } else if (argument == "--animation-physics-stress") {
             options.animation_physics_stress = true;
+        } else if(argument=="--physics-showcase") {
+            options.physics_showcase=true;
         } else if (argument == "--vfx-respawn-interval" && index < argc) {
             if (!parse_frames(argv[index++], options.vfx_respawn_interval) ||
                 options.vfx_respawn_interval == 0 || options.vfx_respawn_interval > 3600) {
@@ -757,10 +760,10 @@ int main(int argc, char** argv) {
         std::cerr<<"Editor frame capture is only available in Editor run mode\n";return 2;
     }
     const auto generated_workload_count=(options.reference_scene_id.empty()?0U:1U)+
-        (options.render_stress_instances>0?1U:0U)+(options.animation_physics_stress?1U:0U)+
+        (options.render_stress_instances>0?1U:0U)+(options.animation_physics_stress?1U:0U)+(options.physics_showcase?1U:0U)+
         (options.gpu_occlusion_stress?1U:0U)+(options.shadow_scalability_stress?1U:0U);
     if(generated_workload_count>1U||
-       (options.animation_physics_stress||options.gpu_occlusion_stress||options.shadow_scalability_stress)&&
+       (options.animation_physics_stress||options.physics_showcase||options.gpu_occlusion_stress||options.shadow_scalability_stress)&&
            (!options.project_path.empty()||options.player_mode)) {
         std::cerr<<"Generated reference/stress workloads cannot be combined with a project or Player profile\n";return 2;
     }

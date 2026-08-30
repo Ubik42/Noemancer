@@ -38,7 +38,7 @@ int main() {
         std::cerr<<"Editor model did not preserve structured C# diagnostics\n";return 15;
     }
     static_cast<void>(world.scripting_project_configure_json(script_project.parent_path(),script_project));
-    if (model.panels().size() != 7 || model.objects().size() != 10 || model.assets().size() != 43) {
+    if (model.panels().size() != 7 || model.objects().size() != 10 || model.assets().size() != assets.records().size()) {
         std::cerr << "Bootstrap editor model is incomplete\n";
         return 2;
     }

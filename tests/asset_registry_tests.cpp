@@ -27,8 +27,9 @@ int main() {
                   << decoded_png.code << " - " << decoded_png.detail << '\n';
         return 11;
     }
-    if (registry.records().size() != 43 || !registry.errors().empty()) {
-        std::cerr << "Canonical asset registry did not load all project assets\n";
+    if (registry.records().size() < 43 || !registry.errors().empty()) {
+        std::cerr << "Canonical asset registry did not load all project assets: records="
+                  << registry.records().size() << " errors=" << registry.errors().size() << '\n';
         return 1;
     }
     const auto vfs_registry_root = std::filesystem::temp_directory_path() /

@@ -47,6 +47,12 @@ struct PhysicsBodyState final {
     // degrees of freedom. CharacterMotor2D supplies this flag at the world
     // bridge; the physics backend translates it to Jolt's allowed-DOF mask.
     bool constrain_to_2d{};
+    float angular_velocity_x{};
+    float angular_velocity_y{};
+    float angular_velocity_z{};
+    float angular_damping{0.05F};
+    bool continuous_collision{};
+    bool allow_sleeping{true};
 };
 
 struct PhysicsContact final {
@@ -93,6 +99,12 @@ public:
     [[nodiscard]] PhysicsSweepHit sphere_sweep(float origin_x,float origin_y,float origin_z,
                                                float direction_x,float direction_y,float direction_z,
                                                float radius,std::string_view ignored_entity_id={}) const;
+    [[nodiscard]] bool apply_force(std::string_view entity_id,
+                                   float force_x, float force_y, float force_z);
+    [[nodiscard]] bool apply_impulse(std::string_view entity_id,
+                                     float impulse_x, float impulse_y, float impulse_z);
+    [[nodiscard]] bool apply_angular_impulse(std::string_view entity_id,
+                                             float impulse_x, float impulse_y, float impulse_z);
     [[nodiscard]] const std::vector<PhysicsContact>& contacts() const noexcept { return contacts_; }
     [[nodiscard]] std::string_view backend_id() const noexcept { return "jolt/5.6.0"; }
 

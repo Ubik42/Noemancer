@@ -51,10 +51,16 @@ Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 
 
 ### 游戏运行时
 
-- Flecs ECS、Jolt 刚体/传感器/查询、ozz 骨骼动画与 GPU Skinning。
+- Flecs ECS、Jolt 刚体/传感器/查询、ozz 骨骼动画与 GPU Skinning；脚本可对动态刚体施加力、线性冲量与角冲量。
 - .NET 10 / C# 项目脚本，支持项目编译、热重载状态迁移、调试会话和类型化 World Command Buffer。
 - RmlUi/CSS 项目 UI、HarfBuzz/ICU 文本整形、输入映射、miniaudio 音频、GPU 粒子 VFX。
 - Prefab 生成与销毁、固定步长模拟、Save/Replay 文档及项目级持久化请求。
+
+### 物理
+
+- Box、Sphere、Capsule 与 Convex Collider，Static/Dynamic/Kinematic RigidBody，以及质量、重力、摩擦、弹性、线/角阻尼、CCD 和休眠。
+- Contact/Trigger 生命周期、Ray/Sphere Sweep、2D Character Motor；声明式 Inspector、Scene JSON、C# 与 Agent 使用同一稳定属性身份。
+- 内置 `--physics-showcase` 场景覆盖摩擦坡道、刚体堆叠、多米诺、弹性球、高速 CCD、运动平台与 Trigger。关节/约束、碰撞 Layer/Mask 和更完整的形状查询是当前下一阶段。
 
 ### 实时渲染
 
@@ -119,6 +125,12 @@ cd Noemancer
 ./scripts/engine.ps1 configure
 ./scripts/engine.ps1 build -Config Release -Target noemancer
 ./scripts/engine.ps1 run -Config Release
+```
+
+构建完成后，也可以直接运行物理能力展示：
+
+```powershell
+./build/windows-msvc-debug/src/runtime/Release/noemancer.exe run --physics-showcase
 ```
 
 日常使用可以直接双击 `Noemancer Editor.cmd`。`Open Platformer Editor.cmd` 和 `Play Platformer.cmd` 是验收工程快捷入口，不是通用引擎启动器。
@@ -194,7 +206,7 @@ docs/           架构、ADR、开发计划与验收索引
 
 ## 开发状态
 
-商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的最小光追闭环与统一执行 Receipt 已成立；下一阶段是持久 Native RHI 资源所有权、Renderer/Render Graph 光追节点、Raster fallback 和项目场景可见输出，再在此基础上进入 RTGI。当前 `1×1` 探针不能提前描述成生产光追画面。
+商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的最小光追闭环与统一执行 Receipt 已成立；光追暂停在这一稳定边界，当前先补齐物理约束、碰撞过滤和更完整查询。恢复渲染后仍按持久 Native RHI 资源所有权、Renderer/Render Graph 光追节点、Raster fallback、项目场景可见输出、RTGI 的顺序推进。当前 `1×1` 探针不能提前描述成生产光追画面。
 
 仍未完成的产品边界包括：稳定 SDK/插件生态、完整高 DPI 编辑器响应式布局、可再分发 CJK/Arabic 字体、签名安装器、独立机器矩阵、生产网络与跨平台支持。
 

@@ -1322,7 +1322,7 @@ void CommandRegistry::register_commands() {
         .name = "ui.observe",
         .description = "Return a bounded Semantic UI projection by stable node ID or role without requiring screenshots or renderer handles.",
         .access = "read", .idempotent = true, .supports_dry_run = false, .runtime_state = "attached", .task_kind = "immediate",
-        .input_schema_json = R"({"type":"object","required":["entityId"],"properties":{"entityId":{"type":"string"},"nodeIds":{"type":"array","default":[]},"roles":{"type":"array","default":[]},"depth":{"type":"integer","minimum":0,"maximum":8,"default":2},"byteBudget":{"type":"integer","minimum":512,"maximum":65536,"default":16384},"cursor":{"type":"integer","minimum":0,"default":0},"includeValues":{"type":"boolean","default":true},"locale":{"type":"string","default":"en-US"}},"additionalProperties":false})",
+        .input_schema_json = R"({"type":"object","required":["entityId"],"properties":{"entityId":{"type":"string"},"nodeIds":{"type":"array","default":[]},"roles":{"type":"array","default":[]},"depth":{"type":"integer","minimum":0,"maximum":8,"default":2},"byteBudget":{"type":"integer","minimum":512,"maximum":65536,"default":32768},"cursor":{"type":"integer","minimum":0,"default":0},"includeValues":{"type":"boolean","default":true},"locale":{"type":"string","default":"en-US"}},"additionalProperties":false})",
         .output_schema_json = R"({"type":"object","required":["schemaVersion","valid","code","nodes"]})",
         .handler = [this](const std::string_view arguments) {
             const auto input = parse_object(arguments);
@@ -1330,7 +1330,7 @@ void CommandRegistry::register_commands() {
             query.node_ids = input.value("nodeIds", std::vector<std::string>{});
             query.roles = input.value("roles", std::vector<std::string>{});
             query.depth = input.value("depth", 2U);
-            query.byte_budget = input.value("byteBudget", 16U * 1024U);
+            query.byte_budget = input.value("byteBudget", 32U * 1024U);
             query.cursor = input.value("cursor", 0U);
             query.include_values = input.value("includeValues", true);
             return world_->semantic_ui_observation_json(input.at("entityId").get<std::string>(), query,

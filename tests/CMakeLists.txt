@@ -250,6 +250,13 @@ target_link_libraries(noemancer_shadow_scalability_stress_scene_tests PRIVATE
 add_test(NAME noemancer.shadow_scalability_stress_scene
     COMMAND noemancer_shadow_scalability_stress_scene_tests)
 
+add_executable(noemancer_physics_showcase_scene_tests
+    physics_showcase_scene_tests.cpp)
+target_link_libraries(noemancer_physics_showcase_scene_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.physics_showcase_scene
+    COMMAND noemancer_physics_showcase_scene_tests)
+
 add_executable(noemancer_raytracing_capability_contract_tests
     raytracing_capability_contract_tests.cpp)
 target_link_libraries(noemancer_raytracing_capability_contract_tests PRIVATE

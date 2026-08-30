@@ -65,6 +65,7 @@ struct RunOptions {
     std::string reference_scene_id;
     std::uint32_t render_stress_instances{0};
     bool animation_physics_stress{};
+    bool physics_showcase{};
     std::uint32_t vfx_respawn_interval{0};
     std::string gpu_backend{"auto"};
     bool gpu_debug{};

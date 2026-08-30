@@ -43,6 +43,9 @@ struct Velocity {
     float x{};
     float y{};
     float z{};
+    float angular_x{};
+    float angular_y{};
+    float angular_z{};
 };
 
 struct RigidBody {
@@ -50,6 +53,9 @@ struct RigidBody {
     float mass{1.0F};
     float gravity_factor{1.0F};
     float linear_damping{0.05F};
+    float angular_damping{0.05F};
+    bool continuous_collision{};
+    bool allow_sleeping{true};
 };
 
 struct BoxCollider {

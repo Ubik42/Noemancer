@@ -39,6 +39,7 @@ add_library(noemancer_engine STATIC
     play_world_apply.cpp
     pixel_presentation.cpp
     pixel_snapping.cpp
+    physics_showcase_scene.cpp
     process_diagnostics.cpp
     project_document.cpp
     project_hybrid_pixel_authoring.cpp

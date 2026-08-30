@@ -32,13 +32,18 @@ std::string fingerprint(const Json& value) {
 
 Json text_descriptor(const std::string& node_id, const std::string& fallback, const std::string_view locale) {
     static const std::unordered_map<std::string,std::string> keys{{"Inspector","ui.inspector"},{"Identity","ui.identity"},
-        {"Transform","ui.transform"},{"Material","ui.material"},{"Collider","ui.collider"},{"Animation","ui.animation"},
+        {"Transform","ui.transform"},{"Velocity","ui.velocity"},{"Rigid Body","ui.rigid-body"},
+        {"Material","ui.material"},{"Collider","ui.collider"},{"Animation","ui.animation"},
         {"Player status","ui.player-status"},{"Health","ui.health"},{"Stamina","ui.stamina"},{"Status","ui.status"},
         {"Stable ID","ui.stable-id"},{"Source","ui.source"},{"Position","ui.position"},{"Base Color","ui.base-color"},
         {"Metallic","ui.metallic"},{"Roughness","ui.roughness"},{"Emissive Color","ui.emissive-color"},
         {"Emissive Intensity","ui.emissive-intensity"},{"Half Extents","ui.half-extents"},{"Radius","ui.radius"},
         {"Half Height","ui.half-height"},{"Hull Points","ui.hull-points"},{"Friction","ui.friction"},
-        {"Restitution","ui.restitution"},{"Clip","ui.clip"},{"Speed","ui.speed"},{"Looping","ui.looping"},
+        {"Restitution","ui.restitution"},{"Linear Velocity","ui.linear-velocity"},{"Angular Velocity","ui.angular-velocity"},
+        {"Motion Type","ui.motion-type"},{"Mass","ui.mass"},{"Gravity Factor","ui.gravity-factor"},
+        {"Linear Damping","ui.linear-damping"},{"Angular Damping","ui.angular-damping"},
+        {"Continuous Collision","ui.continuous-collision"},{"Allow Sleeping","ui.allow-sleeping"},
+        {"Clip","ui.clip"},{"Speed","ui.speed"},{"Looping","ui.looping"},
         {"Playing","ui.playing"},{"Next Clip","ui.next-clip"},{"Cross-fade","ui.cross-fade"},
         {"Root Motion","ui.root-motion"},{"State Machine","ui.state-machine"}};
     const auto found=keys.find(fallback); const auto key=found==keys.end()?node_id+".label":found->second;

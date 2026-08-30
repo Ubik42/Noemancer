@@ -22,6 +22,7 @@ struct SceneTransform final {
 
 struct SceneVelocity final {
     SceneVector3 linear;
+    SceneVector3 angular;
 };
 
 struct SceneRigidBody final {
@@ -29,6 +30,9 @@ struct SceneRigidBody final {
     double mass{1.0};
     double gravity_factor{1.0};
     double linear_damping{0.05};
+    double angular_damping{0.05};
+    bool continuous_collision{false};
+    bool allow_sleeping{true};
 };
 
 struct SceneBoxCollider final {

@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-29",
   "status": "in-development",
-  "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "establish-persistent-native-rhi-and-render-graph-rt-pass",
+  "currentSlice": "physics.common-effects-production",
+  "currentStep": "implement-constraints-collision-filtering-and-broader-queries",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,6 +12,8 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
+    "physics.constraints-and-query-suite",
+    "physics.common-effects-editor-and-script-acceptance",
     "render.native-rhi-raytracing-foundation",
     "render.rtgi-production-path",
     "editor.high-dpi-responsive-chrome",
@@ -58,7 +60,9 @@
     "render.ssgi-production-path",
     "render.bindless-gpu-scene-and-occlusion-decision",
     "render.shadow-scalability-vsm-decision",
-    "render.native-rhi-minimal-dual-backend-trace"
+    "render.native-rhi-minimal-dual-backend-trace",
+    "physics.rigid-body-authoring-and-runtime-controls",
+    "physics.common-effects-showcase"
   ],
   "closedExperiments": [
     {

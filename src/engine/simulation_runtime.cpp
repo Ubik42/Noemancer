@@ -129,10 +129,13 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
         float radius{}, half_height{};
         std::vector<std::array<float, 3>> convex_points;
         float gravity_factor{}, linear_damping{}, restitution{}, friction{}, mass{};
-        bool one_way{},is_trigger{},constrain_to_2d{};
+        float angular_damping{0.05F};
+        bool one_way{},is_trigger{},constrain_to_2d{},continuous_collision{},allow_sleeping{true};
     };
     struct LastState final {
-        float x{}, y{}, z{}, velocity_x{}, velocity_y{}, velocity_z{},rotation_x{},rotation_y{},rotation_z{},rotation_w{1.0F};
+        float x{}, y{}, z{}, velocity_x{}, velocity_y{}, velocity_z{};
+        float angular_velocity_x{}, angular_velocity_y{}, angular_velocity_z{};
+        float rotation_x{},rotation_y{},rotation_z{},rotation_w{1.0F};
     };
 
     BroadPhaseLayerInterface broad_phase_layers;
@@ -156,7 +159,8 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
 
     static Definition definition(const PhysicsBodyState& state) {
         return {state.motion_type, state.shape_type, state.half_x, state.half_y, state.half_z, state.radius, state.half_height, state.convex_points, state.gravity_factor,
-            state.linear_damping, state.restitution, state.friction, state.mass, state.one_way,state.is_trigger,state.constrain_to_2d};
+            state.linear_damping, state.restitution, state.friction, state.mass, state.angular_damping,
+            state.one_way,state.is_trigger,state.constrain_to_2d,state.continuous_collision,state.allow_sleeping};
     }
 
     static bool same_definition(const Definition& left, const Definition& right) {
@@ -166,7 +170,8 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
             left.convex_points == right.convex_points && left.gravity_factor == right.gravity_factor &&
             left.linear_damping == right.linear_damping && left.restitution == right.restitution &&
             left.friction == right.friction && left.mass == right.mass && left.one_way == right.one_way&&left.is_trigger==right.is_trigger &&
-            left.constrain_to_2d == right.constrain_to_2d;
+            left.constrain_to_2d == right.constrain_to_2d && left.angular_damping == right.angular_damping &&
+            left.continuous_collision == right.continuous_collision && left.allow_sleeping == right.allow_sleeping;
     }
 
     Impl() {
@@ -311,6 +316,10 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
         settings.mRestitution = state.restitution;
         settings.mGravityFactor = state.gravity_factor;
         settings.mLinearDamping = state.linear_damping;
+        settings.mAngularDamping = state.angular_damping;
+        settings.mMotionQuality = state.continuous_collision
+            ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
+        settings.mAllowSleeping = state.allow_sleeping;
         settings.mIsSensor = state.is_trigger;
         if (state.constrain_to_2d) {
             // The platformer plane is XY. Do not use Plane2D here: its
@@ -327,11 +336,15 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
         if (body == nullptr) continue;
         const auto id = body->GetID();
         body_interface.AddBody(id, motion == JPH::EMotionType::Dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
-        if (motion != JPH::EMotionType::Static) body_interface.SetLinearVelocity(id, JPH::Vec3(state.velocity_x, state.velocity_y, state.velocity_z));
+        if (motion != JPH::EMotionType::Static) {
+            body_interface.SetLinearVelocity(id, JPH::Vec3(state.velocity_x, state.velocity_y, state.velocity_z));
+            body_interface.SetAngularVelocity(id, JPH::Vec3(state.angular_velocity_x, state.angular_velocity_y, state.angular_velocity_z));
+        }
         impl_->bodies.emplace(state.entity_id, id);
         impl_->definitions.emplace(state.entity_id, Impl::definition(state));
         impl_->last_states.emplace(state.entity_id, Impl::LastState{state.position_x, state.position_y, state.position_z,
-            state.velocity_x, state.velocity_y, state.velocity_z,state.rotation_x,state.rotation_y,state.rotation_z,state.rotation_w});
+            state.velocity_x, state.velocity_y, state.velocity_z, state.angular_velocity_x,
+            state.angular_velocity_y, state.angular_velocity_z, state.rotation_x,state.rotation_y,state.rotation_z,state.rotation_w});
         impl_->entities.emplace(id.GetIndexAndSequenceNumber(), state.entity_id);
     }
 
@@ -347,6 +360,9 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
         const bool velocity_changed = std::abs(state.velocity_x - previous->second.velocity_x) > epsilon ||
             std::abs(state.velocity_y - previous->second.velocity_y) > epsilon ||
             std::abs(state.velocity_z - previous->second.velocity_z) > epsilon;
+        const bool angular_velocity_changed = std::abs(state.angular_velocity_x - previous->second.angular_velocity_x) > epsilon ||
+            std::abs(state.angular_velocity_y - previous->second.angular_velocity_y) > epsilon ||
+            std::abs(state.angular_velocity_z - previous->second.angular_velocity_z) > epsilon;
         if (state.motion_type == PhysicsMotionType::kinematic_body) {
             body_interface.MoveKinematic(found->second, JPH::RVec3(state.position_x, state.position_y, state.position_z),
                 JPH::Quat(state.rotation_x,state.rotation_y,state.rotation_z,state.rotation_w).Normalized(), std::max(delta_seconds, 0.0001F));
@@ -356,6 +372,11 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
         }
         if (velocity_changed && state.motion_type == PhysicsMotionType::dynamic_body) {
             body_interface.SetLinearVelocity(found->second, JPH::Vec3(state.velocity_x, state.velocity_y, state.velocity_z));
+        }
+        if (angular_velocity_changed && state.motion_type == PhysicsMotionType::dynamic_body) {
+            body_interface.SetAngularVelocity(found->second, JPH::Vec3(state.angular_velocity_x,
+                                                                        state.angular_velocity_y,
+                                                                        state.angular_velocity_z));
         }
     }
 
@@ -369,6 +390,7 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
         JPH::Quat rotation;
         body_interface.GetPositionAndRotation(found->second, position, rotation);
         const auto velocity = body_interface.GetLinearVelocity(found->second);
+        const auto angular_velocity = body_interface.GetAngularVelocity(found->second);
         state.position_x = static_cast<float>(position.GetX());
         state.position_y = static_cast<float>(position.GetY());
         state.position_z = static_cast<float>(position.GetZ());
@@ -376,8 +398,12 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
         state.velocity_x = velocity.GetX();
         state.velocity_y = velocity.GetY();
         state.velocity_z = velocity.GetZ();
+        state.angular_velocity_x = angular_velocity.GetX();
+        state.angular_velocity_y = angular_velocity.GetY();
+        state.angular_velocity_z = angular_velocity.GetZ();
         impl_->last_states.insert_or_assign(state.entity_id, Impl::LastState{state.position_x, state.position_y, state.position_z,
-            state.velocity_x, state.velocity_y, state.velocity_z,state.rotation_x,state.rotation_y,state.rotation_z,state.rotation_w});
+            state.velocity_x, state.velocity_y, state.velocity_z, state.angular_velocity_x,
+            state.angular_velocity_y, state.angular_velocity_z, state.rotation_x,state.rotation_y,state.rotation_z,state.rotation_w});
     }
 
     contacts_.clear();
@@ -412,6 +438,65 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
                 first.position_y >= second.position_y ? 1.0F : -1.0F, 0.0F, std::max(0.0F, overlap_y),first.is_trigger||second.is_trigger});
         }
     }
+}
+
+namespace {
+
+bool bounded_physics_vector(const std::string_view entity_id,
+                            const float x, const float y, const float z) noexcept {
+    constexpr std::size_t maximum_entity_id_bytes = 256U;
+    constexpr float maximum_component = 1'000'000.0F;
+    return !entity_id.empty() && entity_id.size() <= maximum_entity_id_bytes &&
+        std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
+        std::abs(x) <= maximum_component && std::abs(y) <= maximum_component &&
+        std::abs(z) <= maximum_component;
+}
+
+} // namespace
+
+bool PhysicsRuntime::apply_force(const std::string_view entity_id,
+                                 const float force_x, const float force_y,
+                                 const float force_z) {
+    if (!bounded_physics_vector(entity_id, force_x, force_y, force_z)) return false;
+    const auto found = impl_->bodies.find(std::string(entity_id));
+    if (found == impl_->bodies.end()) return false;
+    const auto body_id = found->second;
+    auto& body_interface = impl_->system->GetBodyInterface();
+    if (!body_interface.IsAdded(body_id) ||
+        body_interface.GetMotionType(body_id) != JPH::EMotionType::Dynamic) return false;
+    body_interface.AddForce(
+        body_id, JPH::Vec3(force_x, force_y, force_z), JPH::EActivation::Activate);
+    return true;
+}
+
+bool PhysicsRuntime::apply_impulse(const std::string_view entity_id,
+                                   const float impulse_x, const float impulse_y,
+                                   const float impulse_z) {
+    if (!bounded_physics_vector(entity_id, impulse_x, impulse_y, impulse_z)) return false;
+    const auto found = impl_->bodies.find(std::string(entity_id));
+    if (found == impl_->bodies.end()) return false;
+    const auto body_id = found->second;
+    auto& body_interface = impl_->system->GetBodyInterface();
+    if (!body_interface.IsAdded(body_id) ||
+        body_interface.GetMotionType(body_id) != JPH::EMotionType::Dynamic) return false;
+    body_interface.AddImpulse(
+        body_id, JPH::Vec3(impulse_x, impulse_y, impulse_z));
+    return true;
+}
+
+bool PhysicsRuntime::apply_angular_impulse(const std::string_view entity_id,
+                                           const float impulse_x, const float impulse_y,
+                                           const float impulse_z) {
+    if (!bounded_physics_vector(entity_id, impulse_x, impulse_y, impulse_z)) return false;
+    const auto found = impl_->bodies.find(std::string(entity_id));
+    if (found == impl_->bodies.end()) return false;
+    const auto body_id = found->second;
+    auto& body_interface = impl_->system->GetBodyInterface();
+    if (!body_interface.IsAdded(body_id) ||
+        body_interface.GetMotionType(body_id) != JPH::EMotionType::Dynamic) return false;
+    body_interface.AddAngularImpulse(
+        body_id, JPH::Vec3(impulse_x, impulse_y, impulse_z));
+    return true;
 }
 
 PhysicsRayCastHit PhysicsRuntime::ray_cast(const float origin_x, const float origin_y, const float origin_z,

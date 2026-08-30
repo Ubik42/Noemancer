@@ -10,7 +10,9 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
+#include <string_view>
 
 int main() {
     noemancer::configure_process_diagnostics("test.scene-document");
@@ -85,6 +87,89 @@ int main() {
         unknown_component.errors.front().code != "scene.unknown-component") {
         std::cerr << "Unknown persisted component did not produce a structured error\n";
         return 8;
+    }
+
+    const auto rotational_body_contract = noemancer::SceneDocumentCodec::parse_json(
+        R"({"schema":"noemancer.scene/0.1","sceneGuid":"scene.rotational-body","name":"Rotational Body","entities":[{"guid":"entity.rotational-body","name":"Rotational Body","parent":null,"components":{"RigidBody":{"allowSleeping":false,"angularDamping":0.17,"continuousCollision":true,"gravityFactor":1.0,"linearDamping":0.08,"mass":2.0,"motionType":"dynamic"},"Velocity":{"angular":[0.1,0.2,0.3],"linear":[1.0,2.0,3.0]}}}]})");
+    if (!rotational_body_contract || rotational_body_contract.document->entities.size() != 1U ||
+        !rotational_body_contract.document->entities[0].velocity ||
+        !rotational_body_contract.document->entities[0].rigid_body ||
+        rotational_body_contract.document->entities[0].velocity->angular.x != 0.1 ||
+        rotational_body_contract.document->entities[0].velocity->angular.y != 0.2 ||
+        rotational_body_contract.document->entities[0].velocity->angular.z != 0.3 ||
+        rotational_body_contract.document->entities[0].rigid_body->angular_damping != 0.17 ||
+        !rotational_body_contract.document->entities[0].rigid_body->continuous_collision ||
+        rotational_body_contract.document->entities[0].rigid_body->allow_sleeping ||
+        rotational_body_contract.errors.size() != 0U) {
+        std::cerr << "Rotational rigid-body scene contract did not parse\n";
+        return 40;
+    }
+    const auto rotational_canonical = noemancer::SceneDocumentCodec::write_canonical_json(
+        *rotational_body_contract.document);
+    const auto rotational_roundtrip = noemancer::SceneDocumentCodec::parse_json(rotational_canonical);
+    const auto rotational_json = nlohmann::json::parse(rotational_canonical, nullptr, false);
+    if (!rotational_roundtrip || rotational_canonical !=
+            noemancer::SceneDocumentCodec::write_canonical_json(*rotational_roundtrip.document) ||
+        rotational_json.is_discarded() ||
+        rotational_json.at("entities").at(0).at("components").at("Velocity").at("angular") !=
+            nlohmann::json::array({0.1, 0.2, 0.3}) ||
+        rotational_json.at("entities").at(0).at("components").at("RigidBody").at("angularDamping") != 0.17 ||
+        rotational_json.at("entities").at(0).at("components").at("RigidBody").at("continuousCollision") != true ||
+        rotational_json.at("entities").at(0).at("components").at("RigidBody").at("allowSleeping") != false) {
+        std::cerr << "Rotational rigid-body scene contract was not canonical and deterministic\n";
+        return 41;
+    }
+
+    const auto legacy_body_contract = noemancer::SceneDocumentCodec::parse_json(
+        R"({"schema":"noemancer.scene/0.1","sceneGuid":"scene.legacy-body","name":"Legacy Body","entities":[{"guid":"entity.legacy-body","name":"Legacy Body","parent":null,"components":{"RigidBody":{"gravityFactor":1.0,"linearDamping":0.05,"mass":1.0,"motionType":"dynamic"},"Velocity":{"linear":[0.0,1.0,0.0]}}}]})");
+    if (!legacy_body_contract || !legacy_body_contract.document->entities[0].velocity ||
+        !legacy_body_contract.document->entities[0].rigid_body ||
+        legacy_body_contract.document->entities[0].velocity->angular.x != 0.0 ||
+        legacy_body_contract.document->entities[0].velocity->angular.y != 0.0 ||
+        legacy_body_contract.document->entities[0].velocity->angular.z != 0.0 ||
+        legacy_body_contract.document->entities[0].rigid_body->angular_damping != 0.05 ||
+        legacy_body_contract.document->entities[0].rigid_body->continuous_collision ||
+        !legacy_body_contract.document->entities[0].rigid_body->allow_sleeping ||
+        !noemancer::SceneDocumentCodec::parse_json(
+             noemancer::SceneDocumentCodec::write_canonical_json(*legacy_body_contract.document))) {
+        std::cerr << "Legacy rigid-body scene did not retain rotational defaults\n";
+        return 42;
+    }
+
+    const auto invalid_rotational_types = noemancer::SceneDocumentCodec::parse_json(
+        R"({"schema":"noemancer.scene/0.1","sceneGuid":"scene.invalid-rotational-types","name":"Invalid Rotational Types","entities":[{"guid":"entity.invalid-rotational-types","name":"Invalid Rotational Types","parent":null,"components":{"RigidBody":{"allowSleeping":1,"angularDamping":"slow","continuousCollision":"yes","gravityFactor":1.0,"linearDamping":0.05,"mass":1.0,"motionType":"dynamic"},"Velocity":{"angular":"spin","linear":[0.0,0.0,0.0]}}}]})");
+    const auto has_error = [&](const auto& errors, const std::string_view code, const std::string_view path) {
+        return std::ranges::any_of(errors, [&](const noemancer::SceneDocumentError& error) {
+            return error.code == code && error.path == path;
+        });
+    };
+    if (invalid_rotational_types ||
+        !has_error(invalid_rotational_types.errors, "scene.invalid-vector3",
+                   "/entities/0/components/Velocity/angular") ||
+        !has_error(invalid_rotational_types.errors, "scene.invalid-number",
+                   "/entities/0/components/RigidBody/angularDamping") ||
+        !has_error(invalid_rotational_types.errors, "scene.invalid-boolean",
+                   "/entities/0/components/RigidBody/continuousCollision") ||
+        !has_error(invalid_rotational_types.errors, "scene.invalid-boolean",
+                   "/entities/0/components/RigidBody/allowSleeping")) {
+        std::cerr << "Rotational rigid-body parser accepted an invalid field type\n";
+        return 43;
+    }
+
+    auto invalid_rotational_values = *rotational_body_contract.document;
+    invalid_rotational_values.entities[0].velocity->angular.x = std::numeric_limits<double>::quiet_NaN();
+    invalid_rotational_values.entities[0].rigid_body->linear_damping = -0.01;
+    invalid_rotational_values.entities[0].rigid_body->angular_damping = std::numeric_limits<double>::quiet_NaN();
+    if (!has_error(noemancer::SceneDocumentCodec::validate(invalid_rotational_values),
+                   "scene.non-finite-number",
+                   "/entities/0/components/Velocity/angular") ||
+        std::ranges::none_of(noemancer::SceneDocumentCodec::validate(invalid_rotational_values),
+                             [](const noemancer::SceneDocumentError& error) {
+                                 return error.code == "scene.invalid-rigid-body" &&
+                                     error.path == "/entities/0/components/RigidBody";
+                             })) {
+        std::cerr << "Rotational rigid-body validation accepted invalid finite/range values\n";
+        return 44;
     }
 
     const auto scaled_contract = noemancer::SceneDocumentCodec::parse_json(

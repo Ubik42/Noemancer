@@ -171,6 +171,62 @@ int main() {
         std::cerr<<"Jolt sensor did not report a trigger or incorrectly blocked motion: x="<<trigger_bodies[0].position_x<<'\n';return 14;
     }
 
+    // The plain-data bridge must preserve angular velocity and the authored
+    // CCD/sleep policy while still stepping a regular dynamic body.
+    PhysicsRuntime angular_physics;
+    std::vector<PhysicsBodyState> angular_bodies{
+        {.entity_id="angular", .motion_type=PhysicsMotionType::dynamic_body,
+         .position_y=2.0F, .gravity_factor=0.0F, .linear_damping=0.0F,
+         .angular_velocity_x=1.5F, .angular_velocity_y=-0.5F,
+         .angular_velocity_z=0.25F, .angular_damping=0.0F,
+         .continuous_collision=true, .allow_sleeping=false},
+    };
+    angular_physics.step(angular_bodies, 0.0F);
+    if (std::abs(angular_bodies[0].angular_velocity_x - 1.5F) > 0.02F ||
+        std::abs(angular_bodies[0].angular_velocity_y + 0.5F) > 0.02F ||
+        std::abs(angular_bodies[0].angular_velocity_z - 0.25F) > 0.02F) {
+        std::cerr << "Jolt angular velocity did not round-trip through the body bridge\n";
+        return 22;
+    }
+    angular_physics.step(angular_bodies, 1.0F / 60.0F);
+    if (!std::isfinite(angular_bodies[0].position_x) ||
+        !std::isfinite(angular_bodies[0].angular_velocity_x) ||
+        !std::isfinite(angular_bodies[0].angular_velocity_y) ||
+        !std::isfinite(angular_bodies[0].angular_velocity_z)) {
+        std::cerr << "Jolt CCD/sleep policy produced a non-finite dynamic step\n";
+        return 23;
+    }
+
+    PhysicsRuntime impulse_physics;
+    std::vector<PhysicsBodyState> impulse_bodies{
+        {.entity_id="impulse", .motion_type=PhysicsMotionType::dynamic_body,
+         .position_y=2.0F, .gravity_factor=0.0F, .linear_damping=0.0F,
+         .angular_damping=0.0F, .allow_sleeping=false},
+        {.entity_id="impulse-static", .motion_type=PhysicsMotionType::static_body,
+         .position_y=-2.0F, .gravity_factor=0.0F},
+    };
+    impulse_physics.step(impulse_bodies, 0.0F);
+    if (!impulse_physics.apply_force("impulse", 60.0F, 0.0F, 0.0F) ||
+        !impulse_physics.apply_impulse("impulse", 2.0F, 0.0F, 0.0F) ||
+        !impulse_physics.apply_angular_impulse("impulse", 0.0F, 0.0F, 1.0F)) {
+        std::cerr << "Jolt dynamic force/impulse command unexpectedly failed\n";
+        return 24;
+    }
+    impulse_physics.step(impulse_bodies, 1.0F / 60.0F);
+    if (impulse_bodies[0].velocity_x <= 2.0F ||
+        std::abs(impulse_bodies[0].angular_velocity_z) <= 0.1F) {
+        std::cerr << "Jolt force/impulse commands did not change dynamic velocity: linear="
+                  << impulse_bodies[0].velocity_x << " angular="
+                  << impulse_bodies[0].angular_velocity_z << '\n';
+        return 25;
+    }
+    if (impulse_physics.apply_force("missing", 1.0F, 0.0F, 0.0F) ||
+        impulse_physics.apply_impulse("impulse-static", 1.0F, 0.0F, 0.0F) ||
+        impulse_physics.apply_angular_impulse("missing", 0.0F, 1.0F, 0.0F)) {
+        std::cerr << "Jolt force/impulse command accepted an unknown or static body\n";
+        return 26;
+    }
+
     AnimationRuntime animation;
     auto time = animation.advance_time(0.0F, 0.5F, 1.0F, true, true, "asset.animation.test-bob");
     if (std::abs(time - 0.5F) > 0.0001F || std::abs(animation.sample_translation_y("asset.animation.test-bob", time) - 0.22F) > 0.0001F) {

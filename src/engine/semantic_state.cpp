@@ -99,6 +99,33 @@ SemanticConventionRegistry::SemanticConventionRegistry()
               "world.right-handed.y-up",
               "experimental",
               false
+          },
+          {
+              "engine.entity.velocity.angular.x",
+              "f32",
+              "Entity angular velocity around the world X axis.",
+              "rad/s",
+              "world.right-handed.y-up",
+              "experimental",
+              false
+          },
+          {
+              "engine.entity.velocity.angular.y",
+              "f32",
+              "Entity angular velocity around the world Y axis.",
+              "rad/s",
+              "world.right-handed.y-up",
+              "experimental",
+              false
+          },
+          {
+              "engine.entity.velocity.angular.z",
+              "f32",
+              "Entity angular velocity around the world Z axis.",
+              "rad/s",
+              "world.right-handed.y-up",
+              "experimental",
+              false
           }
       } {}
 

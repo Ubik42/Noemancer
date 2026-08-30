@@ -1,7 +1,6 @@
 # Noemancer 当前开发计划
 
-> 状态：Current
-> 更新日期：2026-08-29
+> 状态：Current；更新日期：2026-08-29
 > 权威范围：当前目标、执行顺序、退出条件和验证层级。
 > 历史进展不保存在本页；旧版长日志可从 Git revision `3e15f66^` 查阅。
 ## 产品目标
@@ -17,9 +16,9 @@ Noemancer 的差异化集中在：
 
 ## 当前执行前沿
 
-### 当前主线：商业渲染强化与公开场景验证
+### 当前主线：常用物理生产能力；渲染停在稳定光追基底
 
-第一阶段通用生产闭环、编辑器基础、Cook/Package/Player、Agent Authority 和 Hybrid Pixel 纵切已经成立，但这不等于引擎只剩边角料。渲染仍有商业化能力缺口，因此产品优先级从 UI 收尾切回 Rendering；高 DPI、可再分发多语字体和 cluster-aware 编辑保留在队列中，不删除也不与渲染批次混写。
+第一阶段通用生产闭环、编辑器基础、Cook/Package/Player、Agent Authority 和 Hybrid Pixel 纵切已经成立，但这不等于引擎只剩边角料。商业 Raster 已经有可见项目路径和双后端证据，Native Ray Tracing 也完成了双后端最小 Trace；在进入昂贵的持久 Native RHI 与 RTGI 之前，当前按产品优先级先补齐更容易直接服务游戏开发的常用物理能力。渲染没有取消：`render.native-rhi-raytracing-foundation` 和 `render.rtgi-production-path` 保留在物理两批之后，高 DPI、可再分发多语字体和 cluster-aware 编辑继续排队。物理不自写通用 Solver：Jolt 继续拥有积分、碰撞检测、约束求解、休眠与 CCD 等数值内核；Noemancer 负责稳定 Scene/World 数据、声明式 Inspector、C# Command Buffer、Agent 观察与事务、运行时私有适配和可复现验收场景。当前首批已贯通线/角速度、线/角阻尼、质量、重力系数、运动类型、CCD、休眠以及力/线性冲量/角冲量，并建立包含摩擦坡道、堆叠、多米诺、弹性球、高速 CCD、运动平台和 Trigger 的普通 43 实体场景。下一批依次补齐 Fixed/Distance/Hinge/Slider/Spring 约束，碰撞 Layer/Mask，Box/Capsule/Overlap 查询，激活/休眠与调试可视化，再用固定负载决定是否需要更深的 Jolt Job/宽相位优化。
 
 独立验收工程 `D:\3D\NoemancerProjects\NoemancerRenderLab` 是渲染真实性客户，不属于引擎源码，也不建立第二套 Scene/Asset Schema。它由正式 Project Workspace Authority 创建，当前包含：
 
@@ -39,13 +38,13 @@ Noemancer 的差异化集中在：
 8. `render.ssgi-production-path` 已退出：Render Graph v16 在 AO composite 与 SSR 之间真实调度 hierarchical hemisphere gather、cross-bilateral spatial resolve、独立 temporal resolve 与 diffuse-IBL-only composite。Gather 复用共享 RG32F min/max HiZ 粗筛并以全分辨率 scene depth 为命中 authority；Mesh/lit Sprite 共用 `normal.rgb+roughness.a+baseColor.rgb+metallic.a` 材质合同，miss/offscreen 保留原 IBL diffuse。Engine plain-data 提供 Off/Low/Medium/High、8-ray/8-step 高档有界预算、4 world-unit 局部半径、bent-normal/visibility、Hybrid Pixel 禁用和独立 History slot；公开样本/方向/步数上限与 Shader 的 16/16/32 编译边界一致，不允许静默截断。Runtime 暴露 `--ssgi-quality`、`--ssgi-debug final|confidence|visibility|bent-normal|miss`、Renderer Status v28 与四段 CPU/GPU 可观测时间。严格 Release 1920×1080 双后端证据位于 `generated/acceptance/ssgi-v16-20260825-161938/`：118 项检查全部通过；D3D12/Vulkan GI ROI mean absolute linear-luma delta 为 9.606e-5/9.613e-5、changed fraction 为 4.529%/4.530%，控制区均为 0；Gather p95 为 1.870/2.511 ms，Spatial 为 0.452/0.067 ms，Temporal 为 0.075/0.081 ms，Composite 为 0.038/0.039 ms。证据固定曝光并要求 60 帧真实 GPU timestamp，CPU 时间不能替代。
 9. `render.bindless-gpu-scene-and-occlusion-decision` 已退出：Adopt 现有共享 RG32F HiZ 作为下一帧 GPU visibility 的保守遮挡输入；GPU Scene 继续复用稳定 Draw/Resource identity、dirty-range publication 和 indexed-indirect，不建立第二份 Scene；bindless 则因当前 stable batching 尚无 descriptor-bound 证据而延后。Render Graph v17、Renderer Status v29 和 `noemancer.gpu-visibility-readback/0.3` 已形成真实闭环。最终 Release 1920×1080 双后端证据位于 `generated/acceptance/gpu-occlusion-v17-20260825-final2/`：D3D12/Vulkan 均为 1,034 candidates、128 frustum culled、897 HiZ tested、896 HiZ culled、10 accepted/drawn，控制物存活且 GPU 集合是 CPU 视锥集合的保守子集，完整性错误为 0。修复了 Vulkan 统计缓冲跨帧累积并新增帧内闭合门禁。压力场景 CPU Frame p95 为 131.75/154.67 ms，明显未达 60Hz；该数值作为后续优化基线，不能被写成性能达标。
 10. `render.shadow-scalability-vsm-decision` 已退出：新增 Engine-owned `noemancer.shadow-scalability-policy/0.1`、有界 `noemancer.shadow-page-contract/0.1` 实验合同和真实 `noemancer.shadow-scalability-stress/0.1` 场景。固定 1920×1080、1,024 caster、六个本地阴影请求的隐藏 D3D12/Vulkan 证据位于 `generated/acceptance/shadow-scalability-v30-20260825-stress2/`；两端均显示 1,024 caster、请求 6/选择 3/丢弃 3，GPU Shadow p95 为 0.003072/0.000891 ms，Engine 决策均为 `extend-atlas`。CPU Frame p95 为 42.16/41.57 ms，未达 60 Hz，证据据实失败而未缩负载。结论是保留 CSM/local atlas 生产 fallback，优先扩展/优化 atlas 与整体 CPU 帧；Virtual Page/VSM 仅保留 plain-data 原型边界并延后，不把合同冒充为渲染实现。
-11. 当前仍位于 `render.native-rhi-raytracing-foundation`，随后才是 `render.rtgi-production-path`。最小双后端 Trace 纵切已退出：RTX 4080 上，D3D12 DXR 1.1 与 Vulkan RT 各自真实创建一个三角形 BLAS、单实例 TLAS、Raygen/Miss/Closest-hit Pipeline 和对齐 SBT，执行 1×1 `DispatchRays`/`vkCmdTraceRaysKHR`，回读确定性命中值并解析真实 GPU timestamp。Runtime-private Adapter 将 build flags、资源字节、barrier、trace、readback 与 timestamp 投影到 Engine Receipt；`noemancer rhi execute --format json` 只有双后端均 ready 才以 0 退出。正式证据位于 `generated/acceptance/native-raytracing-minimal-trace-current/evidence.json`，该次 D3D12/Vulkan SBT 为 192/256 bytes、输出为 16/4 bytes，聚合 `nativeRhiReady=true`、`blasTlasRuntimeReady=true`、`rtgiReady=false`。它仍是销毁全部对象后返回的短生命周期 micro-slice，没有跨帧设备/AS/SBT、compaction/update、Render Graph RT Pass、可见项目画面或 RTGI。下一批先建立持久 Native RHI 所有权、Renderer/Render Graph 逻辑资源和 Raster fallback，再进入 RTGI 的采样、History 与降噪。每项高级效果仍必须同时给出真实节点、可观察参数、固定场景 A/B、GPU/显存预算、历史重置、跨后端结果和明确降级；只写 Shader、结构体或测试桩不计完成。
+11. `render.native-rhi-raytracing-foundation` 暂停在稳定边界，随后仍是 `render.rtgi-production-path`。最小双后端 Trace 纵切已退出：RTX 4080 上，D3D12 DXR 1.1 与 Vulkan RT 各自真实创建一个三角形 BLAS、单实例 TLAS、Raygen/Miss/Closest-hit Pipeline 和对齐 SBT，执行 1×1 `DispatchRays`/`vkCmdTraceRaysKHR`，回读确定性命中值并解析真实 GPU timestamp。Runtime-private Adapter 将 build flags、资源字节、barrier、trace、readback 与 timestamp 投影到 Engine Receipt；`noemancer rhi execute --format json` 只有双后端均 ready 才以 0 退出。正式证据位于 `generated/acceptance/native-raytracing-minimal-trace-current/evidence.json`，该次 D3D12/Vulkan SBT 为 192/256 bytes、输出为 16/4 bytes，聚合 `nativeRhiReady=true`、`blasTlasRuntimeReady=true`、`rtgiReady=false`。它仍是销毁全部对象后返回的短生命周期 micro-slice，没有跨帧设备/AS/SBT、compaction/update、Render Graph RT Pass、可见项目画面或 RTGI。恢复时先建立持久 Native RHI 所有权、Renderer/Render Graph 逻辑资源和 Raster fallback，再进入 RTGI 的采样、History 与降噪。每项高级效果仍必须同时给出真实节点、可观察参数、固定场景 A/B、GPU/显存预算、历史重置、跨后端结果和明确降级；只写 Shader、结构体或测试桩不计完成。
+12. 当前 `physics.common-effects-production` 首批已退出：Scene/World/Physics Runtime 共用角速度、角阻尼、CCD 与休眠字段；声明式 Inspector、中文/英文本地化、生成式 C# Schema、脚本 World View 与 Command Buffer 共享稳定属性/操作身份。`PhysicsRuntime` 把力、线性冲量和角冲量送入真实 Jolt Dynamic Body，而不是在 ECS 中伪改 Transform；输入要求有限数值、有界幅度和动态刚体。`--physics-showcase` 生成普通 43 实体 Scene，覆盖三档摩擦、两组堆叠、多米诺、四档弹性、高速 CCD、运动平台、Trigger、Box/Sphere/Capsule/Convex，并通过 120 帧 Headless 与 D3D12 隐藏画面验证。下一批是约束、碰撞过滤和更完整查询；车辆、布料、破坏只在明确游戏需求和中间件评估后进入队列。
 ### 参考实现驱动的开发门禁
 
 渲染、物理、动画、音频、资产和平台内核不再默认从零自写。每个高级批次先精读固定提交的成熟实现并形成 adoption record：精确仓库/提交/文件、根许可证和二级 Notice、`Adopt | Port | Adapt | Reject`、关键修改、Artifact ID 与验证证据。优先 Adopt 独立成熟中间件；对许可兼容、输入输出可切断的算法和 Shader 直接 Port；对绑定外部 RHI、全局状态或资源系统的实现 Adapt 其 pass 分解、数据布局、质量档和 failure mode；不能关闭许可、维护或目标 workload 的方案 Reject。
 
 当前固定代码级地图见 [参考实现驱动的高性能渲染计划](research/2026-reference-driven-render-performance-plan.zh-CN.md)。Wicked Engine/Godot 允许按各自 MIT 与二级 Notice 合规移植；原则是“Port shader/math，Adapt orchestration/data ownership”。Unreal Engine 只用于 RDG、VSM、Lumen、TSR、GPU Scene 等生产边界研究，禁止复制受 EULA 管辖的源码、Shader、宏和类型。每项效果必须从公开 RenderLab Project 走到真实 Render Graph、固定 A/B、双后端证据和性能合同；不得靠降低对象、分辨率、灯光、采样或材质复杂度伪造收益。
-
 ### 已完成基底：生产后端去临时实现
 
 miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、libjpeg-turbo、KTX2 BasisLZ/UASTC 与 meshoptimizer Mesh Cook 已接入。Asset Registry 会把 GLB、外部资源 JSON glTF 与 FBX 从不可变源闭包 Cook 为内容与配方共同寻址的 `noemancer/meshbin/0.2`，也会按 base-color/normal/data/emissive/UI 语义把 PNG/JPEG 编码为 KTX2；Player 直接校验并加载 Cooked Geometry，不带源模型解析或离线编译路径。Runtime 通过私有 libktx Adapter 校验并转码为可移植 RGBA8 上传。第三方类型仍封闭在 Adapter，Headless 参考 Mixer 与 Editor 源模型预览只作为明确边界内的路径，不进入发行包。
@@ -56,7 +55,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、libjpe
 
 > 持续把 `D:\3D\_tools\Noemancer` 推进为可由人类与 AI Agent 共同创建、编辑、调试、运行、打包和发布真实游戏的高性能通用引擎，并以 `D:\3D` 下的独立项目，尤其 `D:\3D\NoemancerProjects\NoemancerRenderLab`，作为公开产品路径的真实性客户。每次恢复必须先完整读取仓库 `AGENTS.md`、`docs/current-state.json`、`docs/architecture.md`、`docs/development-plan.zh-CN.md` 与 `docs/first-acceptance-status.zh-CN.md`，检查工作树并优先收口已经开始的连贯批次；不得把继承的修改丢下后另开同领域实现。瞬时队列只认 `currentFrontier`，旧对话、历史研究、已完成切片和旧暂停文字都不是当前指令。
 >
-> 从 `currentFrontier` 首个未阻塞项选择最大连贯、可审查的通用引擎批次。若队列为空，不得把 Goal 当作完成：依据本计划与能力状态复审真实产品缺口，按“通用生产闭环与性能/商业画质 → 编辑器作者体验 → 动画/物理 → Gameplay/VFX/音频/网络 → Agent 深度接入 → HD2D 专项”的依赖顺序，把下一组有明确退出条件的切片写回 `currentFrontier`。游戏与 Demo 只是通用能力的客户，不得把项目专用规则写进引擎，也不得为了长期停留在渲染而遗忘其余模块。各领域默认先做 build-vs-buy 与参考实现检索：优先 Adopt 成熟中间件；Port 许可兼容且可隔离的算法、Shader 和数据布局；Adapt 深度耦合实现的 pass 分解、资源策略、质量档和 failure mode；不能满足许可证、维护或目标 workload 时 Reject。每次高级渲染实现前记录精确上游提交/文件、许可证、修改和验证。Wicked/Godot 可合规移植并进入许可证台账；Unreal Engine 只研究生产约束，禁止复制其受 EULA 管辖的实现。第三方类型封闭在 plain-data Adapter 后，不得进入 Scene、Prefab、项目 C#、Semantic State Plane 或公共 RPC。
+> 从 `currentFrontier` 首个未阻塞项选择最大连贯、可审查的通用引擎批次。若队列为空，不得把 Goal 当作完成：依据本计划与能力状态复审真实产品缺口，按“当前用户产品优先级 → 通用生产闭环 → 核心渲染/物理/动画 → 编辑器作者体验 → Gameplay/VFX/音频/网络 → Agent 深度接入 → HD2D 专项”的依赖关系，把下一组有明确退出条件的切片写回 `currentFrontier`。游戏与 Demo 只是通用能力的客户，不得把项目专用规则写进引擎，也不得长期只盯一个领域而遗忘其余模块。各领域默认先做 build-vs-buy 与参考实现检索：优先 Adopt 成熟中间件；Port 许可兼容且可隔离的算法、Shader 和数据布局；Adapt 深度耦合实现的 pass 分解、资源策略、质量档和 failure mode；不能满足许可证、维护或目标 workload 时 Reject。每次高级实现前记录精确上游提交/文件、许可证、修改和验证。Wicked/Godot 可合规移植并进入许可证台账；Unreal Engine 只研究生产约束，禁止复制其受 EULA 管辖的实现。第三方类型封闭在 plain-data Adapter 后，不得进入 Scene、Prefab、项目 C#、Semantic State Plane 或公共 RPC。
 >
 > Sol 主代理负责架构、共享接口、集成、权威文档、最终验证和 Git 边界；存在互不重叠且并行收益高的工作时，主动启用最多三个 `luna_worker` 实际开发 lane。优先多个 Writer 加至多一个解除关键不确定性的 Research lane，不用三个只读审计填满并发，不让主线程空等。共享 CMake、公共 Schema、World、Renderer/Render Graph/Editor 集中点和权威状态默认由 Sol 串行集成。
 >

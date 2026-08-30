@@ -202,9 +202,12 @@ SceneDocumentParseResult SceneDocumentCodec::parse_json(
                             add_error(result.errors, "scene.invalid-component", base_path + "/components/Velocity", "Velocity.linear is required.");
                             continue;
                         }
-                        reject_unknown_fields(component, {"linear"}, base_path + "/components/Velocity", result.errors);
+                        reject_unknown_fields(component, {"linear", "angular"}, base_path + "/components/Velocity", result.errors);
                         SceneVelocity velocity;
-                        if (read_vector3(component["linear"], base_path + "/components/Velocity/linear", velocity.linear, result.errors)) {
+                        bool valid = read_vector3(component["linear"], base_path + "/components/Velocity/linear", velocity.linear, result.errors);
+                        if (component.contains("angular"))
+                            valid &= read_vector3(component["angular"], base_path + "/components/Velocity/angular", velocity.angular, result.errors);
+                        if (valid) {
                             entity.velocity = velocity;
                         }
                     } else if (component_name == "RigidBody") {
@@ -213,7 +216,8 @@ SceneDocumentParseResult SceneDocumentCodec::parse_json(
                             add_error(result.errors, "scene.invalid-component", path, "RigidBody must be an object.");
                             continue;
                         }
-                        reject_unknown_fields(component, {"motionType", "mass", "gravityFactor", "linearDamping"}, path, result.errors);
+                        reject_unknown_fields(component, {"motionType", "mass", "gravityFactor", "linearDamping",
+                            "angularDamping", "continuousCollision", "allowSleeping"}, path, result.errors);
                         SceneRigidBody body;
                         bool valid = component.contains("motionType") && component.at("motionType").is_string();
                         if (!valid) add_error(result.errors, "scene.invalid-string", path + "/motionType", "A motion type is required.");
@@ -221,6 +225,12 @@ SceneDocumentParseResult SceneDocumentCodec::parse_json(
                         valid &= read_number(component, "mass", path, body.mass, result.errors);
                         valid &= read_number(component, "gravityFactor", path, body.gravity_factor, result.errors);
                         valid &= read_number(component, "linearDamping", path, body.linear_damping, result.errors);
+                        if (component.contains("angularDamping"))
+                            valid &= read_number(component, "angularDamping", path, body.angular_damping, result.errors);
+                        if (component.contains("continuousCollision"))
+                            valid &= read_bool(component, "continuousCollision", path, body.continuous_collision, result.errors);
+                        if (component.contains("allowSleeping"))
+                            valid &= read_bool(component, "allowSleeping", path, body.allow_sleeping, result.errors);
                         if (valid) entity.rigid_body = body;
                     } else if (component_name == "BoxCollider") {
                         const auto path = base_path + "/components/BoxCollider";
@@ -576,9 +586,14 @@ std::vector<SceneDocumentError> SceneDocumentCodec::validate(const SceneDocument
         if (entity.velocity && !finite(entity.velocity->linear)) {
             add_error(errors, "scene.non-finite-number", path + "/components/Velocity/linear", "Scene numbers must be finite.");
         }
+        if (entity.velocity && !finite(entity.velocity->angular)) {
+            add_error(errors, "scene.non-finite-number", path + "/components/Velocity/angular", "Scene numbers must be finite.");
+        }
         if (entity.rigid_body && ((entity.rigid_body->motion_type != "static" && entity.rigid_body->motion_type != "dynamic" &&
             entity.rigid_body->motion_type != "kinematic") || entity.rigid_body->mass <= 0.0 ||
-            entity.rigid_body->gravity_factor < 0.0 || entity.rigid_body->linear_damping < 0.0)) {
+            entity.rigid_body->gravity_factor < 0.0 || !std::isfinite(entity.rigid_body->linear_damping) ||
+            entity.rigid_body->linear_damping < 0.0 || !std::isfinite(entity.rigid_body->angular_damping) ||
+            entity.rigid_body->angular_damping < 0.0)) {
             add_error(errors, "scene.invalid-rigid-body", path + "/components/RigidBody", "RigidBody values or motionType are invalid.");
         }
         if (entity.box_collider && (!finite(entity.box_collider->half_extents) || entity.box_collider->half_extents.x <= 0.0 ||
@@ -735,10 +750,19 @@ std::string SceneDocumentCodec::write_canonical_json(const SceneDocument& docume
         }
         if (entity.velocity) {
             components["Velocity"] = {{"linear", vector3_json(entity.velocity->linear)}};
+            if (entity.velocity->angular.x != 0.0 || entity.velocity->angular.y != 0.0 ||
+                entity.velocity->angular.z != 0.0)
+                components["Velocity"]["angular"] = vector3_json(entity.velocity->angular);
         }
         if (entity.rigid_body) {
             components["RigidBody"] = {{"gravityFactor", entity.rigid_body->gravity_factor}, {"linearDamping", entity.rigid_body->linear_damping},
                 {"mass", entity.rigid_body->mass}, {"motionType", entity.rigid_body->motion_type}};
+            if (entity.rigid_body->angular_damping != 0.05)
+                components["RigidBody"]["angularDamping"] = entity.rigid_body->angular_damping;
+            if (entity.rigid_body->continuous_collision)
+                components["RigidBody"]["continuousCollision"] = true;
+            if (!entity.rigid_body->allow_sleeping)
+                components["RigidBody"]["allowSleeping"] = false;
         }
         if (entity.box_collider) {
             components["BoxCollider"] = {{"friction", entity.box_collider->friction},
