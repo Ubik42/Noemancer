@@ -53,11 +53,54 @@ bool test_success_or_explicit_unsupported() {
                        receipt.loader_available && receipt.instance_created &&
                        receipt.device_created && receipt.queue_found &&
                        receipt.feature_chain_enabled && receipt.blas_built && receipt.tlas_built &&
-                       receipt.submitted && receipt.fence_signaled && receipt.resources_released,
+                       receipt.submitted && receipt.fence_signaled && receipt.resources_released &&
+                       receipt.shader_module_created && receipt.descriptor_set_layout_created &&
+                       receipt.pipeline_layout_created && receipt.descriptor_set_allocated &&
+                       receipt.pipeline_created && receipt.sbt_built &&
+                       receipt.shader_table_prepared && receipt.shader_table_uploaded &&
+                       receipt.trace_dispatch_issued && receipt.trace_dispatch_submitted &&
+                       receipt.trace_dispatch_completed && receipt.output_resource_created &&
+                       receipt.output_readback_completed && receipt.synchronization_completed &&
+                       receipt.timestamp_query_created && receipt.timestamp_queries_issued &&
+                       receipt.timestamp_data_resolved && receipt.gpu_timestamps_valid &&
+                       !receipt.build_only,
                    "completed receipt omitted real execution evidence")) return false;
+        if (!check(receipt.blas_flags_observed && receipt.tlas_flags_observed &&
+                       receipt.blas_prefer_fast_trace && receipt.tlas_prefer_fast_trace &&
+                       !receipt.blas_prefer_fast_build && !receipt.tlas_prefer_fast_build &&
+                       !receipt.blas_allow_update && !receipt.tlas_allow_update &&
+                       !receipt.blas_allow_compaction && !receipt.tlas_allow_compaction &&
+                       receipt.blas_build_count == 1U && receipt.tlas_build_count == 1U &&
+                       receipt.blas_update_count == 0U && receipt.tlas_update_count == 0U &&
+                       receipt.blas_build_submitted && receipt.tlas_build_submitted &&
+                       receipt.blas_build_completed && receipt.tlas_build_completed &&
+                       !receipt.compaction_executed,
+                   "completed receipt omitted observed acceleration-structure build flags"))
+            return false;
         if (!check(receipt.vertex_buffer_bytes > 0U && receipt.instance_buffer_bytes > 0U &&
                        receipt.blas_result_bytes > 0U && receipt.blas_scratch_bytes > 0U &&
                        receipt.tlas_result_bytes > 0U && receipt.tlas_scratch_bytes > 0U &&
+                       receipt.sbt_buffer_bytes > 0U && receipt.output_buffer_bytes > 0U &&
+                       receipt.shader_group_count == 3U && receipt.trace_width == 1U &&
+                       receipt.trace_height == 1U && receipt.trace_depth == 1U &&
+                       receipt.shader_table_record_count == 3U &&
+                       receipt.shader_table_record_bytes > 0U && receipt.shader_table_bytes > 0U &&
+                       receipt.output_width == 1U && receipt.output_height == 1U &&
+                       receipt.output_pixel_stride_bytes == sizeof(std::uint32_t) &&
+                       receipt.output_bytes == sizeof(std::uint32_t) &&
+                       receipt.output_readback_bytes == sizeof(std::uint32_t) &&
+                       receipt.output_readback_bytes == receipt.output_bytes &&
+                       receipt.output_value == 0x48495421U &&
+                       receipt.output_hit == receipt.output_value &&
+                       receipt.output_sentinel == 0x4E4F5254U &&
+                       receipt.output_value != receipt.output_sentinel &&
+                       receipt.output_pixel_x == 0U && receipt.output_pixel_y == 0U &&
+                       receipt.output_hash != 0U &&
+                       receipt.gpu_timestamp_frequency_hz > 0U &&
+                       receipt.gpu_timestamp_ticks_end > receipt.gpu_timestamp_ticks_begin &&
+                       receipt.gpu_timestamp_ticks_delta > 0U &&
+                       receipt.gpu_timestamp_duration_ns > 0U &&
+                       receipt.gpu_timestamp_readback_bytes == 2U * sizeof(std::uint64_t) &&
                        receipt.total_allocated_bytes >= receipt.vertex_buffer_bytes +
                            receipt.instance_buffer_bytes,
                    "completed receipt omitted resource allocation evidence")) return false;
@@ -81,6 +124,7 @@ int main() {
     const auto receipt = execute_native_vulkan_raytracing_blas_tlas();
     std::cout << "native_vulkan_raytracing_executor_tests: ok state="
               << native_vulkan_raytracing_execution_state_name(receipt.state)
-              << " code=" << receipt.code << " device=" << receipt.device_name << '\n';
+              << " code=" << receipt.code << " detail=" << receipt.detail
+              << " device=" << receipt.device_name << '\n';
     return 0;
 }

@@ -29,7 +29,7 @@ These are hidden Release captures from the engine, not offline renders or concep
 
 Noemancer is not an editor shell around an existing engine. The repository contains the native Editor, game Runtime, asset Cook, standalone Player packaging, C# project scripting, and one engine command layer exposed through CLI and MCP.
 
-The current build can create and open projects, author scenes, input and project UI, run C# game logic in an isolated Play World, and package a standalone Windows Player. It remains **pre-alpha**: contracts will change, Windows x64 is the only end-to-end verified platform, and unfinished work such as hardware ray tracing, RTGI and VSM is not presented as a current feature.
+The current build can create and open projects, author scenes, input and project UI, run C# game logic in an isolated Play World, and package a standalone Windows Player. It remains **pre-alpha**: contracts will change, Windows x64 is the only end-to-end verified platform, and production project-facing hardware ray tracing, RTGI and VSM are not presented as current features.
 
 ## Current capabilities
 
@@ -40,7 +40,7 @@ The current build can create and open projects, author scenes, input and project
 - **Assets:** offline GLB/JSON glTF/FBX import, KTX2 BasisLZ/UASTC, meshoptimizer geometry Cook, Sprite Atlas and Tilemap data, content/recipe-addressed artifacts, and schema/range/SHA-256 validation.
 - **Distribution:** packaged Players consume runtime `.meshbin`, `.animbin` and KTX2 assets without source decode; Windows packages close app-local .NET, VC Runtime, shader manifests and third-party notices.
 
-The default Raster path includes dynamic sky atmosphere, SSR and SSGI. Hardware ray tracing, RTGI and VSM remain in development.
+The default Raster path includes dynamic sky atmosphere, SSR and SSGI. A bounded native D3D12/Vulkan ray-tracing probe now builds BLAS/TLAS, creates a pipeline and SBT, dispatches a `1×1×1` trace, records GPU timestamps and reads the result back through a unified fail-closed receipt. Persistent Native RHI ownership, project-visible Render Graph ray tracing, RTGI and VSM remain in development.
 
 ## Editor, CLI, and Agent tools use the same commands
 
@@ -127,7 +127,7 @@ Read [Architecture](docs/architecture.md), the [Development plan](docs/developme
 
 ## Development status
 
-The active frontier is commercial Raster validation in `NoemancerRenderLab`: real classic GLB scenes, D3D12/Vulkan Golden captures, Render Graph/shader/asset identities and performance budgets. The following stages cover external glTF/JPEG resources, larger scenes, dynamic atmosphere, shared HiZ/history/temporal denoising, SSR and SSGI. Hardware ray tracing follows only after a real native D3D12/Vulkan RT foundation and fallback path are verified.
+Commercial Raster features have dual-backend evidence in `NoemancerRenderLab`: classic GLB scenes, D3D12/Vulkan Golden captures, Render Graph/shader/asset identities and per-pass GPU timings. The native D3D12/Vulkan frontier has also completed a real minimal trace and unified execution receipt. The next stage establishes persistent Native RHI ownership, integrates ray tracing as a Render Graph path with a Raster fallback, and produces project-visible A/B evidence before RTGI work begins.
 
 Other open boundaries include a stable SDK/plugin ecosystem, fully responsive high-DPI editor chrome, redistributable CJK/Arabic fonts, a signed installer, independent-machine validation, production networking and cross-platform support. The machine-readable queue is [`docs/current-state.json`](docs/current-state.json).
 

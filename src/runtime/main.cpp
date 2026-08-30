@@ -9,6 +9,9 @@
 #include "runtime/application.hpp"
 #include "runtime/performance_evidence.hpp"
 #include "runtime/native_raytracing_capability_adapter.hpp"
+#include "runtime/native_raytracing_execution_adapter.hpp"
+#include "runtime/native_d3d12_raytracing_executor.hpp"
+#include "runtime/native_vulkan_raytracing_executor.hpp"
 #include "runtime/windows_package_service.hpp"
 
 #include <nlohmann/json.hpp>
@@ -372,13 +375,33 @@ nlohmann::json native_raytracing_capability_json(
 }
 
 int run_rhi_cli(const int argc,char** argv) {
-    if(argc<3||std::string_view(argv[2])!="capabilities") {
-        std::cerr<<"Expected: noemancer rhi capabilities [--format json]\n";return 2;
+    if(argc<3) {
+        std::cerr<<"Expected: noemancer rhi capabilities|execute [--format json]\n";return 2;
+    }
+    const std::string_view operation=argv[2];
+    if(operation!="capabilities"&&operation!="execute") {
+        std::cerr<<"Expected: noemancer rhi capabilities|execute [--format json]\n";return 2;
     }
     for(int index=3;index<argc;++index) {
         if(std::string_view(argv[index])=="--format"&&index+1<argc&&
            std::string_view(argv[index+1])=="json") { ++index;continue; }
-        std::cerr<<"Unknown RHI capability argument: "<<argv[index]<<'\n';return 2;
+        std::cerr<<"Unknown RHI argument: "<<argv[index]<<'\n';return 2;
+    }
+    if(operation=="execute") {
+        const auto d3d12=noemancer::run_native_d3d12_raytracing_executor();
+        const auto vulkan=noemancer::execute_native_vulkan_raytracing_blas_tlas();
+        const auto aggregate=noemancer::aggregate_native_raytracing_execution_receipts(
+            d3d12,vulkan);
+        const auto aggregate_document=nlohmann::json::parse(
+            noemancer::raytracing_execution_aggregate_canonical_json(aggregate));
+        const bool success=aggregate.valid&&aggregate.native_rhi_ready;
+        const auto document=nlohmann::json{
+            {"schemaVersion","noemancer.native-rhi-execution/0.1"},
+            {"success",success},
+            {"aggregate",aggregate_document},
+            {"boundary","A successful command proves the bounded dual-backend native trace execution contract only; it does not prove RTGI or production Render Graph integration."}};
+        std::cout<<document.dump()<<'\n';
+        return success?0:31;
     }
     const auto d3d12=noemancer::probe_d3d12_raytracing_capability();
     const auto vulkan=noemancer::probe_vulkan_raytracing_capability();

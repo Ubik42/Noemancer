@@ -11,6 +11,7 @@ add_executable(noemancer
     miniaudio_render_graph.cpp
     miniaudio_vfs_adapter.cpp
     native_raytracing_capability_adapter.cpp
+    native_raytracing_execution_adapter.cpp
     native_d3d12_raytracing_executor.cpp
     native_vulkan_raytracing_executor.cpp
     package_vfs_bootstrap.cpp

@@ -1,9 +1,9 @@
 {
   "schemaVersion": "noemancer.project-state/0.2",
-  "updated": "2026-08-25",
-  "status": "paused-for-user-review",
+  "updated": "2026-08-29",
+  "status": "in-development",
   "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "wire-native-execution-receipts-and-build-sbt-trace-dispatch",
+  "currentStep": "establish-persistent-native-rhi-and-render-graph-rt-pass",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -57,7 +57,8 @@
     "render.ssr-production-path",
     "render.ssgi-production-path",
     "render.bindless-gpu-scene-and-occlusion-decision",
-    "render.shadow-scalability-vsm-decision"
+    "render.shadow-scalability-vsm-decision",
+    "render.native-rhi-minimal-dual-backend-trace"
   ],
   "closedExperiments": [
     {

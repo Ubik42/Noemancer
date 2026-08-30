@@ -44,8 +44,35 @@ bool validate_receipt(const NativeD3D12RayTracingReceipt& receipt) {
                        receipt.blas_build_completed && receipt.tlas_prebuild_completed &&
                        receipt.tlas_build_submitted && receipt.tlas_build_completed &&
                        receipt.synchronization_completed &&
-                       receipt.build_only && !receipt.compaction_executed &&
-                       !receipt.trace_dispatch_issued &&
+                       !receipt.build_only && !receipt.compaction_executed &&
+                       receipt.trace_dispatch_issued && receipt.shader_table_prepared &&
+                       receipt.shader_table_uploaded && receipt.trace_dispatch_submitted &&
+                       receipt.trace_dispatch_completed && receipt.root_signature_created &&
+                       receipt.state_object_created && receipt.output_resource_created &&
+                       receipt.output_readback_completed &&
+                       receipt.shader_table_record_count == 3U &&
+                       receipt.shader_table_record_bytes >= 32U &&
+                       receipt.shader_table_bytes >= 192U &&
+                       receipt.output_width == 1U && receipt.output_height == 1U &&
+                       receipt.output_pixel_stride_bytes == 16U &&
+                       receipt.output_bytes == 16U && receipt.output_readback_bytes == 16U &&
+                       receipt.output_sentinel == 0x52415931U && receipt.output_hit == 1U &&
+                       receipt.output_pixel_x == 0U && receipt.output_pixel_y == 0U &&
+                       receipt.output_hash != 0U &&
+                       receipt.blas_flags_observed && receipt.tlas_flags_observed &&
+                       !receipt.blas_allow_update && !receipt.tlas_allow_update &&
+                       !receipt.blas_allow_compaction && !receipt.tlas_allow_compaction &&
+                       receipt.blas_prefer_fast_trace && receipt.tlas_prefer_fast_trace &&
+                       !receipt.blas_prefer_fast_build && !receipt.tlas_prefer_fast_build &&
+                       receipt.blas_build_count == 1U && receipt.tlas_build_count == 1U &&
+                       receipt.blas_update_count == 0U && receipt.tlas_update_count == 0U &&
+                       receipt.timestamp_query_created && receipt.timestamp_queries_issued &&
+                       receipt.timestamp_data_resolved && receipt.gpu_timestamps_valid &&
+                       receipt.gpu_timestamp_frequency_hz > 0U &&
+                       receipt.gpu_timestamp_ticks_end > receipt.gpu_timestamp_ticks_begin &&
+                       receipt.gpu_timestamp_ticks_delta > 0U &&
+                       receipt.gpu_timestamp_duration_ns > 0U &&
+                       receipt.gpu_timestamp_readback_bytes == 16U &&
                        receipt.vertex_buffer_bytes > 0U &&
                        receipt.blas_scratch_bytes > 0U &&
                        receipt.blas_result_bytes > 0U &&
@@ -79,7 +106,13 @@ bool test_vocabulary() {
                          NativeD3D12RayTracingFailureStage::tlas_build) == "tlas-build" &&
                      native_d3d12_raytracing_failure_stage_name(
                          NativeD3D12RayTracingFailureStage::synchronization) ==
-                         "synchronization",
+                         "synchronization" &&
+                     native_d3d12_raytracing_failure_stage_name(
+                         NativeD3D12RayTracingFailureStage::shader_table) == "shader-table" &&
+                     native_d3d12_raytracing_failure_stage_name(
+                         NativeD3D12RayTracingFailureStage::readback) == "readback" &&
+                     native_d3d12_raytracing_failure_stage_name(
+                         NativeD3D12RayTracingFailureStage::timestamp_query) == "timestamp-query",
                  "failure stage vocabulary drifted");
 }
 
@@ -88,7 +121,7 @@ bool test_execution() {
         NativeD3D12RayTracingExecutorOptions{.probe_warp_fallback = true});
     if (!validate_receipt(receipt)) return false;
     if (receipt.state == NativeD3D12RayTracingExecutionState::succeeded) {
-        std::cout << "native_d3d12_raytracing_executor_tests: hardware BLAS/TLAS ok\n";
+        std::cout << "native_d3d12_raytracing_executor_tests: hardware BLAS/TLAS/SBT/TraceRays/readback ok\n";
     } else {
         std::cout << "native_d3d12_raytracing_executor_tests: unsupported (" <<
             receipt.code << ")\n";

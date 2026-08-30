@@ -37,7 +37,7 @@
 
 Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 Editor、游戏 Runtime、资产 Cook、独立 Player 打包、C# 项目脚本，以及由同一套引擎命令驱动的 CLI 和 MCP 接口。
 
-当前版本可以从 Project Hub 创建或打开工程，在 Editor 中编辑 Scene、组件、输入和项目 UI，进入隔离的 Play World 运行 C# 游戏逻辑，再把资产与运行时依赖打成可独立启动的 Windows Player。引擎仍处于 **pre-alpha**：公开 API 会变化，只完整验证了 Windows x64；硬件光追、RTGI、VSM 与跨平台发行仍不能写成现有能力。
+当前版本可以从 Project Hub 创建或打开工程，在 Editor 中编辑 Scene、组件、输入和项目 UI，进入隔离的 Play World 运行 C# 游戏逻辑，再把资产与运行时依赖打成可独立启动的 Windows Player。引擎仍处于 **pre-alpha**：公开 API 会变化，只完整验证了 Windows x64；面向项目画面的生产级硬件光追、RTGI、VSM 与跨平台发行仍不能写成现有能力。
 
 ## 当前能力
 
@@ -64,11 +64,11 @@ Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 
 - 四 LUT 动态天空与 Aerial Perspective、共享 HiZ、生产 SSR、生产 SSGI、独立时域 History、TAA、GTAO 与双边降噪、四级 Bloom、曝光/调色、ACES Tone Mapping。
 - Hybrid Pixel / HD2D Profile 支持虚拟分辨率、整数倍显示、像素对齐 Sprite/VFX、2D/3D 混合光照和受控后处理。
 
-当前默认 Raster 路径已经启用动态天空、SSR 与 SSGI，并在 RenderLab 取得 D3D12/Vulkan 的固定画面和逐 Pass GPU 时间证据。Ray Tracing、RTGI 与 VSM 仍在开发计划中；未进入真实 Render Graph、跨后端验证和性能证据的能力不会列为已完成。
+当前默认 Raster 路径已经启用动态天空、SSR 与 SSGI，并在 RenderLab 取得 D3D12/Vulkan 的固定画面和逐 Pass GPU 时间证据。Native Ray Tracing 已跑通双后端最小执行闭环，但项目画面的光追 Render Graph、RTGI 与 VSM 仍在开发计划中；未进入真实项目管线、跨后端验证和性能证据的能力不会列为已完成。
 
 如果不熟悉 PBR、HiZ、SSR、SSGI、时域降噪或 Tone Mapping，可以阅读[当前开发程度与渲染小白说明](docs/rendering-explained.zh-CN.md)。它按一帧画面的真实加工顺序解释每项功能，也明确区分“已经形成画面”“只有底层基础”和“尚未实现”。
 
-Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vulkan Handle 泄漏进 Scene 或 Agent API。RTX 4080 已确认 DXR 1.1 与 Vulkan RT Extension/Feature，并在两端真实完成三角形 BLAS、单实例 TLAS、Barrier、Queue/Fence 和资源释放。该纵切只是短生命周期 Build Probe，只证明资源与同步边界成立，不等于已经拥有持久 Native RHI、可见光追画面或 RTGI。
+Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vulkan Handle 泄漏进 Scene 或 Agent API。RTX 4080 已在 DXR 1.1 与 Vulkan RT 上真实完成三角形 BLAS、单实例 TLAS、光追 Pipeline、SBT、`1×1×1` Trace Dispatch、GPU 时间戳与 CPU Readback；统一 Receipt 会拒绝缺少关键证据的“伪成功”。该纵切仍是短生命周期的底层探针，只证明两套 API 能真实发射并读回一条射线，不等于已经拥有持久 Native RHI、项目场景可见光追、RTGI 或商业性能。
 
 ### 资产与发布
 
@@ -194,7 +194,7 @@ docs/           架构、ADR、开发计划与验收索引
 
 ## 开发状态
 
-商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的能力矩阵与真实 BLAS/TLAS Build Probe 已成立；下一阶段才是统一执行 Receipt 接线、持久资源所有权、SBT/Trace Dispatch、Render Graph 集成与 RTGI，不能把当前 Build Probe 提前描述成光追画面。
+商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的最小光追闭环与统一执行 Receipt 已成立；下一阶段是持久 Native RHI 资源所有权、Renderer/Render Graph 光追节点、Raster fallback 和项目场景可见输出，再在此基础上进入 RTGI。当前 `1×1` 探针不能提前描述成生产光追画面。
 
 仍未完成的产品边界包括：稳定 SDK/插件生态、完整高 DPI 编辑器响应式布局、可再分发 CJK/Arabic 字体、签名安装器、独立机器矩阵、生产网络与跨平台支持。
 

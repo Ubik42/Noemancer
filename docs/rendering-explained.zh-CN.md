@@ -22,7 +22,7 @@ Noemancer 已经不是“开一个窗口、画几个三角形”的引擎玩具�
 - **基础闭环已经成立**：可以开始拿它制作和验证小型真实游戏。
 - **现代 Raster 渲染骨架已经较完整**：PBR、阴影、天空、AO、SSR、SSGI、时域处理和后期链路都已经进入真实 GPU Render Graph。
 - **正在进入商业画质与大型场景强化期**：公开经典场景已经能实时跑，但大型资产 Cook、流送、复杂阴影、极端负载和画面调优还没有达到成熟商业引擎的宽度。
-- **硬件光追刚跨过底层可行性门槛**：D3D12/Vulkan 都能真实构建 BLAS/TLAS，但还没有发射光线、形成光追画面，更没有 RTGI。
+- **硬件光追已跑通双后端最小闭环**：D3D12/Vulkan 都能真实构建 BLAS/TLAS、创建光追 Pipeline 和 SBT、发射 `1×1×1` 射线并读回结果；但它还没有接进项目 Render Graph、形成可见场景光追画面，更没有 RTGI。
 - **产品成熟度仍明显不足**：跨平台、安装器、插件生态、显存管理、各种硬件矩阵、稳定 SDK 和大量真实游戏生产检验仍待完成。
 
 如果把引擎成熟度粗略分成五层：
@@ -288,18 +288,17 @@ GPU 粒子已经能在显卡上完成 Spawn、Simulate、Group、Alpha Sort 和�
 - BLAS：一组模型三角形的加速结构；
 - TLAS：场景里各个模型实例的上层加速结构。
 
-Noemancer 已经在 RTX 4080 上让 D3D12 DXR 1.1 和 Vulkan RT 真实创建三角形 Vertex Buffer、BLAS、单实例 TLAS，并完成 Barrier、提交、Fence 等待和释放。这相当于已经修好“高速公路和索引仓库”。
+Noemancer 已经在 RTX 4080 上让 D3D12 DXR 1.1 和 Vulkan RT 真实创建三角形 Vertex Buffer、BLAS、单实例 TLAS、光追 Pipeline 与 SBT，发射 `1×1×1` 射线，记录 GPU 时间戳，并把命中标记读回 CPU。可以把它理解为：高速公路、索引仓库、收费站和第一辆测试车都已经真的跑通，而不是只检查显卡驱动说“应该支持”。
 
-但是还缺：
+当前真正还缺：
 
 - 长寿命 Native RHI 设备/资源所有权；
-- SBT（Shader Binding Table，告诉不同射线命中后执行哪个 Shader）；
-- Trace Dispatch（真正发射射线）；
 - Render Graph 光追 Pass；
 - 结果纹理与 Raster 画面的合成；
+- 编辑器项目里的可见光追开关、A/B 画面与稳定 fallback；
 - RTGI 的采样、降噪、History、降级和双后端性能证据。
 
-所以当前 **没有可见的 Ray Tracing 画面，没有 RTGI**。BLAS/TLAS Build Probe 只是证明底层 API、资源和同步方向可行。
+所以当前 **有真实的底层 Ray Tracing 执行证据，但没有项目场景里的可见 Ray Tracing 画面，也没有 RTGI**。这个 `1×1` 探针的意义是把“显卡支持”“能建加速结构”“能真正发射并读回射线”三件事分开证明；它不是供玩家观看的渲染功能。
 
 ### 没有完成 VSM / Virtual Shadow Maps
 
@@ -359,13 +358,12 @@ Noemancer 额外做的是把运行事实也变成稳定、有限、可查询的�
 
 按当前权威队列，优先顺序是：
 
-1. 把 D3D12/Vulkan 的光追执行事实接到统一 Receipt，而不是两个后端各说各话；
-2. 建立可持续跨帧使用的 Native RHI 资源所有权；
-3. 完成最小 SBT + Trace Dispatch + Readback，第一次得到真实光追像素；
-4. 把 Ray Tracing 作为真实 Render Graph 节点，并保留 Raster fallback；
-5. 在此基础上开发 RTGI 的采样、时空降噪、History reset、质量档与性能预算；
-6. 同时用 Sponza、后续 Bistro/San Miguel 等大型场景继续推动分块 Cook、纹理/几何流送和 CPU 帧优化；
-7. 阴影先优化现有 Atlas 和 CPU 总帧，再凭压力证据决定何时进入真正 VSM。
+1. 建立可持续跨帧使用的 Native RHI 设备、队列、加速结构和 SBT 所有权；
+2. 把 Ray Tracing 作为真实 Renderer/Render Graph 节点，并保留 Raster fallback；
+3. 把结果写入项目纹理，与 Raster 画面合成，取得双后端可见 A/B 和 GPU 时间证据；
+4. 在此基础上开发 RTGI 的采样、时空降噪、History reset、质量档与性能预算；
+5. 同时用 Sponza、后续 Bistro/San Miguel 等大型场景继续推动分块 Cook、纹理/几何流送和 CPU 帧优化；
+6. 阴影先优化现有 Atlas 和 CPU 总帧，再凭压力证据决定何时进入真正 VSM。
 
 这条顺序看起来比“先写一个 RTGI Shader”慢，但它保证光追不会成为只能在一台机器、一个测试函数里运行的孤岛。
 
@@ -393,6 +391,6 @@ Noemancer 额外做的是把运行事实也变成稳定、有限、可查询的�
 
 Noemancer 当前最值得肯定的不是“功能名很多”，而是现代 Raster 的关键功能已经进入同一条真实管线，并开始用公开场景、双后端、Package Player、固定机位 A/B 与 GPU Pass 时间证明它们。
 
-当前最需要警惕的也很明确：**有现代结构，不等于已有商业引擎的成熟度；能渲染 Sponza，不等于已经解决大型世界；能 Build BLAS/TLAS，不等于已经有光追；有 GPU-driven，不等于所有压力场景已经达到 60 FPS。**
+当前最需要警惕的也很明确：**有现代结构，不等于已有商业引擎的成熟度；能渲染 Sponza，不等于已经解决大型世界；能跑通 `1×1` 光追探针，不等于已经有项目场景光追或 RTGI；有 GPU-driven，不等于所有压力场景已经达到 60 FPS。**
 
 因此合理的阶段结论是：基础游戏引擎闭环已经形成，Raster 渲染进入商业化强化阶段，硬件光追处于底层奠基阶段，大型场景、极致性能和生产稳定性将决定它能否真正从“很完整的自研引擎”走向“有竞争力的生产引擎”。

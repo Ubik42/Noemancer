@@ -295,6 +295,16 @@ target_link_libraries(noemancer_native_vulkan_raytracing_executor_tests PRIVATE
 add_test(NAME noemancer.native_vulkan_raytracing_executor
     COMMAND noemancer_native_vulkan_raytracing_executor_tests)
 
+add_executable(noemancer_native_raytracing_execution_adapter_tests
+    native_raytracing_execution_adapter_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/native_raytracing_execution_adapter.cpp)
+target_include_directories(noemancer_native_raytracing_execution_adapter_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_native_raytracing_execution_adapter_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.native_raytracing_execution_adapter
+    COMMAND noemancer_native_raytracing_execution_adapter_tests)
+
 add_executable(noemancer_image_decoder_tests image_decoder_tests.cpp)
 target_link_libraries(noemancer_image_decoder_tests PRIVATE noemancer::engine)
 add_test(NAME noemancer.image_decoder COMMAND noemancer_image_decoder_tests)
