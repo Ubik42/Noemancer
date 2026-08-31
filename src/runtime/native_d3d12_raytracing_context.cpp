@@ -69,6 +69,31 @@ std::uint64_t scene_signature(const NativeD3D12RayTracingScene& scene) noexcept 
     return hash == 0U ? 1U : hash;
 }
 
+// Resource identity is deliberately separated from content identity.  A
+// revision or vertex edit can reuse persistent BLAS/TLAS storage when the
+// geometry topology and update flags remain compatible; adding/removing a
+// geometry or changing its vertex/index cardinality requires a rebuild.
+std::uint64_t scene_topology_signature(const NativeD3D12RayTracingScene& scene) noexcept {
+    std::uint64_t hash = 14695981039346656037ULL;
+    hash = hash_string(hash, scene.scene_id);
+    hash = hash_bytes(hash, &scene.allow_update, sizeof(scene.allow_update));
+    for (const auto& geometry : scene.geometries) {
+        hash = hash_string(hash, geometry.geometry_id);
+        hash = hash_bytes(hash, &geometry.allow_update, sizeof(geometry.allow_update));
+        const auto vertex_count = static_cast<std::uint64_t>(geometry.position_xyz.size() / 3U);
+        const auto index_count = static_cast<std::uint64_t>(geometry.indices.size());
+        hash = hash_bytes(hash, &vertex_count, sizeof(vertex_count));
+        hash = hash_bytes(hash, &index_count, sizeof(index_count));
+        // D3D12 AS update preserves the primitive topology.  Treat an index
+        // stream edit as a rebuild boundary while allowing vertex position
+        // edits to use the cheaper in-place update path.
+        if (!geometry.indices.empty())
+            hash = hash_bytes(hash, geometry.indices.data(),
+                              geometry.indices.size() * sizeof(std::uint32_t));
+    }
+    return hash == 0U ? 1U : hash;
+}
+
 struct SceneValidation final {
     bool valid{};
     std::string code;
@@ -222,6 +247,51 @@ struct DxgiModule final {
     }
 };
 
+bool resource_bytes_bounded(const std::uint64_t bytes) noexcept {
+    return bytes > 0U && bytes <= native_d3d12_raytracing_context_max_resource_bytes;
+}
+
+HRESULT create_committed_buffer(ID3D12Device* device, const std::uint64_t bytes,
+                                const D3D12_HEAP_TYPE heap_type,
+                                const D3D12_RESOURCE_STATES state,
+                                const D3D12_RESOURCE_FLAGS flags,
+                                ComPtr<ID3D12Resource>& resource) {
+    if (device == nullptr || !resource_bytes_bounded(bytes))
+        return E_INVALIDARG;
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = heap_type;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC description{};
+    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    description.Width = bytes;
+    description.Height = 1U;
+    description.DepthOrArraySize = 1U;
+    description.MipLevels = 1U;
+    description.Format = DXGI_FORMAT_UNKNOWN;
+    description.SampleDesc.Count = 1U;
+    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    description.Flags = flags;
+
+    return device->CreateCommittedResource(
+        &heap, D3D12_HEAP_FLAG_NONE, &description, state, nullptr,
+        IID_PPV_ARGS(&resource));
+}
+
+bool fill_upload_buffer(ID3D12Resource* resource, const void* data,
+                        const std::size_t bytes) {
+    if (resource == nullptr || data == nullptr || bytes == 0U)
+        return false;
+    void* mapped = nullptr;
+    const D3D12_RANGE read_range{0U, 0U};
+    if (FAILED(resource->Map(0U, &read_range, &mapped)) || mapped == nullptr)
+        return false;
+    std::memcpy(mapped, data, bytes);
+    resource->Unmap(0U, nullptr);
+    return true;
+}
+
 #endif
 
 } // namespace
@@ -245,6 +315,22 @@ struct NativeD3D12RayTracingContext::Impl final {
         NativeD3D12RayTracingContextFailureStage::none};
 
 #if defined(_WIN32)
+    struct GeometryResources final {
+        ComPtr<ID3D12Resource> vertex_buffer;
+        ComPtr<ID3D12Resource> vertex_upload;
+        ComPtr<ID3D12Resource> index_buffer;
+        ComPtr<ID3D12Resource> index_upload;
+        ComPtr<ID3D12Resource> blas_result;
+        ComPtr<ID3D12Resource> blas_scratch;
+        std::uint64_t vertex_bytes{};
+        std::uint64_t index_bytes{};
+        std::uint64_t blas_result_bytes{};
+        std::uint64_t blas_scratch_bytes{};
+        std::uint32_t vertex_count{};
+        std::uint32_t index_count{};
+        bool allow_update{};
+    };
+
     D3D12Module d3d12_module;
     DxgiModule dxgi_module;
     ComPtr<IDXGIFactory4> factory;
@@ -255,6 +341,22 @@ struct NativeD3D12RayTracingContext::Impl final {
     ComPtr<ID3D12Fence> fence;
     std::uint64_t next_fence_value{1U};
     HANDLE fence_event{};
+    std::vector<GeometryResources> geometry_resources;
+    ComPtr<ID3D12Resource> instance_buffer;
+    ComPtr<ID3D12Resource> tlas_result;
+    ComPtr<ID3D12Resource> tlas_scratch;
+    std::uint64_t instance_buffer_bytes{};
+    std::uint64_t tlas_result_bytes{};
+    std::uint64_t tlas_scratch_bytes{};
+    std::uint64_t built_scene_hash{};
+    std::uint64_t built_topology_hash{};
+    bool blas_ready{};
+    bool tlas_ready{};
+    bool last_build_submitted{};
+    bool last_build_completed{};
+    bool last_update_submitted{};
+    bool last_update_completed{};
+    bool last_synchronization_completed{};
 #endif
 
     explicit Impl(NativeD3D12RayTracingContextOptions input)
@@ -294,9 +396,15 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.device_name = bounded_text(impl.device_name);
     result.native_handle_exposed = false;
     result.initialized = impl.generation != 0U;
-    result.device_ready = result.initialized && !impl.device_name.empty();
-    result.command_queue_ready = result.device_ready;
-    result.fence_ready = result.device_ready;
+#if defined(_WIN32)
+    result.device_ready = impl.device != nullptr;
+    result.command_queue_ready = impl.command_queue != nullptr;
+    result.fence_ready = impl.fence != nullptr;
+#else
+    result.device_ready = false;
+    result.command_queue_ready = false;
+    result.fence_ready = false;
+#endif
     result.generation = impl.generation;
     result.scene_generation = impl.scene_generation;
     result.resource_generation = impl.resource_generation;
@@ -305,10 +413,6 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
         result.scene_revision = impl.scene->revision;
         result.geometry_count = static_cast<std::uint32_t>(impl.scene->geometries.size());
         result.instance_count = result.geometry_count;
-        for (const auto& geometry : impl.scene->geometries) {
-            result.vertex_buffer_bytes += static_cast<std::uint64_t>(geometry.position_xyz.size()) * sizeof(float);
-            result.index_buffer_bytes += static_cast<std::uint64_t>(geometry.indices.size()) * sizeof(std::uint32_t);
-        }
     }
     result.raytracing_tier = impl.raytracing_tier;
     result.output_width = impl.options.output_width;
@@ -317,6 +421,28 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.output_bytes = static_cast<std::uint64_t>(result.output_width) * result.output_height *
         result.output_pixel_stride_bytes;
     result.output_readback_bytes = result.output_bytes;
+#if defined(_WIN32)
+    result.blas_ready = impl.blas_ready;
+    result.tlas_ready = impl.tlas_ready;
+    result.build_submitted = impl.last_build_submitted;
+    result.build_completed = impl.last_build_completed;
+    result.update_submitted = impl.last_update_submitted;
+    result.update_completed = impl.last_update_completed;
+    result.synchronization_completed = impl.last_synchronization_completed;
+    for (const auto& geometry : impl.geometry_resources) {
+        result.vertex_buffer_bytes += geometry.vertex_bytes;
+        result.index_buffer_bytes += geometry.index_bytes;
+        result.blas_result_bytes += geometry.blas_result_bytes;
+        result.blas_scratch_bytes += geometry.blas_scratch_bytes;
+    }
+    result.blas_ready = impl.blas_ready;
+    result.tlas_ready = impl.tlas_ready;
+    result.tlas_result_bytes = impl.tlas_result_bytes;
+    result.tlas_scratch_bytes = impl.tlas_scratch_bytes;
+    result.output_resource_ready = false;
+    result.shader_pipeline_ready = false;
+    result.shader_table_ready = false;
+#endif
     result.fallback_active = impl.state == NativeD3D12RayTracingContextState::unsupported;
     if (impl.state == NativeD3D12RayTracingContextState::shutdown) result.shutdown_completed = true;
     return result;
@@ -375,6 +501,52 @@ bool select_hardware_device(IDXGIFactory4* factory, CreateDeviceFn create_device
         return true;
     }
     return false;
+}
+
+HRESULT submit_and_wait(ID3D12CommandQueue* queue,
+                        ID3D12Fence* fence,
+                        ID3D12GraphicsCommandList4* command_list,
+                        HANDLE& fence_event,
+                        std::uint64_t& next_fence_value) {
+    if (queue == nullptr || fence == nullptr || command_list == nullptr ||
+        next_fence_value == 0U || next_fence_value == std::numeric_limits<std::uint64_t>::max())
+        return E_INVALIDARG;
+    ID3D12CommandList* command_lists[] = {command_list};
+    queue->ExecuteCommandLists(1U, command_lists);
+    const auto fence_value = next_fence_value++;
+    HRESULT hr = queue->Signal(fence, fence_value);
+    if (FAILED(hr)) return hr;
+    if (fence->GetCompletedValue() >= fence_value) return S_OK;
+    if (fence_event == nullptr) {
+        fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (fence_event == nullptr) return HRESULT_FROM_WIN32(GetLastError());
+    }
+    hr = fence->SetEventOnCompletion(fence_value, fence_event);
+    if (FAILED(hr)) return hr;
+    return WaitForSingleObject(fence_event, INFINITE) == WAIT_OBJECT_0
+        ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+}
+
+void transition_resource(ID3D12GraphicsCommandList4* command_list,
+                         ID3D12Resource* resource,
+                         const D3D12_RESOURCE_STATES before,
+                         const D3D12_RESOURCE_STATES after) {
+    if (command_list == nullptr || resource == nullptr || before == after) return;
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = resource;
+    barrier.Transition.StateBefore = before;
+    barrier.Transition.StateAfter = after;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    command_list->ResourceBarrier(1U, &barrier);
+}
+
+void uav_barrier(ID3D12GraphicsCommandList4* command_list, ID3D12Resource* resource) {
+    if (command_list == nullptr || resource == nullptr) return;
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    barrier.UAV.pResource = resource;
+    command_list->ResourceBarrier(1U, &barrier);
 }
 
 #endif
@@ -563,7 +735,7 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::initialize() {
     impl_->state = NativeD3D12RayTracingContextState::ready;
     save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
                 "native-d3d12.context.initialized",
-                "Persistent D3D12 device, direct queue, command allocator/list and fence are retained; AS/SBT/trace are separate capability gates.");
+                "Persistent D3D12 device, direct queue, command allocator/list and fence are retained; BLAS/TLAS materialization is available while shader/SBT/trace remain separate capability gates.");
     return receipt_from(*impl_, "initialize");
 #endif
 }
@@ -599,14 +771,13 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::ensure_scene(
         impl_->scene = std::move(canonical_scene);
         impl_->scene_hash = signature;
         impl_->scene_dirty = true;
-        impl_->resource_generation = 0U;
         if (impl_->scene_generation != std::numeric_limits<std::uint64_t>::max())
             ++impl_->scene_generation;
     }
     save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
                 changed ? "native-d3d12.context.scene-changed" : "native-d3d12.context.scene-unchanged",
-                changed ? "The bounded scene snapshot is retained for a later AS build/update operation."
-                        : "The scene fingerprint is unchanged; native resources can be reused when the AS gate is implemented.");
+        changed ? "The bounded scene snapshot is retained for a later AS build/update operation."
+                        : "The scene fingerprint is unchanged; persistent native resources can be reused without a new AS submission.");
     auto result = receipt_from(*impl_, "ensure-scene");
     result.scene_changed = changed;
     result.scene_received = true;
@@ -620,6 +791,13 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::ensure_scene(
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::build_or_update() {
     if (impl_->state == NativeD3D12RayTracingContextState::uninitialized)
         static_cast<void>(initialize());
+#if defined(_WIN32)
+    impl_->last_build_submitted = false;
+    impl_->last_build_completed = false;
+    impl_->last_update_submitted = false;
+    impl_->last_update_completed = false;
+    impl_->last_synchronization_completed = false;
+#endif
     if (!impl_->scene) {
         save_result(*impl_, NativeD3D12RayTracingContextFailureStage::scene,
                     "native-d3d12.context.scene-not-provided",
@@ -629,14 +807,450 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::build_or_updat
         result.fallback_active = false;
         return result;
     }
+    if (impl_->state != NativeD3D12RayTracingContextState::ready) {
+        auto result = receipt_from(*impl_, "build-or-update");
+        result.scene_received = true;
+        if (impl_->state == NativeD3D12RayTracingContextState::unsupported) {
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::blas,
+                        "native-d3d12.context.as-materialization-unavailable",
+                        "Hardware D3D12 ray-tracing resources are unavailable; the caller must use the explicit raster fallback.");
+            result = receipt_from(*impl_, "build-or-update");
+            result.state = NativeD3D12RayTracingContextState::unsupported;
+            result.fallback_active = true;
+        }
+        return result;
+    }
+
+#if !defined(_WIN32)
     auto result = receipt_from(*impl_, "build-or-update");
     result.scene_received = true;
-    mark_unsupported(*impl_, NativeD3D12RayTracingContextFailureStage::blas,
+    mark_unsupported(*impl_, NativeD3D12RayTracingContextFailureStage::platform,
                      "build-or-update",
-                     "native-d3d12.context.as-materialization-unavailable",
-                     "The persistent context currently owns the device/queue/fence and scene cache only; BLAS/TLAS materialization is a separate implementation slice and is not reported ready.",
+                     "native-d3d12.context.platform-unavailable",
+                     "The persistent D3D12 context is unavailable on this platform; no GPU resource is reported ready.",
                      result);
     return result;
+#else
+    const auto topology_hash = scene_topology_signature(*impl_->scene);
+    const bool has_compatible_resources =
+        impl_->blas_ready && impl_->tlas_ready &&
+        impl_->built_topology_hash == topology_hash &&
+        impl_->geometry_resources.size() == impl_->scene->geometries.size() &&
+        impl_->instance_buffer != nullptr && impl_->tlas_result != nullptr &&
+        impl_->tlas_scratch != nullptr;
+    const bool can_update = has_compatible_resources && impl_->scene->allow_update &&
+        std::ranges::all_of(impl_->scene->geometries,
+                            [](const auto& geometry) { return geometry.allow_update; }) &&
+        std::ranges::all_of(impl_->geometry_resources,
+                            [](const auto& geometry) { return geometry.allow_update; });
+
+    if (!impl_->scene_dirty && impl_->built_scene_hash == impl_->scene_hash &&
+        has_compatible_resources) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                    "native-d3d12.context.resources-reused",
+                    "The persistent vertex/index buffers, BLAS, TLAS and instance descriptors were reused without a new GPU submission.");
+        auto result = receipt_from(*impl_, "build-or-update");
+        result.scene_received = true;
+        result.state = NativeD3D12RayTracingContextState::ready;
+        result.synchronization_completed = true;
+        return result;
+    }
+
+    const auto fail = [&](const NativeD3D12RayTracingContextFailureStage stage,
+                          const std::string_view code,
+                          const std::string_view detail) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, stage, code, detail);
+        auto result = receipt_from(*impl_, "build-or-update");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        result.fallback_active = false;
+        result.scene_received = true;
+        return result;
+    };
+
+    const bool rebuild = !can_update;
+    std::vector<Impl::GeometryResources> next_geometry_resources;
+    ComPtr<ID3D12Resource> next_instance_buffer;
+    ComPtr<ID3D12Resource> next_tlas_result;
+    ComPtr<ID3D12Resource> next_tlas_scratch;
+    std::uint64_t next_tlas_result_bytes = 0U;
+    std::uint64_t next_tlas_scratch_bytes = 0U;
+    std::uint64_t total_resource_bytes = 0U;
+    const auto resource_budget = impl_->options.max_resource_bytes;
+    const auto add_resource_budget = [&](const std::uint64_t bytes) {
+        if (bytes == 0U || bytes > resource_budget -
+                std::min(total_resource_bytes, resource_budget))
+            return false;
+        total_resource_bytes += bytes;
+        return total_resource_bytes <= resource_budget;
+    };
+
+    if (rebuild) {
+        next_geometry_resources.reserve(impl_->scene->geometries.size());
+        for (const auto& geometry : impl_->scene->geometries) {
+            Impl::GeometryResources resources;
+            const auto vertex_bytes = static_cast<std::uint64_t>(
+                geometry.position_xyz.size()) * sizeof(float);
+            const auto index_bytes = static_cast<std::uint64_t>(
+                geometry.indices.size()) * sizeof(std::uint32_t);
+            resources.vertex_bytes = vertex_bytes;
+            resources.index_bytes = index_bytes;
+            resources.vertex_count = static_cast<std::uint32_t>(
+                geometry.position_xyz.size() / 3U);
+            resources.index_count = static_cast<std::uint32_t>(geometry.indices.size());
+            resources.allow_update = impl_->scene->allow_update && geometry.allow_update;
+            if (!add_resource_budget(vertex_bytes) || !add_resource_budget(vertex_bytes) ||
+                !add_resource_budget(index_bytes) || !add_resource_budget(index_bytes)) {
+                return fail(NativeD3D12RayTracingContextFailureStage::scene,
+                            "native-d3d12.context.resource-budget-exceeded",
+                            "Persistent vertex/index resources exceed the configured D3D12 context budget.");
+            }
+            HRESULT hr = create_committed_buffer(
+                impl_->device.Get(), vertex_bytes, D3D12_HEAP_TYPE_DEFAULT,
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE,
+                resources.vertex_buffer);
+            if (FAILED(hr) || !resources.vertex_buffer) {
+                return fail(NativeD3D12RayTracingContextFailureStage::scene,
+                            "native-d3d12.context.vertex-buffer-create-failed",
+                            "Persistent default-heap vertex buffer creation failed with " + hresult_hex(hr) + ".");
+            }
+            hr = create_committed_buffer(
+                impl_->device.Get(), vertex_bytes, D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE,
+                resources.vertex_upload);
+            if (FAILED(hr) || !resources.vertex_upload ||
+                !fill_upload_buffer(resources.vertex_upload.Get(),
+                                    geometry.position_xyz.data(),
+                                    static_cast<std::size_t>(vertex_bytes))) {
+                return fail(NativeD3D12RayTracingContextFailureStage::scene,
+                            "native-d3d12.context.vertex-upload-failed",
+                            "Persistent upload-heap vertex initialization failed with " + hresult_hex(hr) + ".");
+            }
+            hr = create_committed_buffer(
+                impl_->device.Get(), index_bytes, D3D12_HEAP_TYPE_DEFAULT,
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE,
+                resources.index_buffer);
+            if (FAILED(hr) || !resources.index_buffer) {
+                return fail(NativeD3D12RayTracingContextFailureStage::scene,
+                            "native-d3d12.context.index-buffer-create-failed",
+                            "Persistent default-heap index buffer creation failed with " + hresult_hex(hr) + ".");
+            }
+            hr = create_committed_buffer(
+                impl_->device.Get(), index_bytes, D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE,
+                resources.index_upload);
+            if (FAILED(hr) || !resources.index_upload ||
+                !fill_upload_buffer(resources.index_upload.Get(),
+                                    geometry.indices.data(),
+                                    static_cast<std::size_t>(index_bytes))) {
+                return fail(NativeD3D12RayTracingContextFailureStage::scene,
+                            "native-d3d12.context.index-upload-failed",
+                            "Persistent upload-heap index initialization failed with " + hresult_hex(hr) + ".");
+            }
+
+            D3D12_RAYTRACING_GEOMETRY_DESC geometry_desc{};
+            geometry_desc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            geometry_desc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            geometry_desc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            geometry_desc.Triangles.VertexCount = resources.vertex_count;
+            geometry_desc.Triangles.VertexBuffer.StartAddress =
+                resources.vertex_buffer->GetGPUVirtualAddress();
+            geometry_desc.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3U;
+            geometry_desc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+            geometry_desc.Triangles.IndexCount = resources.index_count;
+            geometry_desc.Triangles.IndexBuffer = resources.index_buffer->GetGPUVirtualAddress();
+
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS blas_inputs{};
+            blas_inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            blas_inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+            blas_inputs.NumDescs = 1U;
+            blas_inputs.pGeometryDescs = &geometry_desc;
+            blas_inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+            if (resources.allow_update)
+                blas_inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO blas_info{};
+            impl_->device->GetRaytracingAccelerationStructurePrebuildInfo(
+                &blas_inputs, &blas_info);
+            if (!resource_bytes_bounded(blas_info.ResultDataMaxSizeInBytes) ||
+                !resource_bytes_bounded(blas_info.ScratchDataSizeInBytes) ||
+                !add_resource_budget(blas_info.ResultDataMaxSizeInBytes) ||
+                !add_resource_budget(blas_info.ScratchDataSizeInBytes)) {
+                return fail(NativeD3D12RayTracingContextFailureStage::blas,
+                            "native-d3d12.context.blas-prebuild-invalid",
+                            "D3D12 returned an empty, unbounded or over-budget BLAS prebuild size.");
+            }
+            resources.blas_result_bytes = blas_info.ResultDataMaxSizeInBytes;
+            resources.blas_scratch_bytes = blas_info.ScratchDataSizeInBytes;
+            hr = create_committed_buffer(
+                impl_->device.Get(), resources.blas_result_bytes,
+                D3D12_HEAP_TYPE_DEFAULT,
+                D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                resources.blas_result);
+            if (FAILED(hr) || !resources.blas_result) {
+                return fail(NativeD3D12RayTracingContextFailureStage::blas,
+                            "native-d3d12.context.blas-result-create-failed",
+                            "Persistent BLAS result resource creation failed with " + hresult_hex(hr) + ".");
+            }
+            hr = create_committed_buffer(
+                impl_->device.Get(), resources.blas_scratch_bytes,
+                D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                resources.blas_scratch);
+            if (FAILED(hr) || !resources.blas_scratch) {
+                return fail(NativeD3D12RayTracingContextFailureStage::blas,
+                            "native-d3d12.context.blas-scratch-create-failed",
+                            "Persistent BLAS scratch resource creation failed with " + hresult_hex(hr) + ".");
+            }
+            next_geometry_resources.push_back(std::move(resources));
+        }
+    }
+
+    auto& geometry_resources = rebuild ? next_geometry_resources : impl_->geometry_resources;
+    std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometry_descriptors;
+    geometry_descriptors.reserve(geometry_resources.size());
+    for (const auto& resources : geometry_resources) {
+        D3D12_RAYTRACING_GEOMETRY_DESC geometry_desc{};
+        geometry_desc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+        geometry_desc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+        geometry_desc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+        geometry_desc.Triangles.VertexCount = resources.vertex_count;
+        geometry_desc.Triangles.VertexBuffer.StartAddress =
+            resources.vertex_buffer->GetGPUVirtualAddress();
+        geometry_desc.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3U;
+        geometry_desc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+        geometry_desc.Triangles.IndexCount = resources.index_count;
+        geometry_desc.Triangles.IndexBuffer = resources.index_buffer->GetGPUVirtualAddress();
+        geometry_descriptors.push_back(geometry_desc);
+    }
+
+    std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instance_descriptors;
+    instance_descriptors.resize(geometry_resources.size());
+    for (std::size_t index = 0U; index < geometry_resources.size(); ++index) {
+        auto& instance = instance_descriptors[index];
+        instance.Transform[0][0] = 1.0F;
+        instance.Transform[1][1] = 1.0F;
+        instance.Transform[2][2] = 1.0F;
+        instance.InstanceID = static_cast<UINT>(index);
+        instance.InstanceMask = 0xffU;
+        instance.AccelerationStructure = geometry_resources[index].blas_result->GetGPUVirtualAddress();
+    }
+    const auto instance_bytes = static_cast<std::uint64_t>(instance_descriptors.size()) *
+        sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+    if (!resource_bytes_bounded(instance_bytes)) {
+        return fail(NativeD3D12RayTracingContextFailureStage::tlas,
+                    "native-d3d12.context.instance-buffer-size-invalid",
+                    "The persistent TLAS instance descriptor buffer exceeded the bounded resource contract.");
+    }
+    if (rebuild) {
+        if (!add_resource_budget(instance_bytes)) {
+            return fail(NativeD3D12RayTracingContextFailureStage::tlas,
+                        "native-d3d12.context.resource-budget-exceeded",
+                        "Persistent TLAS instance descriptors exceed the configured D3D12 context budget.");
+        }
+        HRESULT hr = create_committed_buffer(
+            impl_->device.Get(), instance_bytes, D3D12_HEAP_TYPE_UPLOAD,
+            D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE,
+            next_instance_buffer);
+        if (FAILED(hr) || !next_instance_buffer ||
+            !fill_upload_buffer(next_instance_buffer.Get(), instance_descriptors.data(),
+                                static_cast<std::size_t>(instance_bytes))) {
+            return fail(NativeD3D12RayTracingContextFailureStage::tlas,
+                        "native-d3d12.context.instance-buffer-failed",
+                        "Persistent TLAS instance descriptor upload failed with " + hresult_hex(hr) + ".");
+        }
+    } else if (!fill_upload_buffer(impl_->instance_buffer.Get(), instance_descriptors.data(),
+                                   static_cast<std::size_t>(instance_bytes))) {
+        return fail(NativeD3D12RayTracingContextFailureStage::tlas,
+                    "native-d3d12.context.instance-buffer-update-failed",
+                    "Updating the persistent TLAS instance descriptors failed.");
+    }
+    ID3D12Resource* instance_buffer = rebuild ? next_instance_buffer.Get() : impl_->instance_buffer.Get();
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlas_inputs{};
+    tlas_inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    tlas_inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    tlas_inputs.NumDescs = static_cast<UINT>(instance_descriptors.size());
+    tlas_inputs.InstanceDescs = instance_buffer->GetGPUVirtualAddress();
+    tlas_inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    if (impl_->scene->allow_update)
+        tlas_inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+
+    if (rebuild) {
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO tlas_info{};
+        impl_->device->GetRaytracingAccelerationStructurePrebuildInfo(
+            &tlas_inputs, &tlas_info);
+        if (!resource_bytes_bounded(tlas_info.ResultDataMaxSizeInBytes) ||
+            !resource_bytes_bounded(tlas_info.ScratchDataSizeInBytes) ||
+            !add_resource_budget(tlas_info.ResultDataMaxSizeInBytes) ||
+            !add_resource_budget(tlas_info.ScratchDataSizeInBytes)) {
+            return fail(NativeD3D12RayTracingContextFailureStage::tlas,
+                        "native-d3d12.context.tlas-prebuild-invalid",
+                        "D3D12 returned an empty, unbounded or over-budget TLAS prebuild size.");
+        }
+        next_tlas_result_bytes = tlas_info.ResultDataMaxSizeInBytes;
+        next_tlas_scratch_bytes = tlas_info.ScratchDataSizeInBytes;
+        HRESULT hr = create_committed_buffer(
+            impl_->device.Get(), next_tlas_result_bytes, D3D12_HEAP_TYPE_DEFAULT,
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, next_tlas_result);
+        if (FAILED(hr) || !next_tlas_result) {
+            return fail(NativeD3D12RayTracingContextFailureStage::tlas,
+                        "native-d3d12.context.tlas-result-create-failed",
+                        "Persistent TLAS result resource creation failed with " + hresult_hex(hr) + ".");
+        }
+        hr = create_committed_buffer(
+            impl_->device.Get(), next_tlas_scratch_bytes, D3D12_HEAP_TYPE_DEFAULT,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, next_tlas_scratch);
+        if (FAILED(hr) || !next_tlas_scratch) {
+            return fail(NativeD3D12RayTracingContextFailureStage::tlas,
+                        "native-d3d12.context.tlas-scratch-create-failed",
+                        "Persistent TLAS scratch resource creation failed with " + hresult_hex(hr) + ".");
+        }
+    }
+    ID3D12Resource* tlas_result = rebuild ? next_tlas_result.Get() : impl_->tlas_result.Get();
+    ID3D12Resource* tlas_scratch = rebuild ? next_tlas_scratch.Get() : impl_->tlas_scratch.Get();
+    if (tlas_result == nullptr || tlas_scratch == nullptr || instance_buffer == nullptr) {
+        return fail(NativeD3D12RayTracingContextFailureStage::tlas,
+                    "native-d3d12.context.tlas-resources-unavailable",
+                    "Persistent TLAS resources were not available for command recording.");
+    }
+
+    HRESULT hr = impl_->command_allocator->Reset();
+    if (FAILED(hr)) {
+        return fail(NativeD3D12RayTracingContextFailureStage::command_allocator,
+                    "native-d3d12.context.command-allocator-reset-failed",
+                    "Resetting the persistent command allocator failed with " + hresult_hex(hr) + ".");
+    }
+    hr = impl_->command_list->Reset(impl_->command_allocator.Get(), nullptr);
+    if (FAILED(hr)) {
+        return fail(NativeD3D12RayTracingContextFailureStage::command_list,
+                    "native-d3d12.context.command-list-reset-failed",
+                    "Resetting the persistent command list failed with " + hresult_hex(hr) + ".");
+    }
+
+    for (std::size_t index = 0U; index < geometry_resources.size(); ++index) {
+        auto& resources = geometry_resources[index];
+        const auto& geometry = impl_->scene->geometries[index];
+        if (rebuild) {
+            impl_->command_list->CopyBufferRegion(resources.vertex_buffer.Get(), 0U,
+                                                  resources.vertex_upload.Get(), 0U,
+                                                  resources.vertex_bytes);
+            transition_resource(impl_->command_list.Get(), resources.vertex_buffer.Get(),
+                                D3D12_RESOURCE_STATE_COPY_DEST,
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            impl_->command_list->CopyBufferRegion(resources.index_buffer.Get(), 0U,
+                                                  resources.index_upload.Get(), 0U,
+                                                  resources.index_bytes);
+            transition_resource(impl_->command_list.Get(), resources.index_buffer.Get(),
+                                D3D12_RESOURCE_STATE_COPY_DEST,
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        } else {
+            if (!fill_upload_buffer(resources.vertex_upload.Get(), geometry.position_xyz.data(),
+                                    static_cast<std::size_t>(resources.vertex_bytes)) ||
+                !fill_upload_buffer(resources.index_upload.Get(), geometry.indices.data(),
+                                    static_cast<std::size_t>(resources.index_bytes))) {
+                static_cast<void>(impl_->command_list->Close());
+                return fail(NativeD3D12RayTracingContextFailureStage::scene,
+                            "native-d3d12.context.geometry-update-upload-failed",
+                            "Updating persistent vertex or index upload data failed.");
+            }
+            transition_resource(impl_->command_list.Get(), resources.vertex_buffer.Get(),
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                D3D12_RESOURCE_STATE_COPY_DEST);
+            impl_->command_list->CopyBufferRegion(resources.vertex_buffer.Get(), 0U,
+                                                  resources.vertex_upload.Get(), 0U,
+                                                  resources.vertex_bytes);
+            transition_resource(impl_->command_list.Get(), resources.vertex_buffer.Get(),
+                                D3D12_RESOURCE_STATE_COPY_DEST,
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            transition_resource(impl_->command_list.Get(), resources.index_buffer.Get(),
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                D3D12_RESOURCE_STATE_COPY_DEST);
+            impl_->command_list->CopyBufferRegion(resources.index_buffer.Get(), 0U,
+                                                  resources.index_upload.Get(), 0U,
+                                                  resources.index_bytes);
+            transition_resource(impl_->command_list.Get(), resources.index_buffer.Get(),
+                                D3D12_RESOURCE_STATE_COPY_DEST,
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS blas_inputs{};
+        blas_inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        blas_inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        blas_inputs.NumDescs = 1U;
+        blas_inputs.pGeometryDescs = &geometry_descriptors[index];
+        blas_inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        if (resources.allow_update)
+            blas_inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC blas_build{};
+        blas_build.Inputs = blas_inputs;
+        blas_build.ScratchAccelerationStructureData = resources.blas_scratch->GetGPUVirtualAddress();
+        blas_build.DestAccelerationStructureData = resources.blas_result->GetGPUVirtualAddress();
+        if (!rebuild) {
+            blas_build.Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+            blas_build.SourceAccelerationStructureData = resources.blas_result->GetGPUVirtualAddress();
+        }
+        impl_->command_list->BuildRaytracingAccelerationStructure(&blas_build, 0U, nullptr);
+        uav_barrier(impl_->command_list.Get(), resources.blas_result.Get());
+    }
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC tlas_build{};
+    tlas_build.Inputs = tlas_inputs;
+    tlas_build.ScratchAccelerationStructureData = tlas_scratch->GetGPUVirtualAddress();
+    tlas_build.DestAccelerationStructureData = tlas_result->GetGPUVirtualAddress();
+    if (!rebuild) {
+        tlas_build.Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+        tlas_build.SourceAccelerationStructureData = tlas_result->GetGPUVirtualAddress();
+    }
+    impl_->command_list->BuildRaytracingAccelerationStructure(&tlas_build, 0U, nullptr);
+    hr = impl_->command_list->Close();
+    if (FAILED(hr)) {
+        return fail(NativeD3D12RayTracingContextFailureStage::command_list,
+                    "native-d3d12.context.command-list-close-failed",
+                    "Closing the persistent AS build command list failed with " + hresult_hex(hr) + ".");
+    }
+    impl_->last_build_submitted = true;
+    impl_->last_update_submitted = !rebuild;
+    hr = submit_and_wait(impl_->command_queue.Get(), impl_->fence.Get(),
+                         impl_->command_list.Get(), impl_->fence_event,
+                         impl_->next_fence_value);
+    if (FAILED(hr)) {
+        return fail(NativeD3D12RayTracingContextFailureStage::synchronization,
+                    "native-d3d12.context.as-build-wait-failed",
+                    "Waiting for the persistent BLAS/TLAS build failed with " + hresult_hex(hr) + ".");
+    }
+
+    if (rebuild) {
+        impl_->geometry_resources = std::move(next_geometry_resources);
+        impl_->instance_buffer = std::move(next_instance_buffer);
+        impl_->tlas_result = std::move(next_tlas_result);
+        impl_->tlas_scratch = std::move(next_tlas_scratch);
+        impl_->instance_buffer_bytes = instance_bytes;
+        impl_->tlas_result_bytes = next_tlas_result_bytes;
+        impl_->tlas_scratch_bytes = next_tlas_scratch_bytes;
+        if (impl_->resource_generation != std::numeric_limits<std::uint64_t>::max())
+            ++impl_->resource_generation;
+    }
+    impl_->blas_ready = true;
+    impl_->tlas_ready = true;
+    impl_->last_build_completed = true;
+    impl_->last_update_completed = !rebuild;
+    impl_->last_synchronization_completed = true;
+    impl_->built_scene_hash = impl_->scene_hash;
+    impl_->built_topology_hash = topology_hash;
+    impl_->scene_dirty = false;
+    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                rebuild ? "native-d3d12.context.as-build-complete"
+                        : "native-d3d12.context.as-update-complete",
+                rebuild
+                    ? "Persistent vertex/index uploads, BLAS result/scratch, TLAS result/scratch and instance descriptors were built and synchronized on the retained D3D12 queue."
+                    : "Persistent vertex/index uploads were refreshed and BLAS/TLAS update builds were synchronized on the retained D3D12 queue.");
+    auto result = receipt_from(*impl_, "build-or-update");
+    result.scene_received = true;
+    result.state = NativeD3D12RayTracingContextState::ready;
+    return result;
+#endif
 }
 
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
@@ -686,9 +1300,32 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
         return result;
     }
 #if defined(_WIN32)
-    // If future build/trace slices add GPU submissions, they must wait on the
-    // same fence before these ComPtrs are reset.  The current context never
-    // submits GPU work, so releasing them is deterministic and non-blocking.
+    // Every build/update is synchronously fenced before returning.  Keep the
+    // same invariant here so resource destruction remains safe if a future
+    // operation adds another submission path.
+    if (impl_->fence != nullptr && impl_->next_fence_value > 1U &&
+        impl_->fence->GetCompletedValue() < impl_->next_fence_value - 1U &&
+        impl_->fence_event != nullptr) {
+        if (SUCCEEDED(impl_->fence->SetEventOnCompletion(
+                impl_->next_fence_value - 1U, impl_->fence_event)))
+            static_cast<void>(WaitForSingleObject(impl_->fence_event, INFINITE));
+    }
+    impl_->geometry_resources.clear();
+    impl_->instance_buffer.Reset();
+    impl_->tlas_result.Reset();
+    impl_->tlas_scratch.Reset();
+    impl_->instance_buffer_bytes = 0U;
+    impl_->tlas_result_bytes = 0U;
+    impl_->tlas_scratch_bytes = 0U;
+    impl_->built_scene_hash = 0U;
+    impl_->built_topology_hash = 0U;
+    impl_->blas_ready = false;
+    impl_->tlas_ready = false;
+    impl_->last_build_submitted = false;
+    impl_->last_build_completed = false;
+    impl_->last_update_submitted = false;
+    impl_->last_update_completed = false;
+    impl_->last_synchronization_completed = false;
     impl_->command_list.Reset();
     impl_->command_allocator.Reset();
     impl_->command_queue.Reset();
