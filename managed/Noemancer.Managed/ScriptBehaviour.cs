@@ -28,6 +28,72 @@ public readonly record struct PropertyId<T>(string Value)
 public readonly record struct Float3(float X, float Y, float Z);
 [JsonConverter(typeof(Color3JsonConverter))]
 public readonly record struct Color3(float R, float G, float B);
+
+/// <summary>
+/// Stable authoring identity for a scene-level physics relationship.  The
+/// value is deliberately just data: scripts never receive a backend or
+/// solver handle.
+/// </summary>
+public readonly record struct ConstraintId(string Value)
+{
+    public override string ToString() => Value;
+}
+
+/// <summary>
+/// The engine-owned constraint vocabulary.  Wire values are lower-case and
+/// match the canonical Scene document contract.
+/// </summary>
+public enum PhysicsConstraintType
+{
+    Fixed,
+    Distance,
+    Hinge,
+    Slider,
+    Spring,
+}
+
+/// <summary>
+/// A world-space constraint frame.  Distance and spring use the anchors;
+/// fixed, hinge and slider also use the primary/secondary axes.
+/// </summary>
+public readonly record struct PhysicsConstraintFrame(
+    Float3 AnchorA,
+    Float3 AnchorB,
+    Float3 PrimaryAxisA,
+    Float3 SecondaryAxisA,
+    Float3 PrimaryAxisB,
+    Float3 SecondaryAxisB)
+{
+    /// <summary>
+    /// A useful orthogonal frame for a newly authored relationship.
+    /// </summary>
+    public static PhysicsConstraintFrame Default => new(
+        new Float3(0.0F, 0.0F, 0.0F),
+        new Float3(0.0F, 0.0F, 0.0F),
+        new Float3(0.0F, 1.0F, 0.0F),
+        new Float3(1.0F, 0.0F, 0.0F),
+        new Float3(0.0F, 1.0F, 0.0F),
+        new Float3(1.0F, 0.0F, 0.0F));
+}
+
+/// <summary>
+/// Plain managed authoring data for one Fixed, Distance, Hinge, Slider or
+/// Spring relationship.  Limits use metres for distance/slider and radians
+/// for hinge, matching the Scene contract; spring values are Hz and ratio.
+/// </summary>
+public readonly record struct PhysicsConstraintSpec(
+    ConstraintId Id,
+    PhysicsConstraintType Type,
+    EntityId BodyA,
+    EntityId BodyB,
+    PhysicsConstraintFrame Frame,
+    float LowerLimit = 0.0F,
+    float UpperLimit = 0.0F,
+    float RestLength = 1.0F,
+    float SpringFrequencyHz = 0.0F,
+    float SpringDampingRatio = 1.0F,
+    bool Enabled = true);
+
 public readonly record struct EntityView(
     EntityId Id,
     string Name,
@@ -344,6 +410,77 @@ public sealed class ScriptCommandBuffer
     public void ApplyAngularImpulse(EntityId entity, Float3 impulse) =>
         AddPhysicsVectorCommand("physics.angular-impulse.apply", entity, impulse, nameof(impulse));
 
+    /// <summary>
+    /// Queue a scene-level constraint edit.  The command is intentionally a
+    /// plain JSON record: <c>constraintId</c> identifies the durable
+    /// relationship and the nested <c>constraint</c> is the same canonical
+    /// object accepted by the Scene document codec.
+    /// </summary>
+    public void UpsertPhysicsConstraint(PhysicsConstraintSpec constraint)
+    {
+        var normalized = ValidateConstraint(constraint);
+        commands.Add(new("physics.constraint.upsert", string.Empty, new
+        {
+            constraintId = normalized.Id.Value,
+            constraint = ConstraintJson(normalized),
+        }));
+    }
+
+    /// <summary>
+    /// Alias for callers that use the shorter authoring vocabulary.
+    /// </summary>
+    public void UpsertConstraint(PhysicsConstraintSpec constraint) => UpsertPhysicsConstraint(constraint);
+
+    /// <summary>
+    /// Convenience overload for authoring a relationship without first
+    /// constructing a record.  Defaults mirror the Scene contract.
+    /// </summary>
+    public void UpsertPhysicsConstraint(
+        ConstraintId constraintId,
+        PhysicsConstraintType type,
+        EntityId bodyA,
+        EntityId bodyB,
+        PhysicsConstraintFrame frame,
+        float lowerLimit = 0.0F,
+        float upperLimit = 0.0F,
+        float restLength = 1.0F,
+        float springFrequencyHz = 0.0F,
+        float springDampingRatio = 1.0F,
+        bool enabled = true) =>
+        UpsertPhysicsConstraint(new PhysicsConstraintSpec(constraintId, type, bodyA, bodyB, frame,
+            lowerLimit, upperLimit, restLength, springFrequencyHz, springDampingRatio, enabled));
+
+    public void UpsertConstraint(
+        ConstraintId constraintId,
+        PhysicsConstraintType type,
+        EntityId bodyA,
+        EntityId bodyB,
+        PhysicsConstraintFrame frame,
+        float lowerLimit = 0.0F,
+        float upperLimit = 0.0F,
+        float restLength = 1.0F,
+        float springFrequencyHz = 0.0F,
+        float springDampingRatio = 1.0F,
+        bool enabled = true) =>
+        UpsertPhysicsConstraint(constraintId, type, bodyA, bodyB, frame, lowerLimit, upperLimit,
+            restLength, springFrequencyHz, springDampingRatio, enabled);
+
+    /// <summary>
+    /// Queue removal of a scene-level constraint by its stable ID.
+    /// </summary>
+    public void RemovePhysicsConstraint(ConstraintId constraintId)
+    {
+        EnsureIdentifier(constraintId.Value, nameof(constraintId));
+        commands.Add(new("physics.constraint.remove", string.Empty, new { constraintId = constraintId.Value }));
+    }
+
+    public void RemovePhysicsConstraint(string constraintId) =>
+        RemovePhysicsConstraint(new ConstraintId(constraintId));
+
+    public void RemoveConstraint(ConstraintId constraintId) => RemovePhysicsConstraint(constraintId);
+
+    public void RemoveConstraint(string constraintId) => RemovePhysicsConstraint(constraintId);
+
     private void AddPhysicsVectorCommand(string operation, EntityId entity, Float3 value, string parameterName)
     {
         var finite = EnsureFinite(value, parameterName);
@@ -427,6 +564,75 @@ public sealed class ScriptCommandBuffer
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tag);
         commands.Add(new("gameplay.tag.set", entity.Value, new { tag, present = false }));
+    }
+
+    private static PhysicsConstraintSpec ValidateConstraint(PhysicsConstraintSpec constraint)
+    {
+        EnsureIdentifier(constraint.Id.Value, nameof(constraint.Id));
+        EnsureIdentifier(constraint.BodyA.Value, nameof(constraint.BodyA));
+        EnsureIdentifier(constraint.BodyB.Value, nameof(constraint.BodyB));
+        if (string.Equals(constraint.BodyA.Value, constraint.BodyB.Value, StringComparison.Ordinal))
+            throw new ArgumentException("A physics constraint must connect two distinct body IDs.", nameof(constraint));
+
+        _ = ConstraintTypeName(constraint.Type);
+        EnsureFinite(constraint.Frame.AnchorA, nameof(constraint.Frame.AnchorA));
+        EnsureFinite(constraint.Frame.AnchorB, nameof(constraint.Frame.AnchorB));
+        EnsureFinite(constraint.Frame.PrimaryAxisA, nameof(constraint.Frame.PrimaryAxisA));
+        EnsureFinite(constraint.Frame.SecondaryAxisA, nameof(constraint.Frame.SecondaryAxisA));
+        EnsureFinite(constraint.Frame.PrimaryAxisB, nameof(constraint.Frame.PrimaryAxisB));
+        EnsureFinite(constraint.Frame.SecondaryAxisB, nameof(constraint.Frame.SecondaryAxisB));
+        EnsureFinite(constraint.LowerLimit, nameof(constraint.LowerLimit));
+        EnsureFinite(constraint.UpperLimit, nameof(constraint.UpperLimit));
+        EnsureFinite(constraint.RestLength, nameof(constraint.RestLength));
+        EnsureFinite(constraint.SpringFrequencyHz, nameof(constraint.SpringFrequencyHz));
+        EnsureFinite(constraint.SpringDampingRatio, nameof(constraint.SpringDampingRatio));
+        return constraint;
+    }
+
+    private static object ConstraintJson(PhysicsConstraintSpec constraint)
+    {
+        var frame = constraint.Frame;
+        return new
+        {
+            id = constraint.Id.Value,
+            type = ConstraintTypeName(constraint.Type),
+            bodyA = constraint.BodyA.Value,
+            bodyB = constraint.BodyB.Value,
+            frame = new
+            {
+                anchorA = VectorArray(frame.AnchorA),
+                anchorB = VectorArray(frame.AnchorB),
+                primaryAxisA = VectorArray(frame.PrimaryAxisA),
+                secondaryAxisA = VectorArray(frame.SecondaryAxisA),
+                primaryAxisB = VectorArray(frame.PrimaryAxisB),
+                secondaryAxisB = VectorArray(frame.SecondaryAxisB),
+            },
+            lowerLimit = constraint.LowerLimit,
+            upperLimit = constraint.UpperLimit,
+            restLength = constraint.RestLength,
+            springFrequencyHz = constraint.SpringFrequencyHz,
+            springDampingRatio = constraint.SpringDampingRatio,
+            enabled = constraint.Enabled,
+        };
+    }
+
+    private static float[] VectorArray(Float3 value) => [value.X, value.Y, value.Z];
+
+    private static string ConstraintTypeName(PhysicsConstraintType type) => type switch
+    {
+        PhysicsConstraintType.Fixed => "fixed",
+        PhysicsConstraintType.Distance => "distance",
+        PhysicsConstraintType.Hinge => "hinge",
+        PhysicsConstraintType.Slider => "slider",
+        PhysicsConstraintType.Spring => "spring",
+        _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown physics constraint type."),
+    };
+
+    private static void EnsureIdentifier(string? value, string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
+        if (value.Length > 96U || value.Any(character => char.IsControl(character) || character is '/' or '\\'))
+            throw new ArgumentException("IDs must be printable, path-safe and no longer than 96 characters.", parameterName);
     }
 
     private static Float3 EnsureFinite(Float3 value, string parameterName)

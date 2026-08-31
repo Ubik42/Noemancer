@@ -7,7 +7,36 @@ public sealed class PlayerGameplay : ScriptBehaviour
     public int CollectedCount { get; private set; }
     public int RespawnCount { get; private set; }
     public bool Won { get; private set; }
+    public bool RejectedNonFiniteConstraint { get; private set; }
     public string LastOtherId { get; private set; } = "";
+
+    public override void OnUpdate(in ScriptContext context)
+    {
+        try
+        {
+            context.Commands.UpsertPhysicsConstraint(new PhysicsConstraintSpec(
+                new ConstraintId("constraint.managed.e2"),
+                PhysicsConstraintType.Fixed,
+                new EntityId("entity.demo-cube"),
+                new EntityId("entity.demo-sphere"),
+                PhysicsConstraintFrame.Default,
+                SpringFrequencyHz: float.NaN));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            RejectedNonFiniteConstraint = true;
+        }
+
+        context.Commands.UpsertPhysicsConstraint(new PhysicsConstraintSpec(
+            new ConstraintId("constraint.managed.e2"),
+            PhysicsConstraintType.Fixed,
+            new EntityId("entity.demo-cube"),
+            new EntityId("entity.demo-sphere"),
+            PhysicsConstraintFrame.Default));
+    }
+
+    public override void OnDestroy(in ScriptContext context) =>
+        context.Commands.RemovePhysicsConstraint(new ConstraintId("constraint.managed.e2"));
 
     public override void OnTriggerEnter(in ScriptContext context)
     {

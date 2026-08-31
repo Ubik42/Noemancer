@@ -162,6 +162,8 @@ int main() {
         manifest.find("world.query") == std::string::npos ||
         manifest.find("render.observe") == std::string::npos ||
         manifest.find("physics.observe") == std::string::npos ||
+        manifest.find("physics.constraint.observe") == std::string::npos ||
+        manifest.find("physics.constraint.edit") == std::string::npos ||
         manifest.find("physics.ray-cast") == std::string::npos ||
         manifest.find("physics.sphere-sweep") == std::string::npos ||
         manifest.find("animation.observe") == std::string::npos ||
@@ -644,12 +646,26 @@ int main() {
     const auto layer_plan=constrained_world.plan_property_update(payload.guid,"engine.entity.rigidBody.collisionMask","7",
         constrained_world.revision(),"test.physics-inspector");
     const auto layer_apply=constrained_world.apply_property_plan(layer_plan,false);
+    auto updated_constraint=constrained_canonical.at("physicsConstraints").front();
+    updated_constraint["upperLimit"]=1.5;
+    const auto constraint_dry=nlohmann::json::parse(constrained_world.edit_physics_constraint_json("upsert",distance.id,
+        updated_constraint.dump(),constrained_world.revision(),"test.constraint-panel",true));
+    const auto constraint_apply=nlohmann::json::parse(constrained_world.edit_physics_constraint_json("upsert",distance.id,
+        updated_constraint.dump(),constrained_world.revision(),"test.constraint-panel",false));
+    const auto constraint_undo=constrained_world.undo(constrained_world.revision(),"test.constraint-undo");
+    noemancer::CommandRegistry constrained_registry(constrained_world);
+    const auto constraint_tool_observe=nlohmann::json::parse(constrained_registry.invoke("physics.constraint.observe","{}").output_json).at("result");
+    const auto constraint_tool_remove=nlohmann::json::parse(constrained_registry.invoke("physics.constraint.edit",nlohmann::json{
+        {"operation","remove"},{"constraintId",distance.id},{"baseRevision",constrained_world.revision()},
+        {"manager","test.agent"},{"dryRun",true}}.dump()).output_json).at("result");
     if(!constrained_load.success||constrained_observation.at("schemaVersion")!="noemancer.physics-observation/0.2"||
        constrained_observation.at("constraints").size()!=1||
        constrained_observation.at("constraints").front().at("id")!=distance.id||
        !constrained_observation.at("constraints").front().at("backendCreated")||
        constrained_observation.at("bodies").front().find("collisionLayer")==constrained_observation.at("bodies").front().end()||
        constrained_canonical.at("physicsConstraints").size()!=1||!layer_plan.valid||!layer_apply.success||
+       !constraint_dry.at("success")||!constraint_apply.at("success")||!constraint_undo.success||
+       constraint_tool_observe.at("constraints").size()!=1||!constraint_tool_remove.at("success")||
        constrained_world.inspector_document_json(payload.guid).find("engine.entity.rigidBody.collisionMask")==std::string::npos) {
         std::cerr<<"Canonical World did not integrate constraint, collision filtering, observation, and Inspector authority\n";
         return 38;

@@ -29,6 +29,60 @@ namespace {
 
 using Json = nlohmann::json;
 
+struct ConstraintDocumentEditResult final {
+    bool success{};
+    std::string code;
+    std::string detail;
+    std::string constraint_id;
+    Json errors=Json::array();
+};
+
+ConstraintDocumentEditResult apply_constraint_document_edit(SceneDocument& candidate,
+                                                              const std::string_view operation,
+                                                              const std::string_view requested_id,
+                                                              const Json& constraint) {
+    auto source=Json::parse(SceneDocumentCodec::write_canonical_json(candidate),nullptr,false);
+    if(source.is_discarded()||!source.is_object())
+        return {false,"physics.constraint-scene-unavailable","The canonical Scene document could not be projected."};
+    if(!source.contains("physicsConstraints"))source["physicsConstraints"]=Json::array();
+    auto& constraints=source["physicsConstraints"];
+    if(!constraints.is_array())
+        return {false,"physics.constraint-document-invalid","The Scene constraint collection is not an array."};
+
+    std::string id{requested_id};
+    if(operation=="upsert") {
+        if(!constraint.is_object()||!constraint.contains("id")||!constraint.at("id").is_string())
+            return {false,"physics.constraint-invalid","Upsert requires a complete constraint object with a stable id."};
+        const auto source_id=constraint.at("id").get<std::string>();
+        if(id.empty())id=source_id;
+        if(id!=source_id)
+            return {false,"physics.constraint-id-mismatch","constraintId must match constraint.id.",id};
+        const auto found=std::ranges::find_if(constraints,[&](const Json& value){
+            return value.is_object()&&value.value("id",std::string{})==id;
+        });
+        if(found==constraints.end())constraints.push_back(constraint);else *found=constraint;
+    } else if(operation=="remove") {
+        if(id.empty())return {false,"physics.constraint-id-required","Remove requires a stable constraintId."};
+        const auto before=constraints.size();
+        for(auto item=constraints.begin();item!=constraints.end();) {
+            if(item->is_object()&&item->value("id",std::string{})==id)item=constraints.erase(item);else ++item;
+        }
+        if(constraints.size()==before)
+            return {false,"physics.constraint-not-found","The requested constraint does not exist.",id};
+    } else return {false,"physics.constraint-operation-unsupported","Supported operations are upsert and remove.",id};
+
+    const auto parsed=SceneDocumentCodec::parse_json(source.dump(),candidate.source_uri);
+    if(!parsed) {
+        Json errors=Json::array();
+        for(const auto& error:parsed.errors)errors.push_back({{"code",error.code},{"path",error.path},{"message",error.message}});
+        return {false,"physics.constraint-validation-failed","The edited constraint collection is invalid.",id,std::move(errors)};
+    }
+    const auto source_uri=candidate.source_uri;
+    candidate=*parsed.document;
+    candidate.source_uri=source_uri;
+    return {true,"ok","Constraint document edit validated.",id};
+}
+
 bool valid_gameplay_tag(const std::string_view value) {
     return !value.empty()&&value.size()<=128&&std::ranges::all_of(value,[](const unsigned char character) {
         return (character>='a'&&character<='z')||(character>='0'&&character<='9')||character=='.'||character=='_'||character=='-';
@@ -2275,6 +2329,42 @@ std::string World::scene_source_uri() const {
     return scene_source_uri_;
 }
 
+std::string World::edit_physics_constraint_json(const std::string_view operation,
+                                                 const std::string_view constraint_id,
+                                                 const std::string_view constraint_json,
+                                                 const std::uint64_t base_revision,
+                                                 const std::string_view manager,
+                                                 const bool dry_run) {
+    const auto failure=[&](const std::string_view code,const std::string_view detail,const Json& errors=Json::array()) {
+        return Json{{"schemaVersion","noemancer.physics-constraint-edit-receipt/0.1"},{"success",false},{"dryRun",dry_run},
+            {"code",code},{"detail",detail},{"operation",operation},{"constraintId",constraint_id},
+            {"revisionBefore",revision_},{"revisionAfter",revision_},{"errors",errors}}.dump();
+    };
+    if(base_revision!=revision_)return failure("world.revision-conflict","Constraint edit base revision is stale.");
+    if(manager.empty())return failure("physics.constraint-manager-required","Constraint edits require a stable manager identity.");
+    Json constraint=Json::object();
+    if(operation=="upsert") {
+        constraint=Json::parse(constraint_json,nullptr,false);
+        if(constraint.is_discarded())return failure("physics.constraint-json-invalid","Constraint is not valid JSON.");
+    }
+    auto candidate=scene_document_;
+    const auto edited=apply_constraint_document_edit(candidate,operation,constraint_id,constraint);
+    if(!edited.success)return failure(edited.code,edited.detail,edited.errors);
+    const auto before=canonical_scene_json();
+    const auto after=SceneDocumentCodec::write_canonical_json(candidate);
+    if(after==before) return Json{{"schemaVersion","noemancer.physics-constraint-edit-receipt/0.1"},
+        {"success",true},{"dryRun",dry_run},{"code","physics.constraint-no-change"},
+        {"detail","The requested constraint value already matches the canonical Scene."},{"operation",operation},
+        {"constraintId",edited.constraint_id},{"revisionBefore",revision_},{"revisionAfter",revision_},{"undoable",false}}.dump();
+    auto receipt=Json::parse(replace_scene_document_json(after,base_revision,manager,dry_run),nullptr,false);
+    if(receipt.is_discarded()||!receipt.is_object())
+        return failure("physics.constraint-edit-failed","Constraint transaction did not return a structured receipt.");
+    receipt["schemaVersion"]="noemancer.physics-constraint-edit-receipt/0.1";
+    receipt["operation"]=operation;
+    receipt["constraintId"]=edited.constraint_id;
+    return receipt.dump();
+}
+
 std::string World::edit_scene_entity_json(const std::string_view operation, const std::string_view entity_id,
                                           const std::string_view new_entity_id, const std::string_view display_name,
                                           const std::string_view parent_entity_id, const std::string_view component,
@@ -2965,6 +3055,32 @@ std::string World::physics_observation_json() const {
         {"backend", physics_runtime_.backend_id()}, {"fixedStepSeconds", 1.0 / 60.0}, {"bodies", std::move(bodies)},
         {"contacts", std::move(contacts)},{"constraints",std::move(constraints)},
         {"constraintRevision",physics_runtime_.constraint_revision()}}.dump();
+}
+
+std::string World::physics_constraint_authoring_json() const {
+    std::vector<Json> body_values;
+    for(const auto& entity:scene_document_.entities) {
+        const auto has_collider=entity.box_collider||entity.sphere_collider||entity.capsule_collider||entity.convex_hull_collider;
+        if(entity.rigid_body&&entity.transform&&has_collider)body_values.push_back({{"id",entity.guid},{"name",entity.name},
+            {"motionType",entity.rigid_body->motion_type},{"position",Json::array({entity.transform->position.x,
+                entity.transform->position.y,entity.transform->position.z})}});
+    }
+    std::ranges::sort(body_values,[](const Json& left,const Json& right){return left.at("id").get_ref<const std::string&>()<right.at("id").get_ref<const std::string&>();});
+    Json bodies=Json::array();for(auto& body:body_values)bodies.push_back(std::move(body));
+    Json runtime_by_id=Json::object();
+    for(const auto& observation:physics_runtime_.observe_constraints())runtime_by_id[observation.id]={{"backendCreated",observation.backend_created},
+        {"backendActive",observation.backend_active},{"measuredValue",observation.measured_value},
+        {"targetValue",observation.target_value},{"error",observation.error},{"revision",observation.revision}};
+    auto canonical=Json::parse(canonical_scene_json(),nullptr,false);
+    Json constraints=canonical.is_object()?canonical.value("physicsConstraints",Json::array()):Json::array();
+    for(auto& constraint:constraints) {
+        const auto id=constraint.value("id",std::string{});
+        constraint["runtime"]=runtime_by_id.contains(id)?runtime_by_id.at(id):Json(nullptr);
+    }
+    return Json{{"schemaVersion","noemancer.physics-constraint-authoring/0.1"},{"revision",revision_},
+        {"maximumConstraints",1024},{"types",Json::array({"fixed","distance","hinge","slider","spring"})},
+        {"bodies",std::move(bodies)},{"constraints",std::move(constraints)},
+        {"actions",{{"edit","physics.constraint.edit"},{"undo","world.undo"},{"redo","world.redo"}}}}.dump();
 }
 
 std::string World::physics_ray_cast_json(const Transform origin, const Transform direction) const {
@@ -3772,7 +3888,9 @@ std::string World::scripting_invoke_json(const std::string_view instance_id,cons
         }
         const auto operation=command.at("operation").get<std::string>();
         const auto entity=command.at("entityId").get<std::string>();
-        if(operation!="audio.voice.play"&&operation!="gameplay.persistence.request"&&!entity_ids_.contains(entity)) errors.push_back({{"code","world.entity-not-found"},{"index",index},{"entityId",entity}});
+        const auto scene_level_constraint=operation=="physics.constraint.upsert"||operation=="physics.constraint.remove";
+        if(operation!="audio.voice.play"&&operation!="gameplay.persistence.request"&&!scene_level_constraint&&
+           !entity_ids_.contains(entity)) errors.push_back({{"code","world.entity-not-found"},{"index",index},{"entityId",entity}});
         else if(operation=="scene.transform.set-position") {
             const auto& payload=command.at("payload");
             if(!payload.contains("x")||!payload.at("x").is_number()||!payload.contains("y")||!payload.at("y").is_number()||
@@ -3792,6 +3910,20 @@ std::string World::scripting_invoke_json(const std::string_view instance_id,cons
             else if(body==nullptr)errors.push_back({{"code","world.component-not-found"},{"index",index},{"component","RigidBody"}});
             else if(body->motion_type!=PhysicsMotionType::dynamic_body)
                 errors.push_back({{"code","physics.dynamic-body-required"},{"index",index},{"entityId",entity}});
+        } else if(scene_level_constraint) {
+            const auto& payload=command.at("payload");
+            if(!payload.contains("constraintId")||!payload.at("constraintId").is_string()||
+               payload.at("constraintId").get<std::string>().empty()) {
+                errors.push_back({{"code","scripting.invalid-physics-constraint"},{"index",index},
+                    {"detail","A stable constraintId is required."}});
+            } else {
+                const auto constraint_id=payload.at("constraintId").get<std::string>();
+                const auto edit_operation=operation=="physics.constraint.upsert"?"upsert":"remove";
+                const auto constraint=payload.value("constraint",Json::object());
+                const auto edited=apply_constraint_document_edit(preflight_scene,edit_operation,constraint_id,constraint);
+                if(!edited.success)errors.push_back({{"code",edited.code},{"detail",edited.detail},{"index",index},
+                    {"constraintId",constraint_id},{"errors",edited.errors}});
+            }
         } else if(operation=="gameplay.event.emit") {
             const auto& payload=command.at("payload");
             if(!payload.contains("eventType")||!payload.at("eventType").is_string()||payload.at("eventType").get<std::string>().empty())
@@ -3904,6 +4036,17 @@ std::string World::scripting_invoke_json(const std::string_view instance_id,cons
             if(!success){errors.push_back({{"code","physics.body-not-ready"},{"index",index},{"entityId",entity}});break;}
             applied.push_back({{"index",index},{"operation",operation},{"entityId",entity},
                 {"vector",{{"x",x},{"y",y},{"z",z}}}});
+        } else if(operation=="physics.constraint.upsert"||operation=="physics.constraint.remove") {
+            const auto constraint_id=payload.at("constraintId").get<std::string>();
+            const auto constraint=payload.value("constraint",Json::object());
+            auto result=Json::parse(edit_physics_constraint_json(
+                operation=="physics.constraint.upsert"?"upsert":"remove",constraint_id,constraint.dump(),
+                revision_,"scripting:"+std::string(instance_id),false),nullptr,false);
+            if(result.is_discarded()||!result.value("success",false)) {
+                errors.push_back({{"code",result.is_object()?result.value("code",std::string("physics.constraint-apply-failed")):
+                    std::string("physics.constraint-apply-failed")},{"index",index},{"constraintId",constraint_id}});break;
+            }
+            applied.push_back({{"index",index},{"operation",operation},{"constraintId",constraint_id},{"receipt",std::move(result)}});
         } else if(operation=="gameplay.event.emit") {
             const auto payload_value=payload.value("payload",Json::object());
             const auto sequence=gameplay_runtime_.emit(payload.at("eventType").get<std::string>(),script_entity.value_or(std::string(instance_id)),entity,payload_value.dump());

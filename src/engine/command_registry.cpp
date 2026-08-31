@@ -529,7 +529,7 @@ void CommandRegistry::register_commands() {
         .runtime_state = "attached",
         .task_kind = "immediate",
         .input_schema_json = R"({"type":"object","additionalProperties":false})",
-        .output_schema_json = R"({"type":"object","required":["schemaVersion","revision","backend","bodies","contacts"]})",
+        .output_schema_json = R"({"type":"object","required":["schemaVersion","revision","backend","bodies","contacts","constraints","constraintRevision"]})",
         .handler = [this](const std::string_view arguments) {
             static_cast<void>(parse_object(arguments));
             return world_->physics_observation_json();
@@ -1370,6 +1370,29 @@ void CommandRegistry::register_commands() {
             query.cursor=input.value("cursor",0U);query.include_values=input.value("includeValues",true);
             return semantic_ui_query_json(world_->semantic_ui_project_document_json(input.value("locale",std::string("en-US"))),query);
         }
+    });
+
+    commands_.push_back(CommandDefinition{
+        .name="physics.constraint.observe",
+        .description="Return canonical constraint authoring values, eligible rigid bodies, runtime activity and stable transaction actions.",
+        .access="read",.idempotent=true,.supports_dry_run=false,.runtime_state="attached",.task_kind="immediate",
+        .input_schema_json=R"({"type":"object","additionalProperties":false})",
+        .output_schema_json=R"({"type":"object","required":["schemaVersion","revision","maximumConstraints","types","bodies","constraints","actions"]})",
+        .handler=[this](const std::string_view arguments){static_cast<void>(parse_object(arguments));
+            return world_->physics_constraint_authoring_json();}
+    });
+
+    commands_.push_back(CommandDefinition{
+        .name="physics.constraint.edit",
+        .description="Dry-run or atomically upsert/remove one stable Scene physics constraint through the World transaction and undo authority.",
+        .access="write",.idempotent=true,.supports_dry_run=true,.runtime_state="attached",.task_kind="immediate",
+        .input_schema_json=R"({"type":"object","required":["operation","baseRevision"],"properties":{"operation":{"type":"string","enum":["upsert","remove"]},"constraintId":{"type":"string","default":""},"constraint":{"type":"object"},"baseRevision":{"type":"integer","minimum":0},"manager":{"type":"string","default":"agent.default"},"dryRun":{"type":"boolean","default":true}},"additionalProperties":false})",
+        .output_schema_json=R"({"type":"object","required":["schemaVersion","success","dryRun","code","operation","constraintId","revisionBefore","revisionAfter"]})",
+        .handler=[this](const std::string_view arguments){const auto input=parse_object(arguments);
+            return world_->edit_physics_constraint_json(input.at("operation").get<std::string>(),
+                input.value("constraintId",std::string{}),input.value("constraint",Json::object()).dump(),
+                input.at("baseRevision").get<std::uint64_t>(),input.value("manager",std::string("agent.default")),
+                input.value("dryRun",true));}
     });
 
     commands_.push_back(CommandDefinition{

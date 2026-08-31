@@ -276,6 +276,8 @@ private:
     void draw_root_dockspace();
     void draw_startup_hub();
     void draw_scene_view();
+    void draw_physics_relationships();
+    void draw_physics_constraint_overlay(float x,float y,float width,float height);
     void draw_world_outliner();
     void draw_inspector();
     void draw_asset_browser();
@@ -313,7 +315,9 @@ private:
     std::optional<HybridPixelProfilePanel> hybrid_pixel_profile_panel_;
     std::optional<SkyAtmosphereAuthoringPanel> sky_atmosphere_panel_;
     std::optional<ProjectUiAuthoringPanel> project_ui_panel_;
+    std::optional<PhysicsConstraintPanel> physics_constraint_panel_;
     bool project_settings_open_{};
+    bool physics_relationships_open_{true};
     std::string last_script_compile_json_;
     std::string script_source_location_json_;
     std::string scripting_status_cache_;

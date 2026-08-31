@@ -21,6 +21,7 @@ add_library(noemancer_editor STATIC
     editor_model.cpp
     editor_ui.cpp
     hybrid_pixel_profile_panel.cpp
+    physics_constraint_panel.cpp
     project_settings_input_map.cpp
     project_settings_input_map_panel.cpp
     project_ui_authoring_panel.cpp

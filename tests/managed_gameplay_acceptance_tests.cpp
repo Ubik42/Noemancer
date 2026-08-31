@@ -38,6 +38,23 @@ int main() {
        !tag("script.e2.goal-tag","entity.demo-skeletal-cube","gameplay.goal"))return 3;
     if(!Json::parse(world.scripting_attach_json("script.e2.player","entity.demo-cube","project.script","E2GameplayProof.PlayerGameplay")).at("success"))return 4;
 
+    const auto constraint_probe=Json::parse(world.scripting_invoke_json("script.e2.player","OnUpdate",R"({})"));
+    const auto& managed_probe=constraint_probe.at("managedResult");
+    const auto& constraint_commands=managed_probe.at("commands");
+    if(!managed_probe.at("state").at("RejectedNonFiniteConstraint")||constraint_commands.size()!=1U||
+       constraint_commands.at(0).at("operation")!="physics.constraint.upsert"||
+       !constraint_commands.at(0).at("entityId").get<std::string>().empty()||
+       constraint_commands.at(0).at("payload").at("constraintId")!="constraint.managed.e2"||
+       constraint_commands.at(0).at("payload").at("constraint").at("type")!="fixed"||
+       constraint_commands.at(0).at("payload").at("constraint").at("bodyA")!="entity.demo-cube"||
+       constraint_commands.at(0).at("payload").at("constraint").at("bodyB")!="entity.demo-sphere"||
+       constraint_commands.at(0).at("payload").at("constraint").at("frame").at("primaryAxisA")!=Json::array({0.0F,1.0F,0.0F})) {
+        std::cerr<<"Managed constraint command serialization or local validation failed\n";
+        return 8;
+    }
+    static_cast<void>(world.scripting_invoke_json("script.e2.player","OnDestroy",R"({})"));
+    if(!Json::parse(world.scripting_attach_json("script.e2.player","entity.demo-cube","project.script","E2GameplayProof.PlayerGameplay")).at("success"))return 9;
+
     const auto collected=invoke_contact(world,"entity.demo-sphere");
     const auto after_collect=world.entity_views();
     if(!collected.at("success")||collected.at("commandApplication").at("applied")!=3||

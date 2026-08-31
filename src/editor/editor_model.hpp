@@ -7,6 +7,7 @@
 #include "engine/asset_workflow.hpp"
 #include "engine/animation_graph_patch.hpp"
 #include "engine/world.hpp"
+#include "editor/physics_constraint_panel.hpp"
 
 #include <cstddef>
 #include <array>
@@ -133,6 +134,9 @@ public:
     [[nodiscard]] const std::vector<std::string>& selected_object_ids() const noexcept;
     [[nodiscard]] bool is_object_selected(std::string_view entity_id) const noexcept;
     [[nodiscard]] std::optional<EditorViewportCamera> viewport_camera() const;
+    [[nodiscard]] PhysicsConstraintPanelSnapshot physics_constraint_snapshot() const;
+    [[nodiscard]] EditorSceneAction apply_physics_constraint_request(
+        const PhysicsConstraintPanelRequest& request);
     void select_object(std::size_t index, bool additive = false);
     [[nodiscard]] bool select_object(std::string_view entity_id, bool additive = false);
     void select_asset(std::size_t index) noexcept;

@@ -40,6 +40,7 @@ add_library(noemancer_engine STATIC
     pixel_presentation.cpp
     pixel_snapping.cpp
     physics_constraints.cpp
+    physics_constraint_debug.cpp
     physics_showcase_scene.cpp
     process_diagnostics.cpp
     project_document.cpp

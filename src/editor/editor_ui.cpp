@@ -1,5 +1,6 @@
 #include "editor/editor_ui.hpp"
 #include "editor/project_settings_input_map.hpp"
+#include "engine/physics_constraint_debug.hpp"
 #include "engine/transform_math.hpp"
 
 #include <imgui.h>
@@ -285,12 +286,14 @@ void draw_sphere(
 
 EditorUi::EditorUi(World& world, AssetRegistry& assets)
     : model_(world, assets),scripting_status_cache_(model_.scripting_status_json()) {
+    physics_constraint_panel_.emplace(model_.physics_constraint_snapshot());
     reset_viewport_camera();
     synchronize_editor_context_revision();
 }
 
 void EditorUi::refresh_visible_state() {
     model_.refresh();
+    if(physics_constraint_panel_)physics_constraint_panel_->set_snapshot(model_.physics_constraint_snapshot());
     scripting_status_cache_=model_.scripting_status_json();
     synchronize_editor_context_revision();
 }
@@ -537,6 +540,7 @@ void EditorUi::render() {
     measure(6,[&]{draw_asset_browser();});
     measure(7,[&]{draw_console();});
     measure(8,[&]{draw_agent_context();});
+    if(physics_relationships_open_)draw_physics_relationships();
     if(project_settings_open_&&project_input_panel_)project_input_panel_->render();
     if(project_settings_open_&&hybrid_pixel_profile_panel_)hybrid_pixel_profile_panel_->render();
     if(project_settings_open_&&sky_atmosphere_panel_)sky_atmosphere_panel_->render();
@@ -1789,6 +1793,8 @@ std::string EditorUi::semantic_snapshot_json() const {
     snapshot["assetJob"]=nlohmann::json::parse(model_.active_asset_job_json(),nullptr,false);
     snapshot["lastActionStatus"]=last_action_status_;
     snapshot["editorContext"]=nlohmann::json::parse(editor_context_snapshot_json(),nullptr,false);
+    snapshot["physicsRelationshipBench"]=physics_constraint_panel_?
+        nlohmann::json::parse(physics_constraint_panel_->semantic_state_json(),nullptr,false):nlohmann::json(nullptr);
     nlohmann::json pending_cells=nlohmann::json::array();for(std::size_t index=0;index<std::min<std::size_t>(tile_stroke_edits_.size(),64);++index) {
         const auto& edit=tile_stroke_edits_[index];pending_cells.push_back({{"x",edit.x},{"y",edit.y},{"operation",edit.tile_id?"paint":"erase"},
             {"tileId",edit.tile_id?nlohmann::json(*edit.tile_id):nlohmann::json(nullptr)}});
@@ -1884,6 +1890,7 @@ void EditorUi::draw_root_dockspace() {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(localized("View","视图"))) {
+            ImGui::MenuItem(localized("Physics Relationships","物理关系台"),nullptr,&physics_relationships_open_);
             ImGui::MenuItem(localized("Reset Layout","重置布局"));
             ImGui::EndMenu();
         }
@@ -2131,6 +2138,164 @@ void EditorUi::draw_root_dockspace() {
     ImGui::End();
 }
 
+void EditorUi::draw_physics_relationships() {
+    if(!physics_constraint_panel_)physics_constraint_panel_.emplace(model_.physics_constraint_snapshot());
+    auto& panel=*physics_constraint_panel_;
+    bool open=physics_relationships_open_;
+    ImGui::SetNextWindowSize({780.0F,520.0F},ImGuiCond_FirstUseEver);
+    if(!ImGui::Begin(localized("Physics Relationship Bench###Physics Relationship Bench","物理关系测绘台###Physics Relationship Bench"),&open)) {
+        ImGui::End();physics_relationships_open_=open;return;
+    }
+    physics_relationships_open_=open;
+    draw_panel_heading(localized("RELATIONSHIP BENCH","关系测绘台"),
+        (std::to_string(panel.snapshot().constraints.size())+" links  /  revision "+std::to_string(panel.snapshot().world_revision)).c_str());
+    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x-180.0F);
+    if(ImGui::Button(localized("New Fixed","新建固定")))static_cast<void>(panel.create_draft(PhysicsConstraintType::fixed));
+    ImGui::SameLine();if(ImGui::Button(localized("New...","新建...")))ImGui::OpenPopup("new-physics-relationship");
+    if(ImGui::BeginPopup("new-physics-relationship")) {
+        const std::array types{PhysicsConstraintType::fixed,PhysicsConstraintType::distance,PhysicsConstraintType::hinge,
+            PhysicsConstraintType::slider,PhysicsConstraintType::spring};
+        for(const auto type:types)if(ImGui::MenuItem(std::string(physics_constraint_type_name(type)).c_str()))static_cast<void>(panel.create_draft(type));
+        ImGui::EndPopup();
+    }
+    ImGui::Separator();
+    const auto available=ImGui::GetContentRegionAvail();
+    ImGui::BeginChild("##relationship-map",{std::max(220.0F,available.x*0.34F),0.0F},ImGuiChildFlags_Borders);
+    ImGui::TextDisabled("%s",localized("SCENE LINKS","场景关系"));
+    for(const auto& constraint:panel.snapshot().constraints) {
+        const auto selected=panel.selected_constraint_id()==constraint.id;
+        const auto label=constraint.id+"\n  "+constraint.body_a+"  >  "+constraint.body_b;
+        if(ImGui::Selectable(label.c_str(),selected))static_cast<void>(panel.select_constraint(constraint.id));
+    }
+    if(panel.snapshot().constraints.empty())draw_empty_panel_state(localized("No relationships","暂无物理关系"),
+        localized("Create one to connect two rigid bodies.","新建关系，把两个刚体连接起来。"));
+    ImGui::EndChild();ImGui::SameLine();
+    ImGui::BeginChild("##relationship-calibration",{0.0F,0.0F},ImGuiChildFlags_Borders);
+    if(!panel.draft()) {
+        draw_empty_panel_state(localized("Select or create a relationship","选择或新建关系"),
+            localized("The calibration sheet will appear here.","参数标定表会显示在这里。"));
+        ImGui::EndChild();ImGui::End();return;
+    }
+    auto draft=*panel.draft();
+    ImGui::Text("%s",draft.id.c_str());ImGui::SameLine();draw_status_badge(draft.enabled?localized("ACTIVE","启用"):localized("DISABLED","停用"),draft.enabled?color_accent:color_warning);
+    bool enabled=draft.enabled;if(ImGui::Checkbox(localized("Enabled","启用"),&enabled))static_cast<void>(panel.set_enabled(enabled));
+    const std::array types{PhysicsConstraintType::fixed,PhysicsConstraintType::distance,PhysicsConstraintType::hinge,
+        PhysicsConstraintType::slider,PhysicsConstraintType::spring};
+    if(ImGui::BeginCombo(localized("Type","类型"),std::string(physics_constraint_type_name(draft.type)).c_str())) {
+        for(const auto type:types)if(ImGui::Selectable(std::string(physics_constraint_type_name(type)).c_str(),type==draft.type))
+            static_cast<void>(panel.set_constraint_type(type));
+        ImGui::EndCombo();
+    }
+    const auto body_combo=[&](const char* label,const std::string& current,const bool first) {
+        if(ImGui::BeginCombo(label,current.empty()?localized("Choose rigid body","选择刚体"):current.c_str())) {
+            for(const auto& body:panel.snapshot().rigid_bodies) {
+                const auto display=body.display_name.empty()?body.entity_id:body.display_name+"  ["+body.entity_id+"]";
+                if(ImGui::Selectable(display.c_str(),body.entity_id==current)) {
+                    if(first)static_cast<void>(panel.set_body_a(body.entity_id));else static_cast<void>(panel.set_body_b(body.entity_id));
+                }
+            }
+            ImGui::EndCombo();
+        }
+    };
+    body_combo(localized("Rigid body A","刚体 A"),draft.body_a,true);
+    body_combo(localized("Rigid body B","刚体 B"),draft.body_b,false);
+    draft=*panel.draft();
+    float anchor_a[3]{draft.frame.anchor_a.x,draft.frame.anchor_a.y,draft.frame.anchor_a.z};
+    float anchor_b[3]{draft.frame.anchor_b.x,draft.frame.anchor_b.y,draft.frame.anchor_b.z};
+    if(ImGui::DragFloat3(localized("Anchor A (m)","锚点 A（米）"),anchor_a,0.02F))static_cast<void>(panel.set_anchor_a({anchor_a[0],anchor_a[1],anchor_a[2]}));
+    if(ImGui::DragFloat3(localized("Anchor B (m)","锚点 B（米）"),anchor_b,0.02F))static_cast<void>(panel.set_anchor_b({anchor_b[0],anchor_b[1],anchor_b[2]}));
+    if(ImGui::CollapsingHeader(localized("Axes and limits","坐标轴与限位"),ImGuiTreeNodeFlags_DefaultOpen)) {
+        draft=*panel.draft();
+        float primary_a[3]{draft.frame.primary_axis_a.x,draft.frame.primary_axis_a.y,draft.frame.primary_axis_a.z};
+        float secondary_a[3]{draft.frame.secondary_axis_a.x,draft.frame.secondary_axis_a.y,draft.frame.secondary_axis_a.z};
+        float primary_b[3]{draft.frame.primary_axis_b.x,draft.frame.primary_axis_b.y,draft.frame.primary_axis_b.z};
+        float secondary_b[3]{draft.frame.secondary_axis_b.x,draft.frame.secondary_axis_b.y,draft.frame.secondary_axis_b.z};
+        if(ImGui::DragFloat3("Primary A",primary_a,0.01F))static_cast<void>(panel.set_primary_axis_a({primary_a[0],primary_a[1],primary_a[2]}));
+        if(ImGui::DragFloat3("Secondary A",secondary_a,0.01F))static_cast<void>(panel.set_secondary_axis_a({secondary_a[0],secondary_a[1],secondary_a[2]}));
+        if(ImGui::DragFloat3("Primary B",primary_b,0.01F))static_cast<void>(panel.set_primary_axis_b({primary_b[0],primary_b[1],primary_b[2]}));
+        if(ImGui::DragFloat3("Secondary B",secondary_b,0.01F))static_cast<void>(panel.set_secondary_axis_b({secondary_b[0],secondary_b[1],secondary_b[2]}));
+        float lower=draft.lower_limit,upper=draft.upper_limit,rest=draft.rest_length,frequency=draft.spring_frequency_hz,damping=draft.spring_damping_ratio;
+        if(ImGui::DragFloat(localized("Lower limit","下限"),&lower,0.02F))static_cast<void>(panel.set_lower_limit(lower));
+        if(ImGui::DragFloat(localized("Upper limit","上限"),&upper,0.02F))static_cast<void>(panel.set_upper_limit(upper));
+        if(ImGui::DragFloat(localized("Rest length (m)","静止长度（米）"),&rest,0.02F,0.0F,10000.0F))static_cast<void>(panel.set_rest_length(rest));
+        if(ImGui::DragFloat(localized("Spring frequency (Hz)","弹簧频率（Hz）"),&frequency,0.05F,0.0F,1000.0F))static_cast<void>(panel.set_spring_frequency_hz(frequency));
+        if(ImGui::DragFloat(localized("Damping ratio","阻尼比"),&damping,0.01F,0.0F,10.0F))static_cast<void>(panel.set_spring_damping_ratio(damping));
+    }
+    if(!panel.validation().valid)for(const auto& diagnostic:panel.validation().diagnostics)
+        ImGui::TextColored(color_warning,"%s",diagnostic.message.c_str());
+    const auto submit=[&](const bool dry_run,const bool remove) {
+        const auto queued=remove?panel.request_remove(dry_run):panel.request_upsert(dry_run);
+        if(!queued){last_action_status_=std::string(panel.last_error());return;}
+        if(auto request=panel.consume_request()) {
+            const auto result=model_.apply_physics_constraint_request(*request);last_action_status_=result.detail;
+            panel.set_snapshot(model_.physics_constraint_snapshot());
+        }
+    };
+    ImGui::BeginDisabled(!panel.validation().valid);
+    if(ImGui::Button(localized("Validate","校验")))submit(true,false);ImGui::SameLine();
+    if(ImGui::Button(localized("Apply relationship","应用关系")))submit(false,false);
+    ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(panel.selected_constraint_id().empty());
+    if(ImGui::Button(localized("Remove","删除")))submit(false,true);ImGui::EndDisabled();
+    ImGui::EndChild();ImGui::End();
+}
+
+void EditorUi::draw_physics_constraint_overlay(const float x,const float y,const float width,const float height) {
+    if(simulation_state_!=EditorSimulationState::edit||!editor_camera_||!physics_constraint_panel_)return;
+    const auto& snapshot=physics_constraint_panel_->snapshot();
+    if(snapshot.constraints.empty())return;
+    std::vector<PhysicsConstraintDebugBodyPose> poses;
+    poses.reserve(model_.objects().size());
+    for(const auto& object:model_.objects())if(object.transform)poses.push_back({object.id,
+        {object.transform->x,object.transform->y,object.transform->z}});
+    const auto geometry=build_physics_constraint_debug_geometry({snapshot.constraints,poses,
+        physics_constraint_panel_->selected_constraint_id(),{}});
+    const auto& camera=*editor_camera_;
+    const GizmoVec3 eye{camera.position[0],camera.position[1],camera.position[2]};
+    const GizmoVec3 target{camera.target[0],camera.target[1],camera.target[2]};
+    const auto forward=normalize(target-eye),right=normalize(cross(forward,{0,1,0})),up=normalize(cross(right,forward));
+    const auto aspect=width/std::max(height,1.0F);
+    const auto project=[&](const PhysicsConstraintVec3 point)->std::optional<ImVec2> {
+        const GizmoVec3 relative{point.x-eye.x,point.y-eye.y,point.z-eye.z};const auto depth=dot(relative,forward);
+        float ndc_x{},ndc_y{};
+        if(camera.projection=="orthographic") {
+            const auto half_height=std::max(camera.orthographic_height*0.5F,0.0001F);
+            ndc_x=dot(relative,right)/(half_height*aspect);ndc_y=dot(relative,up)/half_height;
+        } else {
+            if(depth<=std::max(camera.near_clip,0.0001F))return std::nullopt;
+            const auto tangent=std::tan(camera.vertical_fov_degrees*0.0087266463F);
+            ndc_x=dot(relative,right)/(depth*tangent*aspect);ndc_y=dot(relative,up)/(depth*tangent);
+        }
+        if(!std::isfinite(ndc_x)||!std::isfinite(ndc_y))return std::nullopt;
+        return ImVec2{x+(ndc_x+1.0F)*0.5F*width,y+(1.0F-ndc_y)*0.5F*height};
+    };
+    auto* draw=ImGui::GetWindowDrawList();draw->PushClipRect({x,y},{x+width,y+height},true);
+    for(const auto& primitive:geometry.primitives) {
+        const auto color=ImGui::ColorConvertFloat4ToU32({primitive.style.color.r,primitive.style.color.g,
+            primitive.style.color.b,primitive.style.color.a*primitive.style.opacity});
+        const auto thickness=primitive.style.line_width+(primitive.style.selected?1.25F:0.0F);
+        if(primitive.kind==PhysicsConstraintDebugPrimitiveKind::line) {
+            const auto a=project(primitive.start),b=project(primitive.end);if(a&&b)draw->AddLine(*a,*b,color,thickness);
+        } else if(primitive.kind==PhysicsConstraintDebugPrimitiveKind::marker) {
+            const auto center=project(primitive.center);if(center)draw->AddCircle(*center,std::max(3.0F,primitive.radius*18.0F),color,12,thickness);
+        } else {
+            const auto axis=normalize({primitive.axis.x,primitive.axis.y,primitive.axis.z});
+            const auto radial=normalize({primitive.radial.x,primitive.radial.y,primitive.radial.z});
+            const auto tangent=normalize(cross(axis,radial));
+            const auto segments=std::clamp<std::uint32_t>(primitive.segments,4U,64U);
+            std::optional<ImVec2> previous;
+            for(std::uint32_t segment=0;segment<=segments;++segment) {
+                const auto t=static_cast<float>(segment)/static_cast<float>(segments);
+                const auto angle=primitive.angle_start_radians+(primitive.angle_end_radians-primitive.angle_start_radians)*t;
+                const PhysicsConstraintVec3 point{primitive.center.x+primitive.radius*(radial.x*std::cos(angle)+tangent.x*std::sin(angle)),
+                    primitive.center.y+primitive.radius*(radial.y*std::cos(angle)+tangent.y*std::sin(angle)),
+                    primitive.center.z+primitive.radius*(radial.z*std::cos(angle)+tangent.z*std::sin(angle))};
+                const auto current=project(point);if(previous&&current)draw->AddLine(*previous,*current,color,thickness);previous=current;
+            }
+        }
+    }
+    draw->PopClipRect();
+}
+
 void EditorUi::draw_scene_view() {
     prepare_panel_window("editor.panel.scene");
     ImGui::Begin(localized("Scene View###Scene View","场景视图###Scene View"), nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -2183,6 +2348,7 @@ void EditorUi::draw_scene_view() {
         const bool image_clicked=ImGui::IsItemClicked(ImGuiMouseButton_Left);
         update_viewport_camera_navigation(ImGui::IsItemHovered());
         handle_tilemap_brush(image_min.x,image_min.y,image_size.x,image_size.y,ImGui::IsItemHovered());
+        draw_physics_constraint_overlay(image_min.x,image_min.y,image_size.x,image_size.y);
         const auto canvas_end = ImGui::GetItemRectMax();
         draw_transform_gizmo(image_min.x,image_min.y,image_size.x,image_size.y);
         if (image_clicked && gizmo_mode_!=GizmoMode::tilemap && !ImGuizmo::IsOver() && scene_texture_width_ > 0 && scene_texture_height_ > 0) {

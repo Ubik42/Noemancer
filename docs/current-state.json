@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-30",
   "status": "in-development",
-  "currentSlice": "physics.common-effects-editor-and-script-acceptance",
-  "currentStep": "add-scene-level-constraint-authoring-csharp-agent-commands-and-debug-visualization",
+  "currentSlice": "render.native-rhi-raytracing-foundation",
+  "currentStep": "establish-persistent-native-rhi-resource-ownership-and-render-graph-raytracing-pass-with-raster-fallback",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "physics.common-effects-editor-and-script-acceptance",
     "render.native-rhi-raytracing-foundation",
     "render.rtgi-production-path",
     "editor.high-dpi-responsive-chrome",
@@ -65,6 +64,7 @@
     "physics.collision-filter-and-volume-queries",
     "physics.constraint-domain-and-jolt-fixture",
     "physics.constraints-world-authoring-and-runtime-integration",
+    "physics.common-effects-editor-and-script-acceptance",
     "editor.scene-instrument-visual-language"
   ],
   "closedExperiments": [
@@ -99,7 +99,6 @@
     "hybrid-pixel-profile"
   ],
   "deferredUntilEvidence": [
-    "native-rhi",
     "slang-production-compiler",
     "deep-networking",
     "navigation",

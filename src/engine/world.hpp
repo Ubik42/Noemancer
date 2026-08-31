@@ -406,6 +406,13 @@ public:
     [[nodiscard]] std::string snapshot_json() const;
     [[nodiscard]] std::string render_observation_json() const;
     [[nodiscard]] std::string physics_observation_json() const;
+    [[nodiscard]] std::string physics_constraint_authoring_json() const;
+    [[nodiscard]] std::string edit_physics_constraint_json(std::string_view operation,
+                                                            std::string_view constraint_id,
+                                                            std::string_view constraint_json,
+                                                            std::uint64_t base_revision,
+                                                            std::string_view manager,
+                                                            bool dry_run);
     [[nodiscard]] std::string physics_ray_cast_json(Transform origin, Transform direction) const;
     [[nodiscard]] std::string physics_sphere_sweep_json(Transform origin,Transform direction,float radius,
                                                         std::string_view ignored_entity_id={}) const;

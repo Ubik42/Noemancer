@@ -452,6 +452,47 @@ std::optional<EditorViewportCamera> EditorModel::viewport_camera() const {
     return std::nullopt;
 }
 
+PhysicsConstraintPanelSnapshot EditorModel::physics_constraint_snapshot() const {
+    PhysicsConstraintPanelSnapshot snapshot;
+    snapshot.world_revision=world_.revision();
+    snapshot.manager_id="editor.physics.constraint-relationship-bench";
+    const auto parsed=SceneDocumentCodec::parse_json(world_.canonical_scene_json(),world_.scene_source_uri());
+    if(!parsed)return snapshot;
+    snapshot.constraints=parsed.document->physics_constraints;
+    for(const auto& entity:parsed.document->entities) {
+        const auto has_shape=entity.box_collider||entity.sphere_collider||entity.capsule_collider||entity.convex_hull_collider;
+        if(entity.rigid_body&&entity.transform&&has_shape)
+            snapshot.rigid_bodies.push_back({entity.guid,entity.name});
+    }
+    return snapshot;
+}
+
+EditorSceneAction EditorModel::apply_physics_constraint_request(const PhysicsConstraintPanelRequest& request) {
+    Json constraint=Json::object();
+    if(request.kind==PhysicsConstraintPanelRequestKind::upsert) {
+        if(!request.constraint)return {false,"physics.constraint-required","The relationship draft is missing.",request.constraint_id,world_.revision()};
+        const auto& spec=*request.constraint;
+        const auto vector=[](const PhysicsConstraintVec3 value){return Json::array({value.x,value.y,value.z});};
+        constraint={{"id",spec.id},{"type",std::string(physics_constraint_type_name(spec.type))},
+            {"bodyA",spec.body_a},{"bodyB",spec.body_b},
+            {"frame",{{"anchorA",vector(spec.frame.anchor_a)},{"anchorB",vector(spec.frame.anchor_b)},
+                {"primaryAxisA",vector(spec.frame.primary_axis_a)},{"secondaryAxisA",vector(spec.frame.secondary_axis_a)},
+                {"primaryAxisB",vector(spec.frame.primary_axis_b)},{"secondaryAxisB",vector(spec.frame.secondary_axis_b)}}},
+            {"lowerLimit",spec.lower_limit},{"upperLimit",spec.upper_limit},{"restLength",spec.rest_length},
+            {"springFrequencyHz",spec.spring_frequency_hz},{"springDampingRatio",spec.spring_damping_ratio},
+            {"enabled",spec.enabled}};
+    }
+    const auto operation=request.kind==PhysicsConstraintPanelRequestKind::upsert?"upsert":"remove";
+    const auto manager=request.manager_id.empty()?std::string("editor.physics.constraint-relationship-bench"):request.manager_id;
+    const auto receipt=Json::parse(world_.edit_physics_constraint_json(operation,request.constraint_id,constraint.dump(),
+        request.base_revision,manager,request.dry_run),nullptr,false);
+    if(receipt.is_discarded())return {false,"physics.constraint-edit-failed","The relationship edit returned no receipt.",request.constraint_id,world_.revision()};
+    EditorSceneAction result{receipt.value("success",false),receipt.value("code",std::string("physics.constraint-edit-failed")),
+        receipt_detail(receipt,"Physics relationship edit failed."),request.constraint_id,receipt.value("revisionAfter",world_.revision())};
+    if(result.success&&!request.dry_run&&receipt.value("undoable",true)){record_edit(EditDomain::scene);refresh();}
+    return result;
+}
+
 void EditorModel::select_object(const std::size_t index,const bool additive) {
     if (index < objects_.size()) {
         selected_object_id_ = objects_[index].id;
