@@ -61,8 +61,10 @@ enum class NativeD3D12RayTracingContextFailureStage : std::uint8_t {
 
 struct NativeD3D12RayTracingContextShaderSet final {
     // Optional DXIL blobs for a caller-owned RayGen/Miss/ClosestHit shader
-    // contract.  Empty blobs intentionally leave trace() unsupported while
-    // AS build remains useful and testable.
+    // contract.  An all-empty set selects the pinned deterministic probe used
+    // by context 0.1.  Non-empty sets are rejected until a versioned export,
+    // root-signature and shader-table ABI is published; the context never
+    // guesses how arbitrary DXIL should be wired into the retained pipeline.
     std::vector<std::byte> ray_generation_dxil;
     std::vector<std::byte> miss_dxil;
     std::vector<std::byte> closest_hit_dxil;
@@ -185,6 +187,9 @@ public:
 
 private:
     struct Impl;
+    [[nodiscard]] static bool ensure_trace_pipeline(Impl& impl,
+                                                    std::string& code,
+                                                    std::string& detail);
     static void save_result(Impl& impl,
                             NativeD3D12RayTracingContextFailureStage stage,
                             std::string_view code, std::string_view detail);

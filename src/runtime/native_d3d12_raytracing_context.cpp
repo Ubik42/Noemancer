@@ -1,6 +1,7 @@
 #include "runtime/native_d3d12_raytracing_context.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -188,12 +189,107 @@ void sort_scene(NativeD3D12RayTracingScene& scene) {
 using Microsoft::WRL::ComPtr;
 using CreateFactoryFn = HRESULT(WINAPI*)(UINT, REFIID, void**);
 using CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+using SerializeRootSignatureFn = HRESULT(WINAPI*)(
+    const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob**);
+
+// This is the same pinned lib_6_3 DXIL probe used by the short-lived executor.
+// Keeping one known-good artifact here makes the persistent context usable
+// without a machine-local compiler or a build-directory dependency.  It writes
+// a deterministic 16-byte UAV result and is deliberately not an RTGI shader.
+constexpr std::string_view kDxrProbeDxilBase64 =
+    "RFhCQ/QoGcU0CaFax3Iw2oDaZrABAAAAMBUAAAYAAAA4AAAASAAAAHQAAABEAgAA4AoAAPwKAABTRkkwCAAAAAAAAAAAAAAAVkVSUyQAAAABAAkAAAAAABoVAAAUAAAA"
+    "MGQzZWU2YjUAMS45LjAuNTQwMgBSREFUyAEAABAAAAAEAAAAGAAAALgAAAAIAQAAtAEAAAEAAACYAAAAAGdTY2VuZQBnT3V0cHV0AAE/UmF5R2VuQEBZQVhYWgBSYXlH"
+    "ZW4AAT9NaXNzQEBZQVhVUGF5bG9hZEBAQFoATWlzcwABP0Nsb3Nlc3RIaXRAQFlBWFVQYXlsb2FkQEBVQnVpbHRJblRyaWFuZ2xlSW50ZXJzZWN0aW9uQXR0cmlidXRl"
+    "c0BAQFoAQ2xvc2VzdEhpdAAAAAADAAAASAAAAAIAAAAgAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAABAAAACwAAAAAAAAAAAAAAAAAAAAAAAAAIAAAA"
+    "AAAAAAQAAACkAAAAAwAAADQAAAAQAAAAIAAAAAAAAAD/////BwAAAAAAAAAAAAAAAAAAAAAAAACAAAAAYwAHAAAAAAD/////JwAAAD8AAAD//////////wsAAAAEAAAA"
+    "AAAAAAAAAAAAAAAAAAgAAGMACwAAAAAA/////0QAAACKAAAA//////////8KAAAABAAAAAgAAAAAAAAAAAAAAAAEAABjAAoAAAAAAP////8CAAAADAAAAAIAAAAAAAAA"
+    "AQAAAFNUQVSUCAAAYwAGACUCAABEWElMAwEAABAAAAB8CAAAQkPA3iEMAAAcAgAAC4IgAAIAAAATAAAAB4EjkUHIBEkGEDI5kgGEDCUFCBkeBItigBhFAkKSC0LEEDIU"
+    "OAgYSwoyYohIkBQgQ0aIpQAZMkLkSA6QESPEUEFRgYzhg+WKBDFGBlEYAAAMAAAAG4jg/////wdA2mAIAZAAywZjEIAFoDYYxP////8PgARQG4zi/////wdAAioAAAAA"
+    "SRgAAAQAAAATgmCCIAQTBmEIJgTEhKAAiSAAAD4AAAAyIogJIGSFBBMjpIQEEyPjhKGQFBJMjIwLhMRMEJjBHAEYnBlIU0QJk78C2BQBAtIYmiAQCxEBE+I07BRRwkRF"
+    "BAoACk6TpogSJn+FN2witGGICEnaqKIgIhQANIwAlKAg4xxpiihh8lMAWxxgQAFASBGKhJQZgGEEgTk2kKaIEiZ/o5BlEps2QoDGWAixmYhIIoQJcRptmiIkoCZCQkFD"
+    "ThmK5CFojgApAwBINBWEARiGYRiGqjIwAEMXSfcMlz9hDyH5IdAMC4GCrCwFoAEAAACABNBWogLQAAAAAIZhGIZhmIS6MmhAQF8ZNGCgcCBgjiCYIwAFABMUcsCHdGCH"
+    "NmiHeWgDcsCHDa9QDm3QDnpQDm0AD3owB3KgB3MgB22QDnGgB3MgB22QDnigB3MgB22QDnFgB3owB3LQBukwB3KgB3MgB22QDnZAB3pgB3TQBuYQB3agB3MgB21gDnMg"
+    "B3owB3LQBuZgB3SgB3ZAB23gDnigB3FgB3owB3KgB3ZABzoPRJAhI0VEADYAYD4A4CGPAQRAAAAAAAAAAABDHgUIAAEAAAAAAAAAhjwQEAADAAAAAAAAAAx5JiAACAAA"
+    "AAAAAAAY8kxAABAAAAAAAAAAMOSpgAAgAAAAAAAAAGDIcwEBQAAAAAAAAADAkGcDAiAAAAAAAAAAgCFPBwRAAAAAAAAAAABDng8IgAIAAAAAAAAAhjxhAARAAQAAAAAA"
+    "AABZIA4AAAAyHpgYGRFMkIwJJkfGBEMCSqAMRgCKoUAKoSzKoRQKoiRKowiKokSKi8oCIXIEgJwZAEJmAAAAAHkYAACjAAAAGgNMkEYCE8Q0IMMbQ4GTS7MLoytLAYlx"
+    "yXGBcamhgZEBQYEhmykrsxGrqWkhS5Ojy0vZEAQTBKCZIADOBmEgJgjAs0EwDA5saWITBADaMCAJMUEQABpnU2NlbmUTBCCaIADSBsFwNiTGwhjG0BjPhgCaIBABj7On"
+    "Ojq4OroJAjBNEMjA27AY0mQYA1VVFbAhsDYQ0QUAEwQEDDigpdFNEABqggBUG4xEI4yN2yA43QTB+SYIgEVGLEwub6zMjU4ubWxuggBcEwQAmyAA2QYkCQPC2MRgDMhg"
+    "gwAGZbChMDLvM4MJwiFsADYMQxqkwYZADSYIy7BhIIM0SIMNghq0wQQhIjYMRhqkwYZBDdoADjYcAxqsARu4wRvEAYEJQhl0GwSDDjYUwBwAWB2wFAJ+htje5srm6JDS"
+    "6ICAsoKwqqDC8tjewsiAgKqE6tLY6JLcqOTSwtzO2MqS3OjK5ObKxujS3tyC6Ojk0sTq6MrmgICAtCYIgLYhMDYgYIAHibOBAZcHG4o3uAMA0ANeAT9NaXNzQEBZQVhV"
+    "UGF5bG9hZEBAQFobDDCgEofLgw0FG/ABAPQBn4AfqbC8ozI3IKCsICwsrQ0EGGxcHmwo0OAPAAAUaJixvYXRzU0QgI1Fmtsc3dwEAeBIpLnRzTGhK8P7mqN7kyvbgIjC"
+    "KJBCKZjCcApOFTY2uzaXNLIyN7opQVCFDM/FrkxuLu3NbUpANCHDc7ELY7Mrk5sSGHXI8Fzm0MLIyuSa3sjK2KYESRkyPBe5srm3OrmxsrkpwVWJDM+FLg+uLMjN7Y0u"
+    "jC7tzW1uimAGcVCHDM+lzI1OLg/qLc2Nbm4KUQd60Aeg0IUMz2Xsrc6NrkxubkpwCgAAAHkYAABMAAAAMwiAHMThHGYUAT2IQziEw4xCgAd5eAdzmHEM5gAP7RAO9IAO"
+    "MwxCHsLBHc6hHGYwBT2IQziEgxvMAz3IQz2MAz3MeIx0cAd7CAd5SIdwcAd6cAN2eIdwIIcZzBEO7JAO4TAPbjAP4/AO8FAOMxDEHd4hHNghHcJhHmYwiTu8gzvQQzm0"
+    "Azy8gzyEAzvM8BR2YAd7aAc3aIdyaAc3gIdwkIdwYAd2KAd2+AV2eId3gIdfCIdxGIdymId5mIEs7vAO7uAO9cAO7DADYsihHOShHMyhHOShHNxhHMohHMSBHcphBtaQ"
+    "QznIQzmYQznIQzm4wziUQziIAzuUwy+8gzz8gjvUAzuww4zIIQd8cANyEIdzcAN7CAd5YIdwyId3qAd6mIE85IAPbkAP5dAO8AAAAHEgAABiAAAARVAKgd+Q/Z6X53Rk"
+    "mg4EZoPYKjScZ7/DZCCwKqyn2fSkmypPh91ndjnpppfl8/KYnn67g3S6PC2u08tzIBCorYEr8Gum53MgMBvEVqHhPPsdJgOBQG0JPIGfNJw/lt1AYDaIxWorYAwCv/Oz"
+    "TofX6UDgrCq9CvP0cpBMlpfnc2HdbC7LgcBgAbhB4HeejsvuMhA4q0rDebo8PE67z8HxuMwuy8P09Ns9pcvrY3pdXgYCg8YwB8PlO48vRAQwESHQDAvxOVGJBL40RZQw"
+    "+Su8YROhDUNESNJGFQUR2cIfDJfvPL4QEcBEhEAzLMTnRCUS+NIUUcLkrwA2RYCANIYmCMRCRMCEOA07RZQwURFhBWAwXL7z+AMiPcAkHCuASR3CEI2EOI3kI7dtBttw"
+    "+c7jD4j0AJNwrAAmic1AXD5y23bgDJfvPP7gTLdf3LYlYMPlO48fAdZGFQURsZMTET5y26bQDZfvPP4UAQKxApgvTRElTH4KYIsDDIbwDJfvPD7VABHmF7cNAAAAAAAA"
+    "SEFTSBQAAAAAAAAARpqdrLctKlKfd2uJ0Rk2S0RYSUwsCgAAYwAGAIsCAABEWElMAwEAABAAAAAUCgAAQkPA3iEMAACCAgAAC4IgAAIAAAATAAAAB4EjkUHIBEkGEDI5"
+    "kgGEDCUFCBkeBItigBhFAkKSC0LEEDIUOAgYSwoyYohIkBQgQ0aIpQAZMkLkSA6QESPEUEFRgYzhg+WKBDFGBlEYAAANAAAAG4jg/////wdA2mAIAZAAywZjEIAFoDYY"
+    "xP////8PgARQG4zi/////wdAAqoNhAEBZwAAAEkYAAAFAAAAE4JggiAEEwZhCCYExISgmBAYAACJIAAAPwAAADIiiAkgZIUEEyOkhAQTI+OEoZAUEkyMjAuExEwQnMEc"
+    "ARicGUhTRAmTvwLYFAEC0hiaIBALEQET4jTsFFHCREUECgAKTpOmiBImf4U3bCK0YYgISdqooiAiFAA0jACUoCDjHGmKKGHyUwBbHGBAAUBIEYqElBmAYQSBOTaQpogS"
+    "Jn+jkGUSmzZCgMZYCLGZiEgihAlxGm2aIiSgJkJCQUNOGYrkIWiOACkDAEg0FYQBGIZhGIaqMjAAQxdJ9wyXP2EPIfkh0AwLgYKsLAWgAQAAAIAE0FaiAtAAAAAAhmEY"
+    "hmGYhLoyaEBAXxk0YKBwIGCOIJgjAAUCAAAAABMUcsCHdGCHNmiHeWgDcsCHDa9QDm3QDnpQDm0AD3owB3KgB3MgB22QDnGgB3MgB22QDnigB3MgB22QDnFgB3owB3LQ"
+    "BukwB3KgB3MgB22QDnZAB3pgB3TQBuYQB3agB3MgB21gDnMgB3owB3LQBuZgB3SgB3ZAB23gDnigB3FgB3owB3KgB3ZABzoPRJAhI0VEADYAYD4A4CGPAQBAAAAAAAAA"
+    "AABDHgUAAAEAAAAAAAAAhjwQAAADAAAAAAAAAAx5JiAACAAAAAAAAAAY8kxAABAAAAAAAAAAMOSpgAAgAAAAAAAAAGDIcwEBQAAAAAAAAADAkGcDAiAAAAAAAAAAgCFP"
+    "BwRAAAAAAAAAAABDng8IgAIAAAAAAAAAhjxhAARAAQAAAAAAAABZIAsAAAAyHpgUGRFMkIwJJkfGBEMCSqAMSqIYRgAKpBDKoggKoijKoRSIHAGgskAAAHkYAACCAAAA"
+    "GgNMkEYCE8Q0IMMbQ4GTS7MLoytLAYlxyXGBcamhgZEBQYEhmykrsxGrqWkhS5Ojy0vZEAQTBKCZIADOBmEgJgjAs0EYDA5saWITBADaMCAJMUEAogmCANA4mxorcyub"
+    "IADSBAGYNgjLsyFZmGZZBmeBNgTRBIEIeJw91dHB1dFNEABqgkAG2oZlmahlGSrLsoANwbWBkDAAmCAcwgZgwzBs24aAmyAswwQBqDYM37ZtEDgwmCBExIZh2bYNAwcG"
+    "Y7DhGLTOCwMxIAMCE4Qy2DYIyxlsKAAzADI0YCkE/Ayxvc2VzdEhpdEBAWUFYVVBheWxvYWRAQFVCdWlsdEluVHJpYW5nbGVJbnRlcnNlY3Rpb25BdHRyaWJ1dGVzQEB"
+    "AWlNEABrggBcEwQAmyAA2YZg2YCsARskTxusgRu8wYZCDNQAAOCAV8BPU9rcHBBQVhBWFVRYHttbGBkQEJDWBmMNquRxgzfYUHhyAABzwCfgRyos76jMDQgoKwgLS2sD"
+    "sQZt4AZvsKHQ6gAA7KAKG5tdm0saWZkb3ZQgqEKG52JXJjeX9uY2JSCakOG52IWx2ZXJTQmMOmR4LnNoYWRlck1vZGVsU4KkDBmei1zZ3Fud3FjZ3JQAq0SG50KXB1cW"
+    "5Ob2RhdGl/bmNjclIIM6ZHguZW50cnlQb2ludHNTCDSAgzmwAwAAAHkYAABMAAAAMwiAHMThHGYUAT2IQziEw4xCgAd5eAdzmHEM5gAP7RAO9IAOMwxCHsLBHc6hHGYw"
+    "BT2IQziEgxvMAz3IQz2MAz3MeIx0cAd7CAd5SIdwcAd6cAN2eIdwIIcZzBEO7JAO4TAPbjAP4/AO8FAOMxDEHd4hHNghHcJhHmYwiTu8gzvQQzm0Azy8gzyEAzvM8BR2"
+    "YAd7aAc3aIdyaAc3gIdwkIdwYAd2KAd2+AV2eId3gIdfCIdxGIdymId5mIEs7vAO7uAO9cAO7DADYsihHOShHMyhHOShHNxhHMohHMSBHcphBtaQQznIQzmYQznIQzm4"
+    "wziUQziIAzuUwy+8gzz8gjvUAzuww4zIIQd8cANyEIdzcAN7CAd5YIdwyId3qAd6mIE85IAPbkAP5dAO8AAAAHEgAABiAAAARVAKgd+Q/Z6X53Rkmg4EZoPYKjScZ7/D"
+    "ZCCwKqyn2fSkmypPh91ndjnpppfl8/KYnn67g3S6PC2u08tzIBCorYEr8Gum53MgMBvEVqHhPPsdJgOBQG0JPIGfNJw/lt1AYDaIxWorYAwCv/OzTofX6UDgrCq9CvP0"
+    "cpBMlpfnc2HdbC7LgcBgAbhB4HeejsvuMhA4q0rDebo8PE67z8HxuMwuy8P09Ns9pcvrY3pdXgYCg8YwB8PlO48vRAQwESHQDAvxOVGJBL40RZQw+Su8YROhDUNESNJG"
+    "FQUR2cIfDJfvPL4QEcBEhEAzLMTnRCUS+NIUUcLkrwA2RYCANIYmCMRCRMCEOA07RZQwURFhBWAwXL7z+AMiPcAkHCuASR3CEI2EOI3kI7dtBttw+c7jD4j0AJNwrAAm"
+    "ic1AXD5y23bgDJfvPP7gTLdf3LYlYMPlO48fAdZGFQURsZMTET5y26bQDZfvPP4UAQKxApgvTRElTH4KYIsDDIbwDJfvPD7VABHmF7cNAABhIAAAbgAAABMEQSwQAAAA"
+    "GQAAAATMABSwQGEKlKhAkQqUW8mUrkD5D5Q4uSKpQpk2K1MnFAZJIwAlQMwYAQiCIP4LYwQgCIL4NwIwRgCCIAiCwhgBCIIgCA5jBO9Mmmg3RgCCIMyGwRgBCIIgCAZj"
+    "BCAIgvAHAAA0B8GgORjGTAQCNKQwYmAAIAgGExxczoiBAYAgGExxgDkjBgYAgmAwzQEGjRgYAAiCwUQHGXQEU0cwZYICHxMW+JzB1BlMGSHQxwiBPiZE8jFBko8JGnxM"
+    "2OBjWRCfEYMFAEEwqEDBDIaAGwJuxMAAQBAMLlAwg8CCQj4mEPIZMTAAEASDDxTcANvIcO3BHgwbEAEfEMCIAWWAIBh0o6AGAh+kAR+AAh+EQRh8HjEUHUYBQIYbgj4I"
+    "g+kGNUiDYMTAAEAQDMKAFOaAGzFwABAEgw0V5iAAhToQ6qAO6gAN/GDEwABAEAzCoBTooBsxcAAQBIMtFegg+AM7KOzADuwgDf5gxMAAQBAMwsAU6sAbMXAAEASDTRXq"
+    "IOiDO+ju4A7uQA1AYcTAAEAQDMLgFOzgGzFwABAEg20V7CBoAzzo8AAP8GANQgEBYSAAAAgAAAATBMFGhoBhhg2IoBkADAcCAgAAAMZxPAC2OMAAAAAAAGEgAAALAAAA"
+    "EwTBRgahaYYNiEAaAAwHAgUAAADWoQDTFCEBNRGScRwPgC0OMAAAAAAAAAAAAAAA";
 
 std::string hresult_hex(const HRESULT value) {
     char buffer[32]{};
     std::snprintf(buffer, sizeof(buffer), "0x%08" PRIx32,
                   static_cast<std::uint32_t>(value));
     return buffer;
+}
+
+std::vector<std::uint8_t> decode_base64(const std::string_view encoded) {
+    std::vector<std::uint8_t> decoded;
+    decoded.reserve((encoded.size() / 4U) * 3U);
+    std::uint32_t accumulator = 0U;
+    std::uint32_t bits = 0U;
+    for (const unsigned char character : encoded) {
+        if (character == '=') break;
+        std::uint32_t value = 0U;
+        if (character >= 'A' && character <= 'Z')
+            value = static_cast<std::uint32_t>(character - 'A');
+        else if (character >= 'a' && character <= 'z')
+            value = static_cast<std::uint32_t>(character - 'a' + 26U);
+        else if (character >= '0' && character <= '9')
+            value = static_cast<std::uint32_t>(character - '0' + 52U);
+        else if (character == '+')
+            value = 62U;
+        else if (character == '/')
+            value = 63U;
+        else
+            continue;
+        accumulator = (accumulator << 6U) | value;
+        bits += 6U;
+        if (bits >= 8U) {
+            bits -= 8U;
+            decoded.push_back(static_cast<std::uint8_t>((accumulator >> bits) & 0xffU));
+        }
+    }
+    return decoded;
 }
 
 std::string utf8_from_wide(const wchar_t* value) {
@@ -345,9 +441,27 @@ struct NativeD3D12RayTracingContext::Impl final {
     ComPtr<ID3D12Resource> instance_buffer;
     ComPtr<ID3D12Resource> tlas_result;
     ComPtr<ID3D12Resource> tlas_scratch;
+    ComPtr<ID3D12RootSignature> trace_root_signature;
+    ComPtr<ID3D12StateObject> trace_state_object;
+    ComPtr<ID3D12StateObjectProperties> trace_state_properties;
+    ComPtr<ID3D12Resource> shader_table;
+    ComPtr<ID3D12Resource> output_resource;
+    ComPtr<ID3D12Resource> output_readback;
     std::uint64_t instance_buffer_bytes{};
     std::uint64_t tlas_result_bytes{};
     std::uint64_t tlas_scratch_bytes{};
+    std::uint64_t shader_table_bytes{};
+    std::uint64_t output_resource_bytes{};
+    bool shader_pipeline_ready{};
+    bool shader_table_ready{};
+    bool output_resource_ready{};
+    bool last_trace_submitted{};
+    bool last_trace_completed{};
+    bool last_readback_completed{};
+    bool output_in_copy_source{};
+    std::uint32_t output_sentinel{};
+    std::uint32_t output_hit{};
+    std::uint64_t output_hash{};
     std::uint64_t built_scene_hash{};
     std::uint64_t built_topology_hash{};
     bool blas_ready{};
@@ -429,6 +543,18 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.update_submitted = impl.last_update_submitted;
     result.update_completed = impl.last_update_completed;
     result.synchronization_completed = impl.last_synchronization_completed;
+    result.shader_pipeline_ready = impl.shader_pipeline_ready;
+    result.shader_table_ready = impl.shader_table_ready;
+    result.output_resource_ready = impl.output_resource_ready;
+    result.trace_submitted = impl.last_trace_submitted;
+    result.trace_completed = impl.last_trace_completed;
+    result.readback_completed = impl.last_readback_completed;
+    result.output_sentinel = impl.output_sentinel;
+    result.output_hit = impl.output_hit;
+    result.output_hash = impl.output_hash;
+    result.shader_table_bytes = impl.shader_table_bytes;
+    result.output_bytes = impl.output_resource_bytes;
+    result.output_readback_bytes = impl.output_resource_bytes;
     for (const auto& geometry : impl.geometry_resources) {
         result.vertex_buffer_bytes += geometry.vertex_bytes;
         result.index_buffer_bytes += geometry.index_bytes;
@@ -439,9 +565,6 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.tlas_ready = impl.tlas_ready;
     result.tlas_result_bytes = impl.tlas_result_bytes;
     result.tlas_scratch_bytes = impl.tlas_scratch_bytes;
-    result.output_resource_ready = false;
-    result.shader_pipeline_ready = false;
-    result.shader_table_ready = false;
 #endif
     result.fallback_active = impl.state == NativeD3D12RayTracingContextState::unsupported;
     if (impl.state == NativeD3D12RayTracingContextState::shutdown) result.shutdown_completed = true;
@@ -458,6 +581,219 @@ void NativeD3D12RayTracingContext::mark_unsupported(
     receipt = receipt_from(impl, operation);
     receipt.state = NativeD3D12RayTracingContextState::unsupported;
     receipt.fallback_active = true;
+}
+
+bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
+    NativeD3D12RayTracingContext::Impl& impl,
+    std::string& code,
+    std::string& detail) {
+#if !defined(_WIN32)
+    (void)impl;
+    code = "native-d3d12.context.platform-unavailable";
+    detail = "The persistent D3D12 TraceRays pipeline is available only on Windows.";
+    return false;
+#else
+    if (impl.shader_pipeline_ready && impl.shader_table_ready &&
+        impl.output_resource_ready && impl.trace_root_signature != nullptr &&
+        impl.trace_state_object != nullptr && impl.shader_table != nullptr &&
+        impl.output_resource != nullptr && impl.output_readback != nullptr)
+        return true;
+    if (impl.device == nullptr) {
+        code = "native-d3d12.context.device-not-ready";
+        detail = "A D3D12 device with ray-tracing support is required before TraceRays.";
+        return false;
+    }
+    const bool has_any_custom_shader =
+        !impl.options.shaders.ray_generation_dxil.empty() ||
+        !impl.options.shaders.miss_dxil.empty() ||
+        !impl.options.shaders.closest_hit_dxil.empty();
+    if (has_any_custom_shader) {
+        // The public 0.1 contract intentionally does not guess entry-point
+        // names or merge independent DXIL modules.  Keep the pinned probe as
+        // the default and fail closed for a caller-provided incomplete or
+        // ambiguous shader set until a versioned shader ABI is introduced.
+        code = "native-d3d12.context.custom-shader-contract-unsupported";
+        detail = impl.options.shaders.complete()
+            ? "Custom DXIL was supplied, but the 0.1 context contract has no versioned export/layout ABI; use the default pinned probe or a future shader contract."
+            : "A custom DXIL set must contain all RayGen/Miss/ClosestHit modules; the incomplete set is not guessed or merged.";
+        return false;
+    }
+
+    const auto serialize_root_signature =
+        impl.d3d12_module.symbol<SerializeRootSignatureFn>("D3D12SerializeRootSignature");
+    if (serialize_root_signature == nullptr) {
+        code = "native-d3d12.context.root-signature-serializer-unavailable";
+        detail = "D3D12SerializeRootSignature is not exported by the loaded D3D12 runtime.";
+        return false;
+    }
+
+    D3D12_ROOT_PARAMETER root_parameters[2U]{};
+    root_parameters[0U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    root_parameters[0U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    root_parameters[0U].Descriptor.ShaderRegister = 0U;
+    root_parameters[0U].Descriptor.RegisterSpace = 0U;
+    root_parameters[1U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    root_parameters[1U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    root_parameters[1U].Descriptor.ShaderRegister = 0U;
+    root_parameters[1U].Descriptor.RegisterSpace = 0U;
+    D3D12_ROOT_SIGNATURE_DESC root_signature_description{};
+    root_signature_description.NumParameters = 2U;
+    root_signature_description.pParameters = root_parameters;
+    ComPtr<ID3DBlob> root_signature_blob;
+    ComPtr<ID3DBlob> root_signature_error;
+    HRESULT hr = serialize_root_signature(
+        &root_signature_description, D3D_ROOT_SIGNATURE_VERSION_1,
+        &root_signature_blob, &root_signature_error);
+    if (FAILED(hr) || !root_signature_blob || root_signature_blob->GetBufferSize() == 0U) {
+        code = "native-d3d12.context.root-signature-serialize-failed";
+        detail = "D3D12SerializeRootSignature failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+    ComPtr<ID3D12RootSignature> root_signature;
+    hr = impl.device->CreateRootSignature(
+        0U, root_signature_blob->GetBufferPointer(), root_signature_blob->GetBufferSize(),
+        IID_PPV_ARGS(&root_signature));
+    if (FAILED(hr) || !root_signature) {
+        code = "native-d3d12.context.root-signature-create-failed";
+        detail = "CreateRootSignature failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+
+    const std::vector<std::uint8_t> dxil = decode_base64(kDxrProbeDxilBase64);
+    if (dxil.empty() || dxil.size() > impl.options.max_resource_bytes) {
+        code = "native-d3d12.context.dxil-artifact-invalid";
+        detail = "The pinned DXIL probe artifact was empty or exceeded the context resource budget.";
+        return false;
+    }
+    D3D12_EXPORT_DESC exports[3U]{};
+    exports[0U].Name = L"RayGen";
+    exports[1U].Name = L"Miss";
+    exports[2U].Name = L"ClosestHit";
+    D3D12_DXIL_LIBRARY_DESC dxil_library{};
+    dxil_library.DXILLibrary.BytecodeLength = dxil.size();
+    dxil_library.DXILLibrary.pShaderBytecode = dxil.data();
+    dxil_library.NumExports = 3U;
+    dxil_library.pExports = exports;
+    D3D12_HIT_GROUP_DESC hit_group{};
+    hit_group.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+    hit_group.HitGroupExport = L"TriangleHitGroup";
+    hit_group.ClosestHitShaderImport = L"ClosestHit";
+    D3D12_RAYTRACING_SHADER_CONFIG shader_config{};
+    shader_config.MaxPayloadSizeInBytes = sizeof(std::uint32_t);
+    shader_config.MaxAttributeSizeInBytes = sizeof(float) * 2U;
+    D3D12_GLOBAL_ROOT_SIGNATURE global_root_signature{};
+    global_root_signature.pGlobalRootSignature = root_signature.Get();
+    D3D12_RAYTRACING_PIPELINE_CONFIG pipeline_config{};
+    pipeline_config.MaxTraceRecursionDepth = 1U;
+    std::array<D3D12_STATE_SUBOBJECT, 5U> subobjects{};
+    subobjects[0U].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
+    subobjects[0U].pDesc = &dxil_library;
+    subobjects[1U].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
+    subobjects[1U].pDesc = &hit_group;
+    subobjects[2U].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
+    subobjects[2U].pDesc = &shader_config;
+    subobjects[3U].Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
+    subobjects[3U].pDesc = &global_root_signature;
+    subobjects[4U].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
+    subobjects[4U].pDesc = &pipeline_config;
+    D3D12_STATE_OBJECT_DESC state_object_description{};
+    state_object_description.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+    state_object_description.NumSubobjects = static_cast<UINT>(subobjects.size());
+    state_object_description.pSubobjects = subobjects.data();
+    ComPtr<ID3D12StateObject> state_object;
+    hr = impl.device->CreateStateObject(
+        &state_object_description, IID_PPV_ARGS(&state_object));
+    if (FAILED(hr) || !state_object) {
+        code = "native-d3d12.context.state-object-create-failed";
+        detail = "CreateStateObject failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+    ComPtr<ID3D12StateObjectProperties> state_properties;
+    hr = state_object.As(&state_properties);
+    if (FAILED(hr) || !state_properties) {
+        code = "native-d3d12.context.state-object-properties-unavailable";
+        detail = "ID3D12StateObjectProperties was unavailable after CreateStateObject.";
+        return false;
+    }
+
+    constexpr std::uint32_t shader_record_bytes =
+        D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
+    constexpr std::size_t shader_table_byte_count =
+        static_cast<std::size_t>(shader_record_bytes) * 6U;
+    const void* raygen_identifier = state_properties->GetShaderIdentifier(L"RayGen");
+    const void* miss_identifier = state_properties->GetShaderIdentifier(L"Miss");
+    const void* hit_identifier = state_properties->GetShaderIdentifier(L"TriangleHitGroup");
+    if (raygen_identifier == nullptr || miss_identifier == nullptr || hit_identifier == nullptr) {
+        code = "native-d3d12.context.shader-identifiers-missing";
+        detail = "The persistent DXR state object did not expose all three shader identifiers.";
+        return false;
+    }
+    std::array<std::uint8_t, shader_table_byte_count> shader_table_data{};
+    std::memcpy(shader_table_data.data(), raygen_identifier,
+                D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    std::memcpy(shader_table_data.data() + shader_record_bytes * 2U,
+                miss_identifier, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    std::memcpy(shader_table_data.data() + shader_record_bytes * 4U,
+                hit_identifier, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    constexpr std::uint64_t output_stride_bytes = sizeof(std::uint32_t) * 4U;
+    const auto output_bytes = static_cast<std::uint64_t>(impl.options.output_width) *
+        impl.options.output_height * output_stride_bytes;
+    const auto shader_table_bytes = static_cast<std::uint64_t>(shader_table_data.size());
+    if (!resource_bytes_bounded(shader_table_bytes) || !resource_bytes_bounded(output_bytes) ||
+        shader_table_bytes > impl.options.max_resource_bytes ||
+        output_bytes > impl.options.max_resource_bytes - shader_table_bytes ||
+        output_bytes > impl.options.max_resource_bytes - shader_table_bytes - output_bytes) {
+        code = "native-d3d12.context.trace-resource-budget-exceeded";
+        detail = "Persistent shader-table/output resources exceed the configured D3D12 context budget.";
+        return false;
+    }
+    ComPtr<ID3D12Resource> shader_table_resource;
+    hr = create_committed_buffer(
+        impl.device.Get(), shader_table_bytes, D3D12_HEAP_TYPE_UPLOAD,
+        D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE,
+        shader_table_resource);
+    if (FAILED(hr) || !shader_table_resource ||
+        !fill_upload_buffer(shader_table_resource.Get(), shader_table_data.data(),
+                            shader_table_data.size())) {
+        code = "native-d3d12.context.shader-table-upload-failed";
+        detail = "Persistent shader-table upload failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+    ComPtr<ID3D12Resource> output_resource;
+    hr = create_committed_buffer(
+        impl.device.Get(), output_bytes, D3D12_HEAP_TYPE_DEFAULT,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        output_resource);
+    if (FAILED(hr) || !output_resource) {
+        code = "native-d3d12.context.output-create-failed";
+        detail = "Persistent UAV output resource creation failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+    ComPtr<ID3D12Resource> output_readback;
+    hr = create_committed_buffer(
+        impl.device.Get(), output_bytes, D3D12_HEAP_TYPE_READBACK,
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE, output_readback);
+    if (FAILED(hr) || !output_readback) {
+        code = "native-d3d12.context.readback-create-failed";
+        detail = "Persistent output readback resource creation failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+
+    impl.trace_root_signature = std::move(root_signature);
+    impl.trace_state_object = std::move(state_object);
+    impl.trace_state_properties = std::move(state_properties);
+    impl.shader_table = std::move(shader_table_resource);
+    impl.output_resource = std::move(output_resource);
+    impl.output_readback = std::move(output_readback);
+    impl.shader_table_bytes = shader_table_bytes;
+    impl.output_resource_bytes = output_bytes;
+    impl.shader_pipeline_ready = true;
+    impl.shader_table_ready = true;
+    impl.output_resource_ready = true;
+    code = "native-d3d12.context.trace-resources-ready";
+    detail = "Persistent root signature, DXR state object, aligned SBT and UAV/readback resources are ready for TraceRays.";
+    return true;
+#endif
 }
 
 namespace {
@@ -1256,6 +1592,12 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::build_or_updat
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     if (impl_->state == NativeD3D12RayTracingContextState::uninitialized)
         static_cast<void>(initialize());
+#if defined(_WIN32)
+    impl_->last_trace_submitted = false;
+    impl_->last_trace_completed = false;
+    impl_->last_readback_completed = false;
+    impl_->last_synchronization_completed = false;
+#endif
     auto result = receipt_from(*impl_, "trace");
     if (!impl_->scene) {
         save_result(*impl_, NativeD3D12RayTracingContextFailureStage::scene,
@@ -1265,28 +1607,205 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
         result.state = NativeD3D12RayTracingContextState::failed;
         return result;
     }
-    mark_unsupported(*impl_, NativeD3D12RayTracingContextFailureStage::shader_pipeline,
-                     "trace",
-                     "native-d3d12.context.trace-pipeline-unavailable",
-                     impl_->options.shaders.complete()
-                         ? "Shader bytecode was supplied, but pipeline/SBT creation is not yet enabled in this persistent context."
-                         : "No complete RayGen/Miss/ClosestHit shader contract was supplied; TraceRays is intentionally unsupported.",
-                     result);
+    if (impl_->state != NativeD3D12RayTracingContextState::ready) {
+        if (impl_->state == NativeD3D12RayTracingContextState::unsupported) {
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::trace,
+                        "native-d3d12.context.trace-unavailable",
+                        "Hardware D3D12 ray-tracing is unavailable; TraceRays is explicitly skipped.");
+            result = receipt_from(*impl_, "trace");
+            result.state = NativeD3D12RayTracingContextState::unsupported;
+            result.fallback_active = true;
+        }
+        return result;
+    }
+    if (!impl_->blas_ready || !impl_->tlas_ready) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::trace,
+                    "native-d3d12.context.trace-as-not-ready",
+                    "TraceRays requires a completed persistent BLAS and TLAS build/update.");
+        result = receipt_from(*impl_, "trace");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+
+#if !defined(_WIN32)
+    mark_unsupported(*impl_, NativeD3D12RayTracingContextFailureStage::platform,
+                     "trace", "native-d3d12.context.platform-unavailable",
+                     "The persistent D3D12 TraceRays path is unavailable on this platform.", result);
     return result;
+#else
+    std::string pipeline_code;
+    std::string pipeline_detail;
+    if (!ensure_trace_pipeline(*impl_, pipeline_code, pipeline_detail)) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::shader_pipeline,
+                    pipeline_code, pipeline_detail);
+        result = receipt_from(*impl_, "trace");
+        result.state = NativeD3D12RayTracingContextState::unsupported;
+        result.fallback_active = true;
+        return result;
+    }
+
+    HRESULT hr = impl_->command_allocator->Reset();
+    if (FAILED(hr)) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_allocator,
+                    "native-d3d12.context.trace-command-allocator-reset-failed",
+                    "Resetting the persistent trace command allocator failed with " + hresult_hex(hr) + ".");
+        result = receipt_from(*impl_, "trace");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+    hr = impl_->command_list->Reset(impl_->command_allocator.Get(), nullptr);
+    if (FAILED(hr)) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_list,
+                    "native-d3d12.context.trace-command-list-reset-failed",
+                    "Resetting the persistent trace command list failed with " + hresult_hex(hr) + ".");
+        result = receipt_from(*impl_, "trace");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+    if (impl_->output_in_copy_source) {
+        transition_resource(impl_->command_list.Get(), impl_->output_resource.Get(),
+                            D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+    uav_barrier(impl_->command_list.Get(), impl_->tlas_result.Get());
+    impl_->command_list->SetComputeRootSignature(impl_->trace_root_signature.Get());
+    impl_->command_list->SetPipelineState1(impl_->trace_state_object.Get());
+    impl_->command_list->SetComputeRootShaderResourceView(
+        0U, impl_->tlas_result->GetGPUVirtualAddress());
+    impl_->command_list->SetComputeRootUnorderedAccessView(
+        1U, impl_->output_resource->GetGPUVirtualAddress());
+    constexpr std::uint32_t shader_record_bytes =
+        D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
+    D3D12_DISPATCH_RAYS_DESC dispatch{};
+    const auto shader_table_address = impl_->shader_table->GetGPUVirtualAddress();
+    dispatch.RayGenerationShaderRecord.StartAddress = shader_table_address;
+    dispatch.RayGenerationShaderRecord.SizeInBytes = shader_record_bytes;
+    dispatch.MissShaderTable.StartAddress = shader_table_address + shader_record_bytes * 2U;
+    dispatch.MissShaderTable.SizeInBytes = shader_record_bytes;
+    dispatch.MissShaderTable.StrideInBytes = shader_record_bytes;
+    dispatch.HitGroupTable.StartAddress = shader_table_address + shader_record_bytes * 4U;
+    dispatch.HitGroupTable.SizeInBytes = shader_record_bytes;
+    dispatch.HitGroupTable.StrideInBytes = shader_record_bytes;
+    dispatch.Width = impl_->options.output_width;
+    dispatch.Height = impl_->options.output_height;
+    dispatch.Depth = 1U;
+    impl_->command_list->DispatchRays(&dispatch);
+    transition_resource(impl_->command_list.Get(), impl_->output_resource.Get(),
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_COPY_SOURCE);
+    impl_->command_list->CopyResource(impl_->output_readback.Get(), impl_->output_resource.Get());
+    hr = impl_->command_list->Close();
+    if (FAILED(hr)) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_list,
+                    "native-d3d12.context.trace-command-list-close-failed",
+                    "Closing the persistent TraceRays command list failed with " + hresult_hex(hr) + ".");
+        result = receipt_from(*impl_, "trace");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+    impl_->last_trace_submitted = true;
+    hr = submit_and_wait(impl_->command_queue.Get(), impl_->fence.Get(),
+                         impl_->command_list.Get(), impl_->fence_event,
+                         impl_->next_fence_value);
+    if (FAILED(hr)) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                    "native-d3d12.context.trace-wait-failed",
+                    "Waiting for persistent TraceRays completion failed with " + hresult_hex(hr) + ".");
+        result = receipt_from(*impl_, "trace");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+    impl_->output_in_copy_source = true;
+    impl_->last_trace_completed = true;
+    impl_->last_synchronization_completed = true;
+    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                "native-d3d12.context.trace-complete",
+                "Persistent TraceRays dispatched the retained SBT against the retained TLAS and synchronized the output readback copy.");
+    result = receipt_from(*impl_, "trace");
+    result.state = NativeD3D12RayTracingContextState::ready;
+    return result;
+#endif
 }
 
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::readback() {
     if (impl_->state == NativeD3D12RayTracingContextState::uninitialized)
         static_cast<void>(initialize());
+#if defined(_WIN32)
+    impl_->last_readback_completed = false;
+#endif
     auto result = receipt_from(*impl_, "readback");
-    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::readback,
-                "native-d3d12.context.readback-not-ready",
-                "Readback is gated on a completed trace dispatch; no output is reported ready before that proof.");
+    if (impl_->state == NativeD3D12RayTracingContextState::unsupported) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::readback,
+                    "native-d3d12.context.readback-unavailable",
+                    "Hardware D3D12 output resources are unavailable; no readback is reported ready.");
+        result = receipt_from(*impl_, "readback");
+        result.state = NativeD3D12RayTracingContextState::unsupported;
+        result.fallback_active = true;
+        return result;
+    }
+    if (impl_->state != NativeD3D12RayTracingContextState::ready ||
+        !impl_->last_trace_completed) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::readback,
+                    "native-d3d12.context.readback-not-ready",
+                    "Readback is gated on a completed TraceRays dispatch; no output is reported ready before that proof.");
+        result = receipt_from(*impl_, "readback");
+        result.state = impl_->state == NativeD3D12RayTracingContextState::ready
+            ? NativeD3D12RayTracingContextState::failed : impl_->state;
+        result.fallback_active = impl_->state == NativeD3D12RayTracingContextState::unsupported;
+        return result;
+    }
+#if !defined(_WIN32)
+    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::platform,
+                "native-d3d12.context.platform-unavailable",
+                "The persistent D3D12 output readback is unavailable on this platform.");
     result = receipt_from(*impl_, "readback");
-    result.state = impl_->state == NativeD3D12RayTracingContextState::ready
-        ? NativeD3D12RayTracingContextState::failed : impl_->state;
-    result.fallback_active = impl_->state == NativeD3D12RayTracingContextState::unsupported;
+    result.state = NativeD3D12RayTracingContextState::unsupported;
+    result.fallback_active = true;
     return result;
+#else
+    void* mapped = nullptr;
+    const D3D12_RANGE read_range{0U, static_cast<SIZE_T>(impl_->output_resource_bytes)};
+    HRESULT hr = impl_->output_readback->Map(0U, &read_range, &mapped);
+    if (FAILED(hr) || mapped == nullptr) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::readback,
+                    "native-d3d12.context.output-readback-map-failed",
+                    "Mapping the completed persistent output readback failed with " + hresult_hex(hr) + ".");
+        result = receipt_from(*impl_, "readback");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+    const auto* output_bytes = static_cast<const std::uint8_t*>(mapped);
+    impl_->output_hash = hash_bytes(1469598103934665603ULL,
+                                    output_bytes,
+                                    static_cast<std::size_t>(impl_->output_resource_bytes));
+    if (impl_->output_resource_bytes >= sizeof(std::uint32_t) * 2U) {
+        std::memcpy(&impl_->output_sentinel, output_bytes, sizeof(std::uint32_t));
+        std::memcpy(&impl_->output_hit, output_bytes + sizeof(std::uint32_t), sizeof(std::uint32_t));
+    }
+    const D3D12_RANGE written_range{0U, 0U};
+    impl_->output_readback->Unmap(0U, &written_range);
+    impl_->last_readback_completed = true;
+    if (impl_->output_sentinel != 0x52415931U || impl_->output_hit != 1U) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::readback,
+                    "native-d3d12.context.output-sentinel-mismatch",
+                    "Persistent TraceRays completed but the output readback did not contain the expected hit sentinel.");
+        result = receipt_from(*impl_, "readback");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                "native-d3d12.context.readback-complete",
+                "The persistent TraceRays output was mapped and its deterministic sentinel/hash were observed.");
+    result = receipt_from(*impl_, "readback");
+    result.state = NativeD3D12RayTracingContextState::ready;
+    return result;
+#endif
 }
 
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
@@ -1326,6 +1845,24 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     impl_->last_update_submitted = false;
     impl_->last_update_completed = false;
     impl_->last_synchronization_completed = false;
+    impl_->trace_root_signature.Reset();
+    impl_->trace_state_object.Reset();
+    impl_->trace_state_properties.Reset();
+    impl_->shader_table.Reset();
+    impl_->output_resource.Reset();
+    impl_->output_readback.Reset();
+    impl_->shader_table_bytes = 0U;
+    impl_->output_resource_bytes = 0U;
+    impl_->shader_pipeline_ready = false;
+    impl_->shader_table_ready = false;
+    impl_->output_resource_ready = false;
+    impl_->last_trace_submitted = false;
+    impl_->last_trace_completed = false;
+    impl_->last_readback_completed = false;
+    impl_->output_in_copy_source = false;
+    impl_->output_sentinel = 0U;
+    impl_->output_hit = 0U;
+    impl_->output_hash = 0U;
     impl_->command_list.Reset();
     impl_->command_allocator.Reset();
     impl_->command_queue.Reset();
