@@ -587,7 +587,11 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.output_surface.cpu_readback_required = false;
     result.output_surface.shared_device = impl.shared_device;
     result.output_surface.shared_command_queue = impl.shared_command_queue;
-    result.output_surface.direct_sdl_gpu_import_supported = false;
+    const auto row_bytes = static_cast<std::uint64_t>(result.output_surface.width) *
+        result.output_surface.pixel_stride_bytes;
+    result.output_surface.direct_sdl_gpu_import_supported =
+        result.output_surface.shared_device && result.output_surface.shared_command_queue &&
+        row_bytes != 0U && (row_bytes % D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) == 0U;
     result.output_surface.expired =
         impl.state == NativeD3D12RayTracingContextState::shutdown ||
         impl.output_surface_state == NativeD3D12RayTracingOutputSurfaceState::released;
@@ -2260,11 +2264,35 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::copy_output_to
     }
     const auto source_description = impl_->output_resource->GetDesc();
     const auto destination_description = destination->GetDesc();
-    if (source_description.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-        destination_description.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-        destination_description.Width < source_description.Width) {
+    if (source_description.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) {
         return fail("native-d3d12.context.output-destination-layout-unsupported",
-                    "The current output contract is a linear buffer; the destination must be a same-size-or-larger buffer in COPY_DEST state.");
+                    "The retained native output is not the expected linear source buffer.");
+    }
+    const bool destination_is_buffer =
+        destination_description.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+    const bool destination_is_texture =
+        destination_description.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    const auto row_bytes = static_cast<std::uint64_t>(impl_->options.output_width) *
+        sizeof(std::uint32_t) * 4U;
+    if (destination_is_buffer && destination_description.Width < source_description.Width) {
+        return fail("native-d3d12.context.output-destination-buffer-too-small",
+                    "The same-device buffer destination is smaller than the retained native output.");
+    }
+    if (destination_is_texture &&
+        (destination_description.Width != impl_->options.output_width ||
+         destination_description.Height != impl_->options.output_height ||
+         destination_description.DepthOrArraySize != 1U ||
+         destination_description.MipLevels != 1U ||
+         destination_description.Format != DXGI_FORMAT_R32G32B32A32_UINT ||
+         destination_description.SampleDesc.Count != 1U ||
+         row_bytes == 0U ||
+         (row_bytes % D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) != 0U)) {
+        return fail("native-d3d12.context.output-destination-texture-footprint-unsupported",
+                    "The exported texture must be a single-sample R32G32B32A32_UINT 2D surface with exact dimensions and a 256-byte-aligned linear row footprint.");
+    }
+    if (!destination_is_buffer && !destination_is_texture) {
+        return fail("native-d3d12.context.output-destination-layout-unsupported",
+                    "Only a same-device buffer or exact exported 2D texture can receive the native output.");
     }
     hr = impl_->command_allocator->Reset();
     if (FAILED(hr)) {
@@ -2276,12 +2304,38 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::copy_output_to
         return fail("native-d3d12.context.output-copy-command-list-reset-failed",
                     "Resetting the output copy command list failed with " + hresult_hex(hr) + ".");
     }
-    // The source is published in COPY_SOURCE state.  The destination state is
-    // deliberately owned by the interop adapter; it must have transitioned the
-    // resource to COPY_DEST before calling this runtime-private entry point.
-    impl_->command_list->CopyBufferRegion(
-        destination, 0U, impl_->output_resource.Get(), 0U,
-        impl_->output_resource_bytes);
+    // Buffer destinations retain the original low-level contract and must
+    // already be in COPY_DEST.  Exported SDL textures are created with SAMPLER
+    // usage, whose SDL D3D12 default state is ALL_SHADER_RESOURCE; transition
+    // to COPY_DEST and restore that same default so SDL's own state tracker and
+    // the native command stream agree at the hand-off boundary.
+    if (destination_is_buffer) {
+        impl_->command_list->CopyBufferRegion(
+            destination, 0U, impl_->output_resource.Get(), 0U,
+            impl_->output_resource_bytes);
+    } else {
+        transition_resource(impl_->command_list.Get(), destination,
+                            D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
+                            D3D12_RESOURCE_STATE_COPY_DEST);
+        D3D12_TEXTURE_COPY_LOCATION source_location{};
+        source_location.pResource = impl_->output_resource.Get();
+        source_location.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        source_location.PlacedFootprint.Offset = 0U;
+        source_location.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+        source_location.PlacedFootprint.Footprint.Width = impl_->options.output_width;
+        source_location.PlacedFootprint.Footprint.Height = impl_->options.output_height;
+        source_location.PlacedFootprint.Footprint.Depth = 1U;
+        source_location.PlacedFootprint.Footprint.RowPitch = static_cast<UINT>(row_bytes);
+        D3D12_TEXTURE_COPY_LOCATION destination_location{};
+        destination_location.pResource = destination;
+        destination_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        destination_location.SubresourceIndex = 0U;
+        impl_->command_list->CopyTextureRegion(
+            &destination_location, 0U, 0U, 0U, &source_location, nullptr);
+        transition_resource(impl_->command_list.Get(), destination,
+                            D3D12_RESOURCE_STATE_COPY_DEST,
+                            D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    }
     hr = impl_->command_list->Close();
     if (FAILED(hr)) {
         return fail("native-d3d12.context.output-copy-command-list-close-failed",
@@ -2304,7 +2358,9 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::copy_output_to
     impl_->last_output_copy_completed = true;
     save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
                 "native-d3d12.context.output-copy-complete",
-                "The retained output was copied to a same-device D3D12 buffer by GPU command; no CPU readback or native handle was returned in the receipt.");
+                destination_is_texture
+                    ? "The retained linear output was copied into an exact same-device D3D12 texture footprint and restored to SDL's shader-resource default state; no CPU readback was used."
+                    : "The retained output was copied to a same-device D3D12 buffer by GPU command; no CPU readback or native handle was returned in the receipt.");
     auto result = receipt_from(*impl_, "copy-output");
     result.state = NativeD3D12RayTracingContextState::ready;
     return result;

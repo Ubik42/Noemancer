@@ -3,7 +3,7 @@
   "updated": "2026-08-30",
   "status": "in-development",
   "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "write-versioned-full-frame-native-raytracing-output-and-consume-it-as-a-render-graph-texture",
+  "currentStep": "replace-marker-probe-with-versioned-full-frame-raygen-and-compose-the-exported-texture",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",

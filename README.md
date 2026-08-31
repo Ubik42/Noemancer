@@ -77,7 +77,7 @@ Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 
 
 如果不熟悉 PBR、HiZ、SSR、SSGI、时域降噪或 Tone Mapping，可以阅读[当前开发程度与渲染小白说明](docs/rendering-explained.zh-CN.md)。它按一帧画面的真实加工顺序解释每项功能，也明确区分“已经形成画面”“只有底层基础”和“尚未实现”。
 
-Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vulkan Handle 泄漏进 Scene 或 Agent API。RTX 4080 已在 DXR 1.1 与 Vulkan RT 上真实完成 BLAS/TLAS、光追 Pipeline、SBT、Trace Dispatch 与诊断 Readback。两端 context 会跨调用持有并复用 device/queue/command/fence、几何、BLAS/TLAS、Pipeline、SBT、输出与回读资源。生产 `SceneRenderer` 已保留 builtin/imported 几何，通过稳定 Source Adapter、`RenderWorld` 实例变换、世界空间 Geometry Cache 与长寿命 Bridge 提交真实场景；`--enable-native-rt-session` 才启用这条实验路径，默认 Raster 不承担额外成本。隐藏 D3D12 生产帧已处理 1,354 个三角形并达到 native AS/Trace ready。现在又建立了 Engine-safe 的输出互操作状态机、SDL 原生设备/纹理桥和代际/所有权/布局校验；D3D12 可借用 SDL 的同一 COM 设备与队列，Vulkan 可借用完整 handle 组并在 feature 不足时 fail-closed。生产帧刻意不做 CPU readback，因为固定夹具回读既会同步卡顿，也不能把任意场景的合理 miss 当错误。当前 D3D12 光追输出仍是线性 UAV buffer，Vulkan 输出图像虽有真实生命周期但尚未由 RayGen 写入，导出的 SDL 纹理也尚未参与合成；因此成果仍不是项目可见的全帧纹理、RTGI 或商业性能结论，Renderer 会如实标记 `ssgi-raster-fallback`。
+Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vulkan Handle 泄漏进 Scene 或 Agent API。RTX 4080 已在 DXR 1.1 与 Vulkan RT 上真实完成 BLAS/TLAS、光追 Pipeline、SBT、Trace Dispatch 与诊断 Readback。两端 context 会跨调用持有并复用 device/queue/command/fence、几何、BLAS/TLAS、Pipeline、SBT、输出与回读资源。生产 `SceneRenderer` 已保留 builtin/imported 几何，通过稳定 Source Adapter、`RenderWorld` 实例变换、世界空间 Geometry Cache 与长寿命 Bridge 提交真实场景；`--enable-native-rt-session` 才启用这条实验路径，默认 Raster 不承担额外成本。隐藏 D3D12 生产帧已处理 1,354 个三角形并达到 native AS/Trace ready。现在又建立了 Engine-safe 的输出互操作状态机、SDL 原生设备/纹理桥和代际/所有权/布局校验；D3D12 可借用 SDL 的同一 COM 设备与队列，并把 256-byte 对齐的线性输出以纯 GPU Copy 写入精确匹配的 SDL 导出纹理，交接前后恢复 SDL 的 shader-resource 默认状态；Vulkan 可借用完整 handle 组并在 feature 不足时 fail-closed。生产帧刻意不做 CPU readback，因为固定夹具回读既会同步卡顿，也不能把任意场景的合理 miss 当错误。当前 D3D12 Shader 仍是只证明 Trace 的 marker probe，Vulkan 输出图像尚未由 RayGen 写入，导出的 SDL 纹理也尚未由 Render Graph 合成；因此成果仍不是项目可见的全帧纹理、RTGI 或商业性能结论，Renderer 会如实标记 `ssgi-raster-fallback`。
 
 ### 资产与发布
 
@@ -209,7 +209,7 @@ docs/           架构、ADR、开发计划与验收索引
 
 ## 开发状态
 
-商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的光追闭环、统一执行 Receipt、跨帧逻辑资源/Pass 规划、持久 AS/SBT/Pipeline/输出 context、生产 SceneRenderer 的真实场景接入，以及 SDL 原生设备/非 cycling 纹理桥与 Engine-safe 互操作状态机已经成立；当前步骤是让版本化 RayGen 真正写出全帧图像，再由 Render Graph 消费导出纹理。完成后才进入项目可见 RTGI、独立 History 与时域降噪；现阶段 native trace 不能描述成生产光追画面。
+商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的光追闭环、统一执行 Receipt、跨帧逻辑资源/Pass 规划、持久 AS/SBT/Pipeline/输出 context、生产 SceneRenderer 的真实场景接入，以及 SDL 原生设备/非 cycling 纹理桥与 Engine-safe 互操作状态机已经成立；D3D12 的线性输出到 SDL 导出纹理也已有同设备纯 GPU Copy。当前步骤是用版本化 RayGen 取代 marker probe、真正写出全帧图像，再由 Render Graph 消费导出纹理。完成后才进入项目可见 RTGI、独立 History 与时域降噪；现阶段 native trace 不能描述成生产光追画面。
 
 仍未完成的产品边界包括：稳定 SDK/插件生态、可再分发 CJK/Arabic 字体、全编辑器 RTL 与 cluster-aware 编辑、签名安装器、独立机器矩阵、生产网络与跨平台支持。编辑器 Chrome 的高 DPI 响应式布局、窄窗 Project Hub、图标优先顶栏和随 DPI 重算的 Dock 尺寸已完成首轮收口。
 

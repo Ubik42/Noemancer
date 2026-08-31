@@ -201,6 +201,19 @@ struct RayTracingContextSessionReceipt final {
     std::vector<RayTracingContextSessionStageReceipt> stages;
 };
 
+struct RayTracingContextSessionOutputTransferReceipt final {
+    std::string schema{"noemancer.raytracing-output-transfer/0.1"};
+    std::string backend;
+    std::string code{"session.output-transfer-not-attempted"};
+    std::string detail;
+    bool attempted{};
+    bool completed{};
+    bool unsupported{};
+    bool failed{};
+    bool native_handles_exposed{};
+    std::uint64_t resource_generation{};
+};
+
 // Translate one engine plan into one long-lived native backend context.  The
 // session does not construct a World/Scene authority and does not rebuild a
 // plan from native state; it consumes the supplied plan exactly as authored.
@@ -214,6 +227,10 @@ public:
 
     [[nodiscard]] RayTracingContextSessionReceipt execute(
         const RayTracingContextSessionRequest& request);
+    // Runtime-private destination input, plain-data receipt output. The
+    // destination is never retained or serialized by the session.
+    [[nodiscard]] RayTracingContextSessionOutputTransferReceipt transfer_output_to(
+        void* destination_resource);
     [[nodiscard]] RayTracingContextSessionReceipt shutdown();
     [[nodiscard]] RayTracingContextSessionReceipt status() const;
 

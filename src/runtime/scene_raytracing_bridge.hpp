@@ -116,6 +116,8 @@ public:
     [[nodiscard]] SceneRayTracingBridgeReceipt execute(
         const SceneRayTracingBridgeRequest& request,
         const SceneRayTracingGeometryCacheSnapshot& snapshot);
+    [[nodiscard]] RayTracingContextSessionOutputTransferReceipt transfer_output_to(
+        void* destination_resource);
     [[nodiscard]] SceneRayTracingBridgeReceipt shutdown();
     // Plain-data observation of the most recent update/shutdown result.
     [[nodiscard]] SceneRayTracingBridgeReceipt observation() const;

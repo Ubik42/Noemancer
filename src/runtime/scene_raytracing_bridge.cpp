@@ -556,6 +556,19 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::execute(
     return update(request, snapshot);
 }
 
+RayTracingContextSessionOutputTransferReceipt
+SceneRayTracingBridge::transfer_output_to(void* destination_resource) {
+    if (!impl_->session) {
+        RayTracingContextSessionOutputTransferReceipt result;
+        result.backend = impl_->backend;
+        result.failed = true;
+        result.code = "bridge.output-transfer-session-unavailable";
+        result.detail = "No native ray-tracing session has produced an output to transfer.";
+        return result;
+    }
+    return impl_->session->transfer_output_to(destination_resource);
+}
+
 SceneRayTracingBridgeReceipt SceneRayTracingBridge::shutdown() {
     if (impl_->closed) {
         auto result = impl_->last;

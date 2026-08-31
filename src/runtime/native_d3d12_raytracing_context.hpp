@@ -93,9 +93,10 @@ struct NativeD3D12RayTracingOutputSurfaceMetadata final {
     bool cpu_readback_required{};
     bool shared_device{};
     bool shared_command_queue{};
-    // SDL_GPU exposes the borrowed device/queue boundary, but its public API
-    // has no native-resource import operation.  This remains false until a
-    // Runtime adapter supplies a same-device destination/copy path.
+    // True when the retained linear layout can be copied directly into the
+    // exported SDL texture footprint on the shared D3D12 device.  This does
+    // not imply that the current probe shader wrote meaningful full-frame
+    // pixels or that the texture has been composited by the Render Graph.
     bool direct_sdl_gpu_import_supported{};
     bool expired{};
     std::uint32_t width{};

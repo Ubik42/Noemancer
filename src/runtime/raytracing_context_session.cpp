@@ -710,6 +710,41 @@ RayTracingContextSession::RayTracingContextSession(
 
 RayTracingContextSession::~RayTracingContextSession() = default;
 
+RayTracingContextSessionOutputTransferReceipt
+RayTracingContextSession::transfer_output_to(void* destination_resource) {
+    RayTracingContextSessionOutputTransferReceipt result;
+    result.backend = std::string(
+        raytracing_context_session_backend_name(impl_->options.backend));
+    if (impl_->closed) {
+        result.failed = true;
+        result.code = "session.output-transfer-after-shutdown";
+        result.detail = "A closed native session cannot transfer an output resource.";
+        return result;
+    }
+    if (destination_resource == nullptr) {
+        result.failed = true;
+        result.code = "session.output-transfer-destination-null";
+        result.detail = "The runtime-private output destination is null.";
+        return result;
+    }
+    if (impl_->options.backend != RayTracingContextSessionBackend::d3d12 || !impl_->d3d12) {
+        result.unsupported = true;
+        result.code = "session.output-transfer-backend-unsupported";
+        result.detail = "The current Vulkan context has no completed SDL image ownership transfer path.";
+        return result;
+    }
+    const auto view = impl_->d3d12->private_output_surface_view();
+    result.resource_generation = view.metadata.resource_generation;
+    result.attempted = true;
+    const auto native = impl_->d3d12->copy_output_to(view, destination_resource);
+    result.completed = native.output_copy_submitted && native.output_copy_completed &&
+        native.state == NativeD3D12RayTracingContextState::ready;
+    result.failed = !result.completed;
+    result.code = bounded_text(native.code);
+    result.detail = bounded_text(native.detail);
+    return result;
+}
+
 RayTracingContextSessionReceipt RayTracingContextSession::execute(
     const RayTracingContextSessionRequest& request) {
     RayTracingContextSessionReceipt receipt;
@@ -1003,7 +1038,7 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
         receipt.output_resource_live = native.output_surface.resource_ready;
         receipt.output_trace_written = native.output_surface.gpu_write_complete;
         receipt.output_transfer_candidate = native.output_surface.valid &&
-            native.output_surface.shared_device;
+            native.output_surface.direct_sdl_gpu_import_supported;
         receipt.output_resource_generation = native.output_surface.resource_generation;
         receipt.output_format = native.output_surface.format;
     } else {

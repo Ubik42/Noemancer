@@ -2920,6 +2920,17 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
     const auto receipt=scene_raytracing_bridge_->execute(
         {.backend=backend,.enabled=true,.request_trace=true,.request_readback=false},
         raytracing_geometry_cache_.snapshot());
+    RayTracingContextSessionOutputTransferReceipt transfer;
+    transfer.backend=backend;
+    if(receipt.output_transfer_candidate&&native_rt_texture_export_.ready&&
+        native_rt_texture_export_.native_resource!=nullptr) {
+        transfer=scene_raytracing_bridge_->transfer_output_to(
+            native_rt_texture_export_.native_resource);
+    } else {
+        transfer.unsupported=true;
+        transfer.code="renderer.native-output-transfer-not-candidate";
+        transfer.detail="The current backend, dimensions or exported texture did not satisfy the bounded same-device transfer contract.";
+    }
     native_raytracing_status_json_=nlohmann::json{
         {"schema",receipt.schema},{"requested",receipt.requested},{"enabled",receipt.enabled},
         {"backend",receipt.backend},{"sceneAccepted",receipt.scene_accepted},{"cacheState",receipt.cache_state},
@@ -2932,14 +2943,19 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
         {"outputResourceLive",receipt.output_resource_live},
         {"outputTraceWritten",receipt.output_trace_written},
         {"outputTransferCandidate",receipt.output_transfer_candidate},
+        {"outputTransferAttempted",transfer.attempted},
+        {"outputTransferCompleted",transfer.completed},
+        {"outputTransferCode",transfer.code},
+        {"outputTransferGeneration",transfer.resource_generation},
         {"outputResourceGeneration",receipt.output_resource_generation},
         {"outputFormat",receipt.output_format},
         {"contentUpdated",receipt.content_updated},{"topologyRebuilt",receipt.topology_rebuilt},
         {"frameGeneration",receipt.frame_generation},{"graphGeneration",receipt.graph_generation},
         {"topologyRevision",receipt.topology_revision},{"contentRevision",receipt.content_revision},
         {"triangleCount",receipt.triangle_count},{"rtgiReady",false},
-        {"resourceInterop",sdl_native_device_bridge_.observation.same_device_candidate?
-            "sdl-native-device-ready-output-not-shared":"native-context-output-not-shared-with-sdl-gpu"},
+        {"resourceInterop",transfer.completed?"native-output-copied-to-sdl-texture":
+            (sdl_native_device_bridge_.observation.same_device_candidate?
+                "sdl-native-device-ready-output-not-consumed":"native-context-output-not-shared-with-sdl-gpu")},
         {"sdlNativeDevice",{{"backend",sdl_native_device_bridge_.observation.backend},
             {"sameDeviceCandidate",sdl_native_device_bridge_.observation.same_device_candidate},
             {"code",sdl_native_device_bridge_.observation.code}}},
