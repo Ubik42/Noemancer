@@ -184,6 +184,13 @@ struct RayTracingContextSessionReceipt final {
     bool unsupported{};
     bool failed{};
     bool native_handles_exposed{};
+    bool shared_device{};
+    bool shared_queue{};
+    bool output_resource_live{};
+    bool output_trace_written{};
+    bool output_transfer_candidate{};
+    std::uint64_t output_resource_generation{};
+    std::string output_format;
 
     std::uint64_t frame_generation{};
     std::uint64_t graph_generation{};

@@ -161,6 +161,34 @@ struct EditorUiFrameTimings final {
     std::array<double,9> milliseconds{};
 };
 
+// Renderer-neutral chrome metrics.  EditorUi consumes these values when it
+// lays out the Project Hub and the main dock chrome; keeping the calculation
+// as plain data makes narrow-window and DPI behavior testable without an
+// ImGui context.
+struct EditorUiResponsiveLayout final {
+    float ui_scale{1.0F};
+    float available_width{};
+    float available_height{};
+    float outer_padding{};
+    float panel_gap{};
+    float command_bar_height{};
+    float status_bar_height{};
+    float control_height{};
+    float hub_brand_width{};
+    float hub_brand_height{};
+    float hub_padding{};
+    float hub_button_width{};
+    float hub_button_height{};
+    float right_control_reserve{};
+    bool compact{};
+    bool stack_hub{};
+    bool stack_hub_actions{};
+    bool show_chrome_labels{};
+};
+
+[[nodiscard]] EditorUiResponsiveLayout editor_ui_responsive_layout(
+    float available_width, float available_height, float ui_scale = 1.0F) noexcept;
+
 class EditorUi final {
 public:
     EditorUi(World& world, AssetRegistry& assets);
@@ -371,6 +399,7 @@ private:
     float retained_asset_browser_canvas_width_{};
     float retained_asset_browser_canvas_height_{};
     bool layout_initialized_{false};
+    float applied_ui_scale_{};
     float requested_exposure_{1.0F};
     std::optional<RenderCameraSnapshot> editor_camera_;
     std::optional<ScenePickRequest> scene_pick_request_;

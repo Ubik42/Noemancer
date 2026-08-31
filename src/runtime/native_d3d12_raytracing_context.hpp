@@ -21,6 +21,8 @@ inline constexpr std::size_t native_d3d12_raytracing_context_max_geometry_count 
 inline constexpr std::size_t native_d3d12_raytracing_context_max_vertex_count = 1U << 20U;
 inline constexpr std::size_t native_d3d12_raytracing_context_max_index_count = 3U << 20U;
 inline constexpr std::uint64_t native_d3d12_raytracing_context_max_resource_bytes = 1ULL << 40U;
+inline constexpr std::string_view native_d3d12_raytracing_output_surface_schema =
+    "noemancer.native-d3d12-raytracing-output-surface/0.1";
 
 enum class NativeD3D12RayTracingContextState : std::uint8_t {
     uninitialized,
@@ -59,6 +61,70 @@ enum class NativeD3D12RayTracingContextFailureStage : std::uint8_t {
 [[nodiscard]] std::string_view native_d3d12_raytracing_context_failure_stage_name(
     NativeD3D12RayTracingContextFailureStage stage) noexcept;
 
+// This is the resource contract consumed by a future Runtime interop adapter.
+// It describes the retained output without exposing a COM pointer to Engine,
+// Agent or any JSON/semantic receipt.  The current probe stores a linear UAV
+// buffer (four 32-bit lanes per pixel), not an SDL_GPU texture.  A valid view
+// is only published after TraceRays has completed and the output is in
+// COPY_SOURCE state; consumers can therefore issue a GPU copy without mapping
+// the resource on the CPU.
+enum class NativeD3D12RayTracingOutputSurfaceState : std::uint8_t {
+    unavailable = 0U,
+    unordered_access = 1U,
+    copy_source = 2U,
+    released = 3U,
+};
+
+[[nodiscard]] std::string_view native_d3d12_raytracing_output_surface_state_name(
+    NativeD3D12RayTracingOutputSurfaceState state) noexcept;
+
+struct NativeD3D12RayTracingOutputSurfaceMetadata final {
+    std::string schema{std::string(native_d3d12_raytracing_output_surface_schema)};
+    std::string resource_kind{"buffer"};
+    std::string format{"R32G32B32A32_UINT"};
+    NativeD3D12RayTracingOutputSurfaceState resource_state{
+        NativeD3D12RayTracingOutputSurfaceState::unavailable};
+    bool valid{};
+    bool resource_ready{};
+    bool gpu_write_complete{};
+    // This contract is GPU-only.  The diagnostic readback() method remains an
+    // explicit opt-in proof path, but no CPU mapping is required to consume a
+    // valid output view or copy it into another same-device resource.
+    bool cpu_readback_required{};
+    bool shared_device{};
+    bool shared_command_queue{};
+    // SDL_GPU exposes the borrowed device/queue boundary, but its public API
+    // has no native-resource import operation.  This remains false until a
+    // Runtime adapter supplies a same-device destination/copy path.
+    bool direct_sdl_gpu_import_supported{};
+    bool expired{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t depth{1U};
+    std::uint32_t pixel_stride_bytes{};
+    std::uint64_t bytes{};
+    std::uint64_t resource_generation{};
+    std::uint64_t context_generation{};
+    std::uint64_t submitted_fence_value{};
+    std::uint64_t completed_fence_value{};
+    std::string code{"native-d3d12.context.output-surface-unavailable"};
+    std::string detail;
+};
+
+// Runtime-private borrowed access.  The four pointers are non-owning COM
+// interfaces and are intentionally absent from NativeD3D12RayTracingContextReceipt.
+// A caller must keep the context alive, validate the access token immediately
+// before use, and never release these pointers.  The context itself owns the
+// QueryInterface/AddRef references it adopts during initialize().
+struct NativeD3D12RayTracingContextPrivateOutputView final {
+    NativeD3D12RayTracingOutputSurfaceMetadata metadata;
+    std::uint64_t access_token{};
+    void* resource{};
+    void* device{};
+    void* command_queue{};
+    void* fence{};
+};
+
 struct NativeD3D12RayTracingContextShaderSet final {
     // Optional DXIL blobs for a caller-owned RayGen/Miss/ClosestHit shader
     // contract.  An all-empty set selects the pinned deterministic probe used
@@ -85,6 +151,13 @@ struct NativeD3D12RayTracingContextOptions final {
     std::size_t max_geometry_count{native_d3d12_raytracing_context_max_geometry_count};
     std::uint64_t max_resource_bytes{native_d3d12_raytracing_context_max_resource_bytes};
     NativeD3D12RayTracingContextShaderSet shaders;
+    // Optional borrowed interfaces published by the Runtime-private SDL_GPU
+    // D3D12 device bridge.  They are non-owning inputs: initialize() performs
+    // QueryInterface/AddRef and shutdown() releases only those retained
+    // references, never SDL_GPU's ownership objects.  A queue without its
+    // matching device is rejected rather than silently creating a second RHI.
+    void* borrowed_device{};
+    void* borrowed_command_queue{};
 };
 
 struct NativeD3D12RayTracingGeometry final {
@@ -136,6 +209,14 @@ struct NativeD3D12RayTracingContextReceipt final {
     bool readback_completed{};
     bool synchronization_completed{};
     bool shutdown_completed{};
+    bool borrowed_device_requested{};
+    bool borrowed_command_queue_requested{};
+    bool device_adopted{};
+    bool command_queue_adopted{};
+    bool shared_device{};
+    bool shared_command_queue{};
+    bool output_copy_submitted{};
+    bool output_copy_completed{};
     std::uint64_t generation{};
     std::uint64_t scene_generation{};
     std::uint64_t resource_generation{};
@@ -158,6 +239,7 @@ struct NativeD3D12RayTracingContextReceipt final {
     std::uint32_t output_sentinel{};
     std::uint32_t output_hit{};
     std::uint64_t output_hash{};
+    NativeD3D12RayTracingOutputSurfaceMetadata output_surface;
 };
 
 // The context performs no work in its constructor.  initialize() is explicit
@@ -178,6 +260,19 @@ public:
     [[nodiscard]] NativeD3D12RayTracingContextReceipt trace();
     [[nodiscard]] NativeD3D12RayTracingContextReceipt readback();
     [[nodiscard]] NativeD3D12RayTracingContextReceipt shutdown();
+
+    // Runtime-only output interop boundary.  The metadata method is safe for
+    // observation.  The private view contains borrowed native pointers and is
+    // never included in a receipt; validate it immediately before a GPU copy.
+    [[nodiscard]] NativeD3D12RayTracingOutputSurfaceMetadata
+    output_surface_metadata() const;
+    [[nodiscard]] NativeD3D12RayTracingContextPrivateOutputView
+    private_output_surface_view() const;
+    [[nodiscard]] bool is_private_output_surface_view_current(
+        const NativeD3D12RayTracingContextPrivateOutputView& view) const noexcept;
+    [[nodiscard]] NativeD3D12RayTracingContextReceipt copy_output_to(
+        const NativeD3D12RayTracingContextPrivateOutputView& view,
+        void* destination_resource);
 
     [[nodiscard]] NativeD3D12RayTracingContextReceipt status() const;
     [[nodiscard]] NativeD3D12RayTracingContextState state() const noexcept;

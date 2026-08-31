@@ -5,10 +5,12 @@
 
 #include <iostream>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <process.h>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -23,6 +25,31 @@
 
 int main() {
     noemancer::configure_process_diagnostics("test.editor-ui");
+    const auto wide_layout=noemancer::editor_ui_responsive_layout(1440.0F,900.0F,1.0F);
+    if(wide_layout.compact||wide_layout.stack_hub||wide_layout.stack_hub_actions||!wide_layout.show_chrome_labels||
+       wide_layout.command_bar_height<=0.0F||wide_layout.status_bar_height<=0.0F||wide_layout.hub_brand_width<=0.0F) {
+        std::cerr<<"Wide editor layout unexpectedly entered compact mode\n";return 68;
+    }
+    const auto narrow_layout=noemancer::editor_ui_responsive_layout(700.0F,500.0F,1.0F);
+    if(!narrow_layout.compact||!narrow_layout.stack_hub||!narrow_layout.stack_hub_actions||narrow_layout.show_chrome_labels||
+       narrow_layout.hub_brand_width>narrow_layout.available_width||
+       narrow_layout.hub_button_width>narrow_layout.available_width-2.0F*narrow_layout.hub_padding+0.01F) {
+        std::cerr<<"Narrow editor layout did not collapse into a bounded one-column chrome\n";return 69;
+    }
+    const auto dpi_125=noemancer::editor_ui_responsive_layout(1280.0F,800.0F,1.25F);
+    const auto dpi_150=noemancer::editor_ui_responsive_layout(1280.0F,800.0F,1.50F);
+    const auto dpi_200=noemancer::editor_ui_responsive_layout(1280.0F,800.0F,2.00F);
+    if(!(dpi_125.ui_scale<dpi_150.ui_scale&&dpi_150.ui_scale<dpi_200.ui_scale&&
+         dpi_125.control_height<dpi_150.control_height&&dpi_150.control_height<dpi_200.control_height&&
+         dpi_200.hub_padding>0.0F&&dpi_200.hub_button_height>0.0F)) {
+        std::cerr<<"DPI metrics did not scale monotonically\n";return 70;
+    }
+    const auto invalid_layout=noemancer::editor_ui_responsive_layout(
+        -40.0F,-20.0F,std::numeric_limits<float>::quiet_NaN());
+    if(invalid_layout.available_width!=0.0F||invalid_layout.available_height!=0.0F||invalid_layout.ui_scale!=1.0F||
+       invalid_layout.outer_padding<0.0F||invalid_layout.hub_button_width<0.0F) {
+        std::cerr<<"Invalid editor layout input was not sanitized\n";return 71;
+    }
     noemancer::World world;
     if (!world.load_scene(noemancer::make_bootstrap_scene_document()).success) {
         std::cerr << "Bootstrap scene did not load for the editor UI\n";

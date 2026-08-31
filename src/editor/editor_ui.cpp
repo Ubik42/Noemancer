@@ -23,6 +23,57 @@
 #include <utility>
 
 namespace noemancer {
+
+EditorUiResponsiveLayout editor_ui_responsive_layout(
+    const float available_width, const float available_height, const float ui_scale) noexcept {
+    const auto finite_or = [](const float value, const float fallback) noexcept {
+        return std::isfinite(value) ? value : fallback;
+    };
+    const auto width = std::max(0.0F, finite_or(available_width, 0.0F));
+    const auto height = std::max(0.0F, finite_or(available_height, 0.0F));
+    const auto scale = std::clamp(finite_or(ui_scale, 1.0F), 0.75F, 2.0F);
+    const auto one_x_width = width / scale;
+
+    EditorUiResponsiveLayout result{};
+    result.ui_scale = scale;
+    result.available_width = width;
+    result.available_height = height;
+    result.compact = one_x_width < 1024.0F;
+    result.stack_hub = one_x_width < 900.0F;
+    result.stack_hub_actions = one_x_width < 720.0F;
+    result.show_chrome_labels = one_x_width >= 1024.0F;
+
+    const auto narrow_padding = one_x_width < 720.0F ? 8.0F : 10.0F;
+    result.outer_padding = narrow_padding * scale;
+    result.panel_gap = (one_x_width < 720.0F ? 5.0F : 8.0F) * scale;
+    result.command_bar_height = 44.0F * scale;
+    result.status_bar_height = 27.0F * scale;
+    result.control_height = 32.0F * scale;
+    result.hub_padding = (result.stack_hub ? (result.stack_hub_actions ? 14.0F : 20.0F) : 44.0F) * scale;
+    // A pathological host window must not turn the padding into a negative
+    // content region.  This cap preserves a usable one-column hub even while
+    // the native window is being resized toward zero.
+    result.hub_padding = std::min(result.hub_padding, width * 0.25F);
+
+    if (result.stack_hub) {
+        result.hub_brand_width = width;
+        const auto preferred_height = std::clamp(height * 0.32F, 150.0F * scale, 300.0F * scale);
+        result.hub_brand_height = std::min(height, preferred_height);
+    } else {
+        const auto desired_width = std::clamp(width * 0.37F, 280.0F * scale, 560.0F * scale);
+        result.hub_brand_width = std::min(width, desired_width);
+        result.hub_brand_height = height;
+    }
+
+    const auto hub_content_width = std::max(0.0F, width - 2.0F * result.hub_padding);
+    result.hub_button_width = result.stack_hub_actions
+        ? hub_content_width
+        : std::min(150.0F * scale, hub_content_width);
+    result.hub_button_height = result.control_height + 6.0F * scale;
+    result.right_control_reserve = (result.show_chrome_labels ? 205.0F : 120.0F) * scale;
+    return result;
+}
+
 namespace {
 
 // Noemancer's editor is treated as a scene instrument, not an AI dashboard.
@@ -91,8 +142,9 @@ void draw_editor_icon(ImDrawList* draw,const EditorIcon icon,const ImVec2 center
 
 bool draw_icon_button(const char* id,const EditorIcon icon,const char* label,const bool active=false,const char* tooltip=nullptr) {
     const auto height=ImGui::GetFrameHeight();
+    const auto ui_scale=std::clamp(ImGui::GetStyle().FramePadding.y/5.0F,0.75F,2.0F);
     const auto has_label=label!=nullptr&&label[0]!='\0';
-    const auto width=has_label?ImGui::CalcTextSize(label).x+34.0F:height;
+    const auto width=has_label?ImGui::CalcTextSize(label).x+34.0F*ui_scale:height;
     const auto position=ImGui::GetCursorScreenPos();
     const auto pressed=ImGui::InvisibleButton(id,{width,height});
     const auto hovered=ImGui::IsItemHovered();const auto held=ImGui::IsItemActive();
@@ -101,9 +153,9 @@ bool draw_icon_button(const char* id,const EditorIcon icon,const char* label,con
     if(active&&!hovered&&!held)color=ImGui::ColorConvertFloat4ToU32({0.32F,0.22F,0.14F,1.0F});
     ImGui::GetWindowDrawList()->AddRectFilled(position,{position.x+width,position.y+height},color,ImGui::GetStyle().FrameRounding);
     const auto text_color=ImGui::GetColorU32(active?ImVec4{0.98F,0.89F,0.68F,1.0F}:ImGui::GetStyleColorVec4(ImGuiCol_Text));
-    const ImVec2 icon_center{position.x+(has_label?14.0F:width*0.5F),position.y+height*0.5F};
-    draw_editor_icon(ImGui::GetWindowDrawList(),icon,icon_center,12.0F,text_color);
-    if(has_label)ImGui::GetWindowDrawList()->AddText({position.x+27.0F,position.y+(height-ImGui::GetTextLineHeight())*0.5F},text_color,label);
+    const ImVec2 icon_center{position.x+(has_label?14.0F*ui_scale:width*0.5F),position.y+height*0.5F};
+    draw_editor_icon(ImGui::GetWindowDrawList(),icon,icon_center,12.0F*ui_scale,text_color);
+    if(has_label)ImGui::GetWindowDrawList()->AddText({position.x+27.0F*ui_scale,position.y+(height-ImGui::GetTextLineHeight())*0.5F},text_color,label);
     if(tooltip!=nullptr&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("%s",tooltip);
     return pressed;
 }
@@ -128,24 +180,25 @@ std::array<float,16> orthographic_matrix(const float half_height,const float asp
     value[10]=1.0F/(near_clip-far_clip);value[14]=near_clip/(near_clip-far_clip);return value;
 }
 
-void apply_editor_style() {
+void apply_editor_style(const float ui_scale) {
     ImGui::StyleColorsDark();
     auto& style = ImGui::GetStyle();
-    style.WindowRounding = 2.0F;
-    style.ChildRounding = 2.0F;
-    style.FrameRounding = 2.0F;
-    style.PopupRounding = 3.0F;
-    style.TabRounding = 1.0F;
-    style.GrabRounding = 2.0F;
-    style.ScrollbarRounding = 2.0F;
+    const auto scale = std::clamp(std::isfinite(ui_scale) ? ui_scale : 1.0F, 0.75F, 2.0F);
+    style.WindowRounding = 2.0F * scale;
+    style.ChildRounding = 2.0F * scale;
+    style.FrameRounding = 2.0F * scale;
+    style.PopupRounding = 3.0F * scale;
+    style.TabRounding = 1.0F * scale;
+    style.GrabRounding = 2.0F * scale;
+    style.ScrollbarRounding = 2.0F * scale;
     style.WindowBorderSize = 1.0F;
     style.FrameBorderSize = 0.0F;
-    style.WindowPadding = ImVec2(10.0F, 9.0F);
-    style.FramePadding = ImVec2(9.0F, 5.0F);
-    style.ItemSpacing = ImVec2(8.0F, 7.0F);
-    style.ItemInnerSpacing = ImVec2(6.0F,4.0F);
-    style.IndentSpacing = 18.0F;
-    style.ScrollbarSize = 11.0F;
+    style.WindowPadding = ImVec2(10.0F * scale, 9.0F * scale);
+    style.FramePadding = ImVec2(9.0F * scale, 5.0F * scale);
+    style.ItemSpacing = ImVec2(8.0F * scale, 7.0F * scale);
+    style.ItemInnerSpacing = ImVec2(6.0F * scale,4.0F * scale);
+    style.IndentSpacing = 18.0F * scale;
+    style.ScrollbarSize = 11.0F * scale;
     auto& colors=style.Colors;
     colors[ImGuiCol_Text] = ImVec4(0.89F,0.87F,0.81F,1.0F);
     colors[ImGuiCol_TextDisabled] = ImVec4(0.50F,0.50F,0.46F,1.0F);
@@ -184,10 +237,11 @@ void apply_editor_style() {
 
 void draw_status_badge(const char* label,const ImVec4 color) {
     const auto text_size=ImGui::CalcTextSize(label);const auto position=ImGui::GetCursorScreenPos();
-    const ImVec2 size{text_size.x+12.0F,ImGui::GetFrameHeight()};
+    const auto ui_scale=std::clamp(ImGui::GetStyle().FramePadding.y/5.0F,0.75F,2.0F);
+    const ImVec2 size{text_size.x+12.0F*ui_scale,ImGui::GetFrameHeight()};
     ImGui::GetWindowDrawList()->AddRectFilled(position,{position.x+size.x,position.y+size.y},
         ImGui::ColorConvertFloat4ToU32({color.x*0.18F,color.y*0.18F,color.z*0.18F,1.0F}),4.0F);
-    ImGui::GetWindowDrawList()->AddText({position.x+6.0F,position.y+(size.y-text_size.y)*0.5F},
+    ImGui::GetWindowDrawList()->AddText({position.x+6.0F*ui_scale,position.y+(size.y-text_size.y)*0.5F},
         ImGui::ColorConvertFloat4ToU32(color),label);
     ImGui::Dummy(size);
 }
@@ -511,6 +565,13 @@ void EditorUi::render() {
         refresh_world_model();evaluate_auto_compile();last_model_refresh_=now;
     }
     const auto& io = ImGui::GetIO();
+    const auto* main_viewport = ImGui::GetMainViewport();
+    const auto dpi_scale = std::isfinite(io.DisplayFramebufferScale.x) && io.DisplayFramebufferScale.x > 0.0F
+        ? io.DisplayFramebufferScale.x : io.DisplayFramebufferScale.y;
+    const auto responsive = editor_ui_responsive_layout(
+        main_viewport != nullptr ? main_viewport->WorkSize.x : io.DisplaySize.x,
+        main_viewport != nullptr ? main_viewport->WorkSize.y : io.DisplaySize.y,
+        dpi_scale);
     if (!script_compile_busy_&&simulation_state_==EditorSimulationState::edit && !io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && model_.can_save_scene()) {
         const auto action=model_.save_scene();last_action_status_=action.detail;
         if(action.success)scene_recovery_candidates_json_=model_.scene_recovery_candidates_json(project_context_.root);
@@ -525,8 +586,9 @@ void EditorUi::render() {
         last_action_status_ = model_.redo().detail;
         model_.refresh();
     }
-    if (!layout_initialized_) {
-        apply_editor_style();
+    if (!layout_initialized_ || std::abs(applied_ui_scale_-responsive.ui_scale)>0.01F) {
+        apply_editor_style(responsive.ui_scale);
+        applied_ui_scale_=responsive.ui_scale;
     }
     frame_timings_.milliseconds[0]=std::chrono::duration<double,std::milli>(
         std::chrono::steady_clock::now()-refresh_start).count();
@@ -778,55 +840,66 @@ void EditorUi::draw_startup_hub() {
     ImGui::PopStyleVar(3);
 
     const auto extent=ImGui::GetContentRegionAvail();
-    const auto left_width=std::clamp(extent.x*0.37F,340.0F,560.0F);
+    const auto& io=ImGui::GetIO();
+    const auto dpi_scale=std::isfinite(io.DisplayFramebufferScale.x)&&io.DisplayFramebufferScale.x>0.0F
+        ? io.DisplayFramebufferScale.x:io.DisplayFramebufferScale.y;
+    const auto layout=editor_ui_responsive_layout(extent.x,extent.y,dpi_scale);
+    const auto left_width=layout.hub_brand_width;
+    const auto brand_height=layout.stack_hub?layout.hub_brand_height:extent.y;
     ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.090F,0.094F,0.086F,1.0F});
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{48.0F,44.0F});
-    if(ImGui::BeginChild("##startup-brand",{left_width,extent.y},ImGuiChildFlags_None,
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{layout.hub_padding,layout.hub_padding*0.92F});
+    if(ImGui::BeginChild("##startup-brand",{left_width,brand_height},ImGuiChildFlags_None,
         ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse)) {
         const auto origin=ImGui::GetCursorScreenPos();
-        constexpr float mark=92.0F;
+        const auto mark=92.0F*layout.ui_scale;
         auto* draw=ImGui::GetWindowDrawList();
-        draw->AddRectFilled(origin,{origin.x+mark,origin.y+mark},IM_COL32(28,29,27,255),3.0F);
-        draw->AddRect(origin,{origin.x+mark,origin.y+mark},IM_COL32(100,101,92,255),3.0F,0,1.0F);
+        draw->AddRectFilled(origin,{origin.x+mark,origin.y+mark},IM_COL32(28,29,27,255),3.0F*layout.ui_scale);
+        draw->AddRect(origin,{origin.x+mark,origin.y+mark},IM_COL32(100,101,92,255),3.0F*layout.ui_scale,0,1.0F*layout.ui_scale);
         const auto gold=IM_COL32(190,145,78,255),green=IM_COL32(83,151,137,255);
         const auto x=origin.x,y=origin.y;
-        draw->AddLine({x+24,y+69},{x+24,y+23},gold,9.0F);
-        draw->AddLine({x+24,y+23},{x+68,y+69},gold,9.0F);
-        draw->AddLine({x+68,y+69},{x+68,y+23},gold,9.0F);
-        draw->AddLine({x+18,y+76},{x+74,y+76},green,4.0F);
-        ImGui::Dummy({mark,mark+38.0F});
+        const auto s=layout.ui_scale;
+        draw->AddLine({x+24*s,y+69*s},{x+24*s,y+23*s},gold,9.0F*s);
+        draw->AddLine({x+24*s,y+23*s},{x+68*s,y+69*s},gold,9.0F*s);
+        draw->AddLine({x+68*s,y+69*s},{x+68*s,y+23*s},gold,9.0F*s);
+        draw->AddLine({x+18*s,y+76*s},{x+74*s,y+76*s},green,4.0F*s);
+        ImGui::Dummy({mark,mark+38.0F*s});
         ImGui::SetWindowFontScale(2.0F);ImGui::TextUnformatted(startup_hub_.brand().title.c_str());ImGui::SetWindowFontScale(1.0F);
         ImGui::TextColored({0.83F,0.63F,0.36F,1.0F},"%s",localized("ENGINE / EDITOR","引擎 / 编辑器"));
-        ImGui::Dummy({1.0F,22.0F});
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+std::max(220.0F,left_width-96.0F));
+        ImGui::Dummy({1.0F,22.0F*s});
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+std::max(120.0F,left_width-2.0F*layout.hub_padding));
         ImGui::TextColored({0.78F,0.77F,0.71F,1.0F},
             "%s",localized("A precise workspace for composing, measuring, and shipping interactive worlds.",
                 "用于搭建、测量并交付交互世界的精密创作台。"));
         ImGui::PopTextWrapPos();
-        ImGui::Dummy({1.0F,std::max(20.0F,extent.y-390.0F)});
+        ImGui::Dummy({1.0F,std::max(8.0F*s,brand_height-390.0F*s)});
         ImGui::TextDisabled("PRE-ALPHA  |  WINDOWS x64");
         ImGui::TextDisabled("%s",localized("SCENE  /  SYSTEM  /  RUNTIME", "场景  /  系统  /  运行时"));
     }
     ImGui::EndChild();ImGui::PopStyleVar();ImGui::PopStyleColor();
 
-    ImGui::SameLine(0.0F,0.0F);
+    if(!layout.stack_hub)ImGui::SameLine(0.0F,0.0F);
     ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.070F,0.073F,0.070F,1.0F});
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{44.0F,40.0F});
-    if(ImGui::BeginChild("##startup-projects",{0,extent.y},ImGuiChildFlags_None)) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{layout.hub_padding,layout.hub_padding*0.91F});
+    const auto projects_height=layout.stack_hub?std::max(0.0F,extent.y-brand_height):extent.y;
+    if(ImGui::BeginChild("##startup-projects",{layout.stack_hub?extent.x:0.0F,projects_height},ImGuiChildFlags_None)) {
         ImGui::SetWindowFontScale(1.45F);ImGui::TextUnformatted(localized("Start a project","开始一个项目"));ImGui::SetWindowFontScale(1.0F);
         ImGui::TextDisabled("%s",localized("Open an existing workspace or create a clean Noemancer project.",
             "打开已有工作区，或创建一个全新的 Noemancer 项目。"));
-        ImGui::Dummy({1.0F,18.0F});
+        ImGui::Dummy({1.0F,18.0F*layout.ui_scale});
 
         if(project_dialog_mode_==0)project_dialog_mode_=2;
-        if(ImGui::Button(localized("Open Project###hub-open","打开项目###hub-open"),{150.0F,38.0F}))project_dialog_mode_=2;
-        ImGui::SameLine();if(ImGui::Button(localized("New Project###hub-new","新建项目###hub-new"),{150.0F,38.0F}))project_dialog_mode_=1;
+        const ImVec2 action_size{layout.hub_button_width,layout.hub_button_height};
+        if(ImGui::Button(localized("Open Project###hub-open","打开项目###hub-open"),action_size))project_dialog_mode_=2;
+        if(!layout.stack_hub_actions)ImGui::SameLine(0.0F,layout.panel_gap);
+        if(ImGui::Button(localized("New Project###hub-new","新建项目###hub-new"),action_size))project_dialog_mode_=1;
         if(project_context_.root!="engine://") {
-            ImGui::SameLine();if(ImGui::Button(localized("Back to Editor###hub-back","返回编辑器###hub-back"),{150.0F,38.0F}))startup_hub_open_=false;
+            if(!layout.stack_hub_actions)ImGui::SameLine(0.0F,layout.panel_gap);
+            if(ImGui::Button(localized("Back to Editor###hub-back","返回编辑器###hub-back"),action_size))startup_hub_open_=false;
         } else {
-            ImGui::SameLine();if(ImGui::Button(localized("Empty Workspace###hub-empty","空白工作区###hub-empty"),{150.0F,38.0F}))startup_hub_open_=false;
+            if(!layout.stack_hub_actions)ImGui::SameLine(0.0F,layout.panel_gap);
+            if(ImGui::Button(localized("Empty Workspace###hub-empty","空白工作区###hub-empty"),action_size))startup_hub_open_=false;
         }
-        ImGui::Dummy({1.0F,14.0F});
+        ImGui::Dummy({1.0F,14.0F*layout.ui_scale});
 
         const auto creating=project_dialog_mode_==1;
         ImGui::TextUnformatted(creating?localized("Create a workspace","创建工作区"):localized("Open a workspace","打开工作区"));
@@ -843,15 +916,17 @@ void EditorUi::draw_startup_hub() {
         ImGui::SetNextItemWidth(-1.0F);ImGui::InputText(localized("Project path###hub-project-path","项目路径###hub-project-path"),project_path_.data(),project_path_.size());
         const auto ready=project_path_[0]!='\0'&&(!creating||project_name_[0]!='\0');
         ImGui::BeginDisabled(!ready);
+        const auto submit_width=std::min(180.0F*layout.ui_scale,std::max(0.0F,ImGui::GetContentRegionAvail().x));
         if(ImGui::Button(creating?localized("Create and Open###hub-submit","创建并打开###hub-submit"):
-            localized("Open in Editor###hub-submit","在编辑器中打开###hub-submit"),{180.0F,38.0F})) {
+            localized("Open in Editor###hub-submit","在编辑器中打开###hub-submit"),
+            {submit_width,layout.hub_button_height})) {
             project_request_=EditorProjectRequest{creating?EditorProjectCommand::create:EditorProjectCommand::open,
                 project_path_.data(),creating?project_name_.data():std::string{},
                 creating&&project_preset_index_==1?"hybrid-pixel":"starter"};
         }
         ImGui::EndDisabled();
 
-        ImGui::Dummy({1.0F,24.0F});ImGui::Separator();ImGui::Dummy({1.0F,14.0F});
+        ImGui::Dummy({1.0F,24.0F*layout.ui_scale});ImGui::Separator();ImGui::Dummy({1.0F,14.0F*layout.ui_scale});
         ImGui::TextUnformatted(localized("Recent projects","最近项目"));
         const auto& recent=startup_hub_.view().recent_projects;
         if(recent.empty()) {
@@ -865,8 +940,12 @@ void EditorUi::draw_startup_hub() {
             if(ImGui::Selectable(project.display_name.c_str(),false,ImGuiSelectableFlags_None,{0,42.0F}))
                 project_request_=EditorProjectRequest{EditorProjectCommand::open,project.path,{},"starter"};
             ImGui::EndDisabled();
-            ImGui::SameLine(190.0F);ImGui::TextDisabled("%s",project.path.c_str());
-            if(!available){ImGui::SameLine();ImGui::TextColored(color_warning,"%s",startup_hub_project_status_name(project.status));}
+            if(!layout.stack_hub_actions)ImGui::SameLine(190.0F*layout.ui_scale);
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+std::max(120.0F,
+                ImGui::GetContentRegionAvail().x));
+            ImGui::TextDisabled("%s",project.path.c_str());
+            ImGui::PopTextWrapPos();
+            if(!available){if(!layout.stack_hub_actions)ImGui::SameLine();ImGui::TextColored(color_warning,"%s",startup_hub_project_status_name(project.status));}
             ImGui::PopID();
         }
         const auto project_status=nlohmann::json::parse(project_status_json_,nullptr,false);
@@ -1830,6 +1909,10 @@ std::string EditorUi::semantic_snapshot_json() const {
 void EditorUi::draw_root_dockspace() {
     static char scene_path_buffer[512]{};
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const auto& io = ImGui::GetIO();
+    const auto dpi_scale=std::isfinite(io.DisplayFramebufferScale.x)&&io.DisplayFramebufferScale.x>0.0F
+        ? io.DisplayFramebufferScale.x:io.DisplayFramebufferScale.y;
+    const auto layout=editor_ui_responsive_layout(viewport->WorkSize.x,viewport->WorkSize.y,dpi_scale);
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::SetNextWindowViewport(viewport->ID);
@@ -1906,58 +1989,67 @@ void EditorUi::draw_root_dockspace() {
     }
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(0.083F,0.086F,0.080F,1.0F));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{12.0F,7.0F});
-    if(ImGui::BeginChild("##editor-command-bar",{0,45.0F},ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar)) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{layout.outer_padding,layout.outer_padding*0.65F});
+    if(ImGui::BeginChild("##editor-command-bar",{0,layout.command_bar_height},ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar)) {
+        const auto s=layout.ui_scale;
         const auto marker_position=ImGui::GetCursorScreenPos();
-        ImGui::GetWindowDrawList()->AddRectFilled(marker_position,{marker_position.x+18.0F,marker_position.y+18.0F},accent,2.0F);
-        ImGui::GetWindowDrawList()->AddLine({marker_position.x+4.0F,marker_position.y+13.0F},
-            {marker_position.x+14.0F,marker_position.y+5.0F},IM_COL32(230,224,207,255),1.5F);
-        ImGui::GetWindowDrawList()->AddCircleFilled({marker_position.x+4.0F,marker_position.y+13.0F},1.5F,brass);
-        ImGui::Dummy({24.0F,18.0F});ImGui::SameLine();
-        ImGui::TextUnformatted(project_context_.name.empty()?"Noemancer":project_context_.name.c_str());
-        ImGui::SameLine();ImGui::TextDisabled("/");ImGui::SameLine();
+        ImGui::GetWindowDrawList()->AddRectFilled(marker_position,{marker_position.x+18.0F*s,marker_position.y+18.0F*s},accent,2.0F*s);
+        ImGui::GetWindowDrawList()->AddLine({marker_position.x+4.0F*s,marker_position.y+13.0F*s},
+            {marker_position.x+14.0F*s,marker_position.y+5.0F*s},IM_COL32(230,224,207,255),1.5F*s);
+        ImGui::GetWindowDrawList()->AddCircleFilled({marker_position.x+4.0F*s,marker_position.y+13.0F*s},1.5F*s,brass);
+        ImGui::Dummy({24.0F*s,18.0F*s});ImGui::SameLine(0.0F,layout.panel_gap);
         std::string scene_label=model_.scene_source().empty()?"Untitled Scene":model_.scene_source();
         if(const auto separator=scene_label.find_last_of("/\\");separator!=std::string::npos)scene_label=scene_label.substr(separator+1);
-        ImGui::TextDisabled("%s%s",scene_label.c_str(),model_.scene_dirty()?"  * UNSAVED":"");
+        if(layout.show_chrome_labels) {
+            ImGui::TextUnformatted(project_context_.name.empty()?"Noemancer":project_context_.name.c_str());
+            ImGui::SameLine(0.0F,layout.panel_gap*0.75F);ImGui::TextDisabled("/");
+            ImGui::SameLine(0.0F,layout.panel_gap*0.75F);
+            ImGui::TextDisabled("%s%s",scene_label.c_str(),model_.scene_dirty()?"  * UNSAVED":"");
+        } else {
+            if(scene_label.size()>24U)scene_label=scene_label.substr(0,21U)+"...";
+            ImGui::TextDisabled("%s%s",scene_label.c_str(),model_.scene_dirty()?" *":"");
+        }
 
-        ImGui::SameLine(0,20.0F);
+        ImGui::SameLine(0.0F,layout.panel_gap*2.0F);
         if(simulation_state_==EditorSimulationState::edit) {
             ImGui::BeginDisabled(script_compile_busy_);
             ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.15F,0.29F,0.24F,1.0F));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(0.19F,0.38F,0.31F,1.0F));
-            if(draw_icon_button("##play",EditorIcon::play,localized("PLAY","运行"),false,localized("Enter Play World","进入运行世界")))simulation_command_=EditorSimulationCommand::play;
+            if(draw_icon_button("##play",EditorIcon::play,layout.show_chrome_labels?localized("PLAY","运行"):nullptr,false,localized("Enter Play World","进入运行世界")))simulation_command_=EditorSimulationCommand::play;
             ImGui::PopStyleColor(2);ImGui::EndDisabled();
         } else {
             ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.42F,0.16F,0.17F,1.0F));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(0.56F,0.19F,0.20F,1.0F));
-            if(draw_icon_button("##stop",EditorIcon::stop,localized("STOP","停止"),false,localized("Stop Play World","停止运行世界")))simulation_command_=EditorSimulationCommand::stop;
+            if(draw_icon_button("##stop",EditorIcon::stop,layout.show_chrome_labels?localized("STOP","停止"):nullptr,false,localized("Stop Play World","停止运行世界")))simulation_command_=EditorSimulationCommand::stop;
             ImGui::PopStyleColor(2);
             ImGui::SameLine();
             if(simulation_state_==EditorSimulationState::playing) {
-                if(draw_icon_button("##pause",EditorIcon::pause,localized("PAUSE","暂停"),false,localized("Pause Play World","暂停运行世界")))simulation_command_=EditorSimulationCommand::pause;
-            } else if(draw_icon_button("##resume",EditorIcon::resume,localized("RESUME","继续"),false,localized("Resume Play World","继续运行世界")))simulation_command_=EditorSimulationCommand::resume;
+                if(draw_icon_button("##pause",EditorIcon::pause,layout.show_chrome_labels?localized("PAUSE","暂停"):nullptr,false,localized("Pause Play World","暂停运行世界")))simulation_command_=EditorSimulationCommand::pause;
+            } else if(draw_icon_button("##resume",EditorIcon::resume,layout.show_chrome_labels?localized("RESUME","继续"):nullptr,false,localized("Resume Play World","继续运行世界")))simulation_command_=EditorSimulationCommand::resume;
         }
         ImGui::SameLine();
-        draw_status_badge(simulation_state_==EditorSimulationState::edit?localized("EDIT WORLD","编辑世界"):
-            simulation_state_==EditorSimulationState::playing?localized("PLAY WORLD","运行世界"):localized("PAUSED","已暂停"),
+        draw_status_badge(layout.show_chrome_labels?(simulation_state_==EditorSimulationState::edit?localized("EDIT WORLD","编辑世界"):
+            simulation_state_==EditorSimulationState::playing?localized("PLAY WORLD","运行世界"):localized("PAUSED","已暂停")):
+            (simulation_state_==EditorSimulationState::edit?localized("EDIT","编辑"):
+             simulation_state_==EditorSimulationState::playing?localized("PLAY","运行"):localized("PAUSE","暂停")),
             simulation_state_==EditorSimulationState::edit?color_accent:
             simulation_state_==EditorSimulationState::playing?color_success:color_warning);
-        if(script_compile_busy_) {ImGui::SameLine();draw_status_badge("BUILDING C#",color_warning);}
+        if(script_compile_busy_) {ImGui::SameLine();draw_status_badge(layout.show_chrome_labels?"BUILDING C#":"BUILD",color_warning);}
 
-        constexpr float right_reserve=205.0F;
+        const auto right_reserve=layout.right_control_reserve;
         if(ImGui::GetCursorPosX()<ImGui::GetWindowWidth()-right_reserve)ImGui::SameLine(ImGui::GetWindowWidth()-right_reserve);
         ImGui::BeginDisabled(!model_.can_save_scene()||simulation_state_!=EditorSimulationState::edit||script_compile_busy_);
-        if(draw_icon_button("##save",EditorIcon::save,localized("SAVE","保存"),false,localized("Save Scene (Ctrl+S)","保存场景 (Ctrl+S)"))) {const auto action=model_.save_scene();last_action_status_=action.detail;}
+        if(draw_icon_button("##save",EditorIcon::save,layout.show_chrome_labels?localized("SAVE","保存"):nullptr,false,localized("Save Scene (Ctrl+S)","保存场景 (Ctrl+S)"))) {const auto action=model_.save_scene();last_action_status_=action.detail;}
         ImGui::EndDisabled();ImGui::SameLine();
         ImGui::TextDisabled("%.0f FPS",ImGui::GetIO().Framerate);
 
         // A restrained scale line makes the chrome read like a scene instrument
         // while keeping the central viewport visually dominant.
         const auto bar_min=ImGui::GetWindowPos();const auto bar_size=ImGui::GetWindowSize();
-        const auto scale_y=bar_min.y+bar_size.y-3.0F;auto* bar_draw=ImGui::GetWindowDrawList();
+        const auto scale_y=bar_min.y+bar_size.y-3.0F*s;auto* bar_draw=ImGui::GetWindowDrawList();
         bar_draw->AddLine({bar_min.x,scale_y},{bar_min.x+bar_size.x,scale_y},IM_COL32(76,78,72,255));
-        for(float x=bar_min.x+24.0F;x<bar_min.x+bar_size.x;x+=48.0F)
-            bar_draw->AddLine({x,scale_y-3.0F},{x,scale_y},IM_COL32(132,128,111,180));
+        for(float x=bar_min.x+24.0F*s;x<bar_min.x+bar_size.x;x+=48.0F*s)
+            bar_draw->AddLine({x,scale_y-3.0F*s},{x,scale_y},IM_COL32(132,128,111,180));
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();ImGui::PopStyleColor();
@@ -2103,7 +2195,7 @@ void EditorUi::draw_root_dockspace() {
     const ImGuiID dockspace_id = ImGui::GetID("Noemancer Editor Dockspace");
     constexpr auto dockspace_flags=static_cast<ImGuiDockNodeFlags>(
         static_cast<int>(ImGuiDockNodeFlags_PassthruCentralNode)|static_cast<int>(ImGuiDockNodeFlags_NoWindowMenuButton));
-    ImGui::DockSpace(dockspace_id, ImVec2(0.0F, -27.0F), dockspace_flags);
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0F, -layout.status_bar_height), dockspace_flags);
 
     if (!layout_initialized_) {
         layout_initialized_ = true;
@@ -2112,9 +2204,9 @@ void EditorUi::draw_root_dockspace() {
         ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
 
         ImGuiID center = dockspace_id;
-        const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.17F, nullptr, &center);
-        const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25F, nullptr, &center);
-        const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.22F, nullptr, &center);
+        const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, layout.compact ? 0.22F : 0.17F, nullptr, &center);
+        const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, layout.compact ? 0.29F : 0.25F, nullptr, &center);
+        const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, layout.compact ? 0.26F : 0.22F, nullptr, &center);
         ImGui::DockBuilderDockWindow("World Outliner", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Asset Browser", bottom);
@@ -2125,7 +2217,7 @@ void EditorUi::draw_root_dockspace() {
         ImGui::DockBuilderFinish(dockspace_id);
     }
     ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(0.060F,0.062F,0.059F,1.0F));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{10.0F,4.0F});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{layout.outer_padding,4.0F*layout.ui_scale});
     if(ImGui::BeginChild("##editor-status-bar",{0,0},ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar)) {
         const auto status_color=last_action_status_.find("fail")!=std::string::npos||last_action_status_.find("error")!=std::string::npos?
             color_danger:ImVec4{0.67F,0.58F,0.42F,1.0F};
@@ -2133,8 +2225,9 @@ void EditorUi::draw_root_dockspace() {
         const auto right_text=script_compile_busy_?localized("C# build in progress","正在编译 C#"):
             localized("Workspace ready","工作台就绪");
         const auto right_width=ImGui::CalcTextSize(right_text).x;
-        if(ImGui::GetCursorPosX()<ImGui::GetWindowWidth()-right_width-12.0F) {
-            ImGui::SameLine(ImGui::GetWindowWidth()-right_width-12.0F);ImGui::TextDisabled("%s",right_text);
+        const auto right_padding=layout.outer_padding;
+        if(ImGui::GetCursorPosX()<ImGui::GetWindowWidth()-right_width-right_padding) {
+            ImGui::SameLine(ImGui::GetWindowWidth()-right_width-right_padding);ImGui::TextDisabled("%s",right_text);
         }
     }
     ImGui::EndChild();ImGui::PopStyleVar();ImGui::PopStyleColor();

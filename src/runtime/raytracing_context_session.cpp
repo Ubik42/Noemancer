@@ -996,6 +996,23 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
     }
 
     if (stopped) mark_unreached_selected_passes(receipt, stop_index);
+    if (impl_->options.backend == RayTracingContextSessionBackend::d3d12) {
+        const auto native = impl_->d3d12->status();
+        receipt.shared_device = native.shared_device;
+        receipt.shared_queue = native.shared_command_queue;
+        receipt.output_resource_live = native.output_surface.resource_ready;
+        receipt.output_trace_written = native.output_surface.gpu_write_complete;
+        receipt.output_transfer_candidate = native.output_surface.valid &&
+            native.output_surface.shared_device;
+        receipt.output_resource_generation = native.output_surface.resource_generation;
+        receipt.output_format = native.output_surface.format;
+    } else {
+        // Vulkan stage receipts remain the authority until its storage-image
+        // output is wired into the session. Borrowed-handle presence alone is
+        // deliberately insufficient to promote an interop candidate.
+        receipt.shared_device = false;
+        receipt.shared_queue = false;
+    }
     for (auto& pass : receipt.passes)
         if (!pass.selected && pass.code.empty()) pass.code = "session.pass-not-selected";
     finalize_receipt(receipt, impl_->options, has_selected_trace, has_unmapped_pass);
@@ -1083,6 +1100,13 @@ std::string raytracing_context_session_observation_json(
         {"sceneConsumed", receipt.scene_consumed},
         {"executed", receipt.executed},
         {"nativeReady", receipt.native_ready},
+        {"sharedDevice", receipt.shared_device},
+        {"sharedQueue", receipt.shared_queue},
+        {"outputResourceLive", receipt.output_resource_live},
+        {"outputTraceWritten", receipt.output_trace_written},
+        {"outputTransferCandidate", receipt.output_transfer_candidate},
+        {"outputResourceGeneration", receipt.output_resource_generation},
+        {"outputFormat", receipt.output_format},
         {"fallbackActive", receipt.fallback_active},
         {"unsupported", receipt.unsupported},
         {"failed", receipt.failed},

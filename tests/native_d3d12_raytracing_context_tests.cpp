@@ -148,6 +148,47 @@ int main() {
                trace.code.find("trace-") == std::string::npos) {
         return fail("unsupported D3D12 context did not retain an explicit trace fallback", 9);
     }
+    const auto output_surface = context.output_surface_metadata();
+    const auto output_view = context.private_output_surface_view();
+    if (native_available) {
+        if (!output_surface.valid || !output_surface.resource_ready ||
+            !output_surface.gpu_write_complete || output_surface.cpu_readback_required ||
+            output_surface.resource_state !=
+                NativeD3D12RayTracingOutputSurfaceState::copy_source ||
+            output_surface.resource_kind != "buffer" ||
+            output_surface.format != "R32G32B32A32_UINT" ||
+            output_surface.width != trace.output_width ||
+            output_surface.height != trace.output_height ||
+            output_surface.bytes != trace.output_bytes ||
+            output_surface.resource_generation == 0U ||
+            output_surface.context_generation != trace.generation ||
+            output_surface.submitted_fence_value == 0U ||
+            output_surface.completed_fence_value < output_surface.submitted_fence_value ||
+            output_surface.shared_device || output_surface.shared_command_queue ||
+            output_surface.direct_sdl_gpu_import_supported ||
+            output_view.access_token == 0U || output_view.resource == nullptr ||
+            output_view.device == nullptr || output_view.command_queue == nullptr ||
+            output_view.fence == nullptr ||
+            !context.is_private_output_surface_view_current(output_view)) {
+            return fail("completed output did not expose a valid fenced runtime-private view", 9);
+        }
+        auto stale_view = output_view;
+        ++stale_view.metadata.resource_generation;
+        if (context.is_private_output_surface_view_current(stale_view)) {
+            return fail("output view generation guard accepted a stale view", 9);
+        }
+        const auto rejected_copy = context.copy_output_to(output_view, nullptr);
+        if (!bounded_receipt(rejected_copy) ||
+            rejected_copy.state != NativeD3D12RayTracingContextState::failed ||
+            rejected_copy.code != "native-d3d12.context.output-destination-null" ||
+            rejected_copy.output_surface.valid == false) {
+            return fail("runtime-private output copy rejected an invalid destination incorrectly", 9);
+        }
+    } else if (output_surface.valid || output_surface.resource_ready ||
+               output_surface.gpu_write_complete || output_view.access_token != 0U ||
+               context.is_private_output_surface_view_current(output_view)) {
+        return fail("unsupported D3D12 context reported a live output surface", 9);
+    }
     const auto readback = context.readback();
     if (!bounded_receipt(readback)) return fail("readback receipt was unbounded", 10);
     if (native_available) {
@@ -189,6 +230,9 @@ int main() {
         context.scene_generation() != 2U) {
         return fail("scene revision change did not advance exactly one scene generation", 11);
     }
+    if (native_available && context.is_private_output_surface_view_current(output_view)) {
+        return fail("scene change did not invalidate the previous output view", 11);
+    }
 
     const auto updated = context.build_or_update();
     if (!bounded_receipt(updated)) return fail("content update receipt was unbounded", 12);
@@ -212,6 +256,13 @@ int main() {
             !trace_after_update.trace_completed ||
             trace_after_update.code != "native-d3d12.context.trace-complete") {
             return fail("TraceRays did not rerun after a same-topology scene update", 13);
+        }
+        const auto output_view_after_update = context.private_output_surface_view();
+        if (!context.is_private_output_surface_view_current(output_view_after_update) ||
+            output_view_after_update.access_token == output_view.access_token ||
+            output_view_after_update.metadata.resource_generation !=
+                output_surface.resource_generation) {
+            return fail("same-topology trace did not publish a fresh output view generation", 13);
         }
         const auto readback_after_update = context.readback();
         if (!bounded_receipt(readback_after_update) ||
@@ -249,6 +300,14 @@ int main() {
         !stopped.shutdown_completed || context.generation() != generation || !context.is_shutdown()) {
         return fail("shutdown did not release the context into a stable terminal state", 16);
     }
+    const auto output_after_shutdown = context.output_surface_metadata();
+    if (output_after_shutdown.valid || output_after_shutdown.resource_ready ||
+        !output_after_shutdown.expired ||
+        output_after_shutdown.resource_state !=
+            NativeD3D12RayTracingOutputSurfaceState::released ||
+        context.is_private_output_surface_view_current(output_view)) {
+        return fail("shutdown did not invalidate the runtime-private output surface", 16);
+    }
     const auto stopped_again = context.shutdown();
     if (!bounded_receipt(stopped_again) || stopped_again.state != NativeD3D12RayTracingContextState::shutdown ||
         !stopped_again.shutdown_completed ||
@@ -261,6 +320,22 @@ int main() {
         after_shutdown.code != "native-d3d12.context.already-shutdown") {
         return fail("post-shutdown scene attachment was not rejected safely", 18);
     }
+
+#if defined(_WIN32)
+    NativeD3D12RayTracingContextOptions malformed_borrowed_options;
+    malformed_borrowed_options.borrowed_command_queue =
+        reinterpret_cast<void*>(static_cast<std::uintptr_t>(1U));
+    NativeD3D12RayTracingContext malformed_borrowed(malformed_borrowed_options);
+    const auto malformed_borrowed_receipt = malformed_borrowed.initialize();
+    if (!bounded_receipt(malformed_borrowed_receipt) ||
+        malformed_borrowed_receipt.state != NativeD3D12RayTracingContextState::failed ||
+        malformed_borrowed_receipt.code !=
+            "native-d3d12.context.borrowed-queue-without-device" ||
+        malformed_borrowed_receipt.native_handle_exposed) {
+        return fail("borrowed queue without its device was not rejected at the runtime boundary", 19);
+    }
+    static_cast<void>(malformed_borrowed.shutdown());
+#endif
 
     std::cout << "native_d3d12_raytracing_context_tests: ok\n";
     return 0;

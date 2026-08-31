@@ -42,6 +42,10 @@ bool test_vocabulary_and_contract_bounds() {
                    "noemancer.native-vulkan-raytracing-context/0.1",
                "context schema drifted"))
         return false;
+    if (!check(native_vulkan_raytracing_output_image_contract ==
+                   "noemancer.native-vulkan-raytracing-output-image/0.1",
+               "output image contract drifted"))
+        return false;
     if (!check(native_vulkan_raytracing_context_state_name(
                    NativeVulkanRayTracingContextState::uninitialized) == "uninitialized" &&
                    native_vulkan_raytracing_context_state_name(
@@ -100,6 +104,35 @@ bool test_lifecycle_and_stable_scene_cache() {
                    initialized.generation == 1U,
                "initialization did not expose an honest native-or-fallback lifecycle receipt"))
         return false;
+    if (!check(initialized.output_image_contract ==
+                   "noemancer.native-vulkan-raytracing-output-image/0.1",
+               "initialization did not expose the output image contract identity"))
+        return false;
+    if (native) {
+        if (!check(initialized.output_image_live && initialized.output_image_view_live &&
+                       initialized.output_image_runtime_private && !initialized.output_image_interop_ready &&
+                       !initialized.output_image_external_import_supported &&
+                       initialized.output_image_same_device_required && initialized.output_image_layout_ready &&
+                       initialized.output_image_sync_complete && !initialized.output_image_trace_written &&
+                       !initialized.output_image_cpu_readback_supported &&
+                       initialized.output_image_format == "r32_uint" &&
+                       initialized.output_image_layout == "general" &&
+                       initialized.output_image_access == "storage-read-write" &&
+                       initialized.output_image_sync_kind == "fence" &&
+                       initialized.output_image_generation > 0U && initialized.output_image_bytes > 0U &&
+                       initialized.output_image_sync_value > 0U &&
+                       initialized.output_image_interop_boundary.find("no handle export") != std::string::npos,
+                   "native initialization did not expose a safe runtime-private output image contract"))
+            return false;
+    } else if (!check(!initialized.output_image_live && !initialized.output_image_view_live &&
+                          !initialized.output_image_runtime_private && !initialized.output_image_interop_ready &&
+                          !initialized.output_image_layout_ready && !initialized.output_image_sync_complete &&
+                          initialized.output_image_format == "none" && initialized.output_image_layout == "none" &&
+                          initialized.output_image_sync_kind == "none" &&
+                          initialized.output_image_interop_boundary == "unavailable",
+                      "fallback initialization overclaimed a Vulkan output image"))
+        return false;
+    const auto output_image_generation = initialized.output_image_generation;
 
     const auto initialized_again = context.initialize();
     if (!check(initialized_again.generation == initialized.generation &&
@@ -116,6 +149,10 @@ bool test_lifecycle_and_stable_scene_cache() {
                    !ensured.scene_reused && ensured.triangle_count == 1U &&
                    ensured.persistent_backend == native && ensured.generation == 2U,
                "first scene submission did not create a deterministic snapshot"))
+        return false;
+    if (!check(ensured.output_image_generation == output_image_generation &&
+                   ensured.output_image_live == native && ensured.output_image_runtime_private == native,
+               "scene submission did not preserve the output image lifetime contract"))
         return false;
 
     const auto built = context.build_or_update();
@@ -141,6 +178,11 @@ bool test_lifecycle_and_stable_scene_cache() {
                        frame_build.scene_ready,
                    "steady-state frame unexpectedly rebuilt or resubmitted the native scene"))
             return false;
+        if (!check(frame_scene.output_image_generation == output_image_generation &&
+                       frame_build.output_image_generation == output_image_generation &&
+                       frame_scene.output_image_live == native && frame_build.output_image_live == native,
+                   "steady-state frame changed the output image generation or lifetime"))
+            return false;
     }
 
     const auto traced = context.trace();
@@ -159,6 +201,10 @@ bool test_lifecycle_and_stable_scene_cache() {
                    readback.output_hit == 1U && readback.output_value == 0x48495421U,
                native ? "native output readback did not return the shader hit marker"
                       : "fallback readback receipt was incomplete or overclaimed native work"))
+        return false;
+    if (!check(readback.output_image_generation == output_image_generation &&
+                   readback.output_image_live == native && !readback.output_image_trace_written,
+               "trace/readback did not preserve the runtime-private output image boundary"))
         return false;
 
     const auto generation_before_reuse = context.generation();
@@ -245,6 +291,17 @@ bool test_missing_invalid_and_unsupported_paths() {
     if (!check((native_without_fallback || explicitly_unsupported) && unsupported.initialized,
                "fallback-disabled initialization was neither native nor explicitly unsupported"))
         return false;
+
+    NativeVulkanRayTracingContextOptions incomplete_borrowed_options;
+    incomplete_borrowed_options.allow_fallback = false;
+    incomplete_borrowed_options.borrowed_device.device = reinterpret_cast<void*>(static_cast<std::uintptr_t>(1U));
+    NativeVulkanRayTracingContext incomplete_borrowed(incomplete_borrowed_options);
+    const auto incomplete_borrowed_init = incomplete_borrowed.initialize();
+    if (!check(incomplete_borrowed_init.state == NativeVulkanRayTracingContextState::unsupported &&
+                   incomplete_borrowed_init.code.find("shared-device-incomplete") != std::string::npos &&
+                   !incomplete_borrowed_init.persistent_backend && !incomplete_borrowed_init.resources_live,
+               "incomplete borrowed Vulkan handles were not rejected without creating a private device"))
+        return false;
     const auto unsupported_scene = no_fallback.ensure_scene(scene_for(two_triangles));
     if (!check(unsupported_scene.state ==
                    (native_without_fallback ? NativeVulkanRayTracingContextState::ready
@@ -300,7 +357,12 @@ bool test_shutdown_is_idempotent_and_terminal() {
     const auto shutdown = context.shutdown();
     if (!check(shutdown.state == NativeVulkanRayTracingContextState::shutdown &&
                    shutdown.shutdown && !shutdown.resources_live && !shutdown.scene_ready &&
-                   !shutdown.trace_completed,
+                   !shutdown.trace_completed && !shutdown.output_image_live &&
+                   !shutdown.output_image_view_live && !shutdown.output_image_runtime_private &&
+                   !shutdown.output_image_interop_ready && shutdown.output_image_generation == 0U &&
+                   shutdown.output_image_bytes == 0U && shutdown.output_image_sync_value == 0U &&
+                   shutdown.output_image_layout == "none" &&
+                   shutdown.output_image_interop_boundary == "unavailable",
                "shutdown did not clear the context-owned lifecycle state"))
         return false;
     const auto shutdown_again = context.shutdown();

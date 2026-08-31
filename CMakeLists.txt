@@ -25,6 +25,10 @@ FetchContent_Declare(
         -DSOURCE_DIR=<SOURCE_DIR>
         -DPATCH_FILE=${PROJECT_SOURCE_DIR}/cmake/patches/sdl-3.4.14-gpu-timestamps.patch
         -P ${PROJECT_SOURCE_DIR}/cmake/apply_patch_if_needed.cmake
+        COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=<SOURCE_DIR>
+        -DPATCH_FILE=${PROJECT_SOURCE_DIR}/cmake/patches/sdl-3.4.14-gpu-native-device-access.patch
+        -P ${PROJECT_SOURCE_DIR}/cmake/apply_patch_if_needed.cmake
 )
 
 set(FLECS_SHARED OFF CACHE BOOL "" FORCE)

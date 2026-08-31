@@ -12,6 +12,8 @@ namespace noemancer {
 
 inline constexpr std::string_view native_vulkan_raytracing_context_schema =
     "noemancer.native-vulkan-raytracing-context/0.1";
+inline constexpr std::string_view native_vulkan_raytracing_output_image_contract =
+    "noemancer.native-vulkan-raytracing-output-image/0.1";
 inline constexpr std::size_t native_vulkan_raytracing_context_max_text_bytes = 256U;
 inline constexpr std::size_t native_vulkan_raytracing_context_hard_max_triangles = 65536U;
 
@@ -43,6 +45,19 @@ enum class NativeVulkanRayTracingContextFailureStage : std::uint8_t {
 [[nodiscard]] std::string_view native_vulkan_raytracing_context_failure_stage_name(
     NativeVulkanRayTracingContextFailureStage stage) noexcept;
 
+// Runtime-only adoption input for an SDL_GPU Vulkan device.  The fields are
+// intentionally opaque pointers rather than Vulkan types so this contract
+// cannot leak third-party handles into Engine/Agent plain-data schemas.  A
+// non-empty value must provide all four handles; the context borrows them and
+// never destroys the instance, physical device, device, or queue.
+struct NativeVulkanRayTracingBorrowedDevice final {
+    void* instance{};
+    void* physical_device{};
+    void* device{};
+    void* queue{};
+    std::uint32_t queue_family_index{};
+};
+
 struct NativeVulkanRayTracingContextOptions final {
     // The persistent Vulkan path is capability-gated.  When it is not yet
     // available, allow_fallback keeps authoring and tests usable without ever
@@ -52,6 +67,7 @@ struct NativeVulkanRayTracingContextOptions final {
     std::uint32_t output_width{1U};
     std::uint32_t output_height{1U};
     std::uint32_t output_depth{1U};
+    NativeVulkanRayTracingBorrowedDevice borrowed_device{};
 };
 
 struct NativeVulkanRayTracingTriangle final {
@@ -97,6 +113,19 @@ struct NativeVulkanRayTracingContextReceipt final {
     bool trace_submitted{};
     bool trace_completed{};
     bool readback_completed{};
+    // The output image is runtime-private.  These fields describe a bounded
+    // access contract only; no VkImage/VkImageView/native synchronization
+    // handle crosses this plain-data receipt.
+    bool output_image_live{};
+    bool output_image_view_live{};
+    bool output_image_runtime_private{};
+    bool output_image_interop_ready{};
+    bool output_image_external_import_supported{};
+    bool output_image_same_device_required{};
+    bool output_image_layout_ready{};
+    bool output_image_sync_complete{};
+    bool output_image_trace_written{};
+    bool output_image_cpu_readback_supported{};
     bool resources_live{};
     bool shutdown{};
 
@@ -108,11 +137,21 @@ struct NativeVulkanRayTracingContextReceipt final {
     std::uint32_t output_width{};
     std::uint32_t output_height{};
     std::uint32_t output_depth{};
+    std::uint32_t output_image_queue_family{};
     std::uint32_t output_value{};
     std::uint32_t output_hit{};
     std::uint64_t output_hash{};
     std::uint64_t output_bytes{};
     std::uint64_t readback_bytes{};
+    std::uint64_t output_image_generation{};
+    std::uint64_t output_image_bytes{};
+    std::uint64_t output_image_sync_value{};
+    std::string output_image_contract{std::string(native_vulkan_raytracing_output_image_contract)};
+    std::string output_image_format;
+    std::string output_image_layout;
+    std::string output_image_access;
+    std::string output_image_sync_kind;
+    std::string output_image_interop_boundary;
 };
 
 // A single-owner RAII context boundary for persistent Vulkan RT work.  When

@@ -425,6 +425,23 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
         session_options.vulkan_options.output_height = impl_->options.output_height;
         session_options.d3d12_options.output_width = impl_->options.output_width;
         session_options.d3d12_options.output_height = impl_->options.output_height;
+        if (*parsed_backend == RayTracingContextSessionBackend::d3d12 &&
+            impl_->options.native_device.backend == SdlGpuNativeBackend::d3d12 &&
+            impl_->options.native_device.complete) {
+            session_options.d3d12_options.borrowed_device =
+                impl_->options.native_device.device;
+            session_options.d3d12_options.borrowed_command_queue =
+                impl_->options.native_device.queue;
+        } else if (*parsed_backend == RayTracingContextSessionBackend::vulkan &&
+                   impl_->options.native_device.backend == SdlGpuNativeBackend::vulkan &&
+                   impl_->options.native_device.complete) {
+            session_options.vulkan_options.borrowed_device = {
+                .instance = impl_->options.native_device.instance,
+                .physical_device = impl_->options.native_device.physical_device,
+                .device = impl_->options.native_device.device,
+                .queue = impl_->options.native_device.queue,
+                .queue_family_index = impl_->options.native_device.queue_family};
+        }
         impl_->session = std::make_unique<RayTracingContextSession>(session_options);
         impl_->backend = result.backend;
     }
@@ -443,6 +460,13 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
         session_receipt, RayTracingContextSessionStageKind::build);
     result.native_trace_ready = stage_native_completed(
         session_receipt, RayTracingContextSessionStageKind::trace);
+    result.shared_device = session_receipt.shared_device;
+    result.shared_queue = session_receipt.shared_queue;
+    result.output_resource_live = session_receipt.output_resource_live;
+    result.output_trace_written = session_receipt.output_trace_written;
+    result.output_transfer_candidate = session_receipt.output_transfer_candidate;
+    result.output_resource_generation = session_receipt.output_resource_generation;
+    result.output_format = session_receipt.output_format;
     if (session_receipt.failed) {
         const auto code = session_receipt.code.empty()
             ? std::string_view{"bridge.backend-failed"}

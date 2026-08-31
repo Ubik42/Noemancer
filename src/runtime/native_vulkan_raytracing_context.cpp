@@ -265,6 +265,7 @@ struct InstanceFunctions final {
     PFN_vkGetPhysicalDeviceProperties get_physical_device_properties{};
     PFN_vkGetPhysicalDeviceMemoryProperties get_physical_device_memory_properties{};
     PFN_vkGetPhysicalDeviceQueueFamilyProperties get_physical_device_queue_family_properties{};
+    PFN_vkGetPhysicalDeviceFormatProperties get_physical_device_format_properties{};
     PFN_vkGetDeviceProcAddr get_device_proc_addr{};
     PFN_vkCreateDevice create_device{};
 };
@@ -282,6 +283,12 @@ struct DeviceFunctions final {
     PFN_vkMapMemory map_memory{};
     PFN_vkUnmapMemory unmap_memory{};
     PFN_vkGetBufferDeviceAddress get_buffer_device_address{};
+    PFN_vkCreateImage create_image{};
+    PFN_vkDestroyImage destroy_image{};
+    PFN_vkGetImageMemoryRequirements get_image_memory_requirements{};
+    PFN_vkBindImageMemory bind_image_memory{};
+    PFN_vkCreateImageView create_image_view{};
+    PFN_vkDestroyImageView destroy_image_view{};
     PFN_vkCreateAccelerationStructureKHR create_acceleration_structure{};
     PFN_vkDestroyAccelerationStructureKHR destroy_acceleration_structure{};
     PFN_vkGetAccelerationStructureBuildSizesKHR get_acceleration_structure_build_sizes{};
@@ -323,6 +330,13 @@ struct BufferResource final {
     VkDeviceAddress device_address{};
 };
 
+struct ImageResource final {
+    VkImage image{};
+    VkImageView view{};
+    VkDeviceMemory memory{};
+    VkDeviceSize allocation_size{};
+};
+
 struct AccelerationStructureResource final {
     VkAccelerationStructureKHR acceleration_structure{};
     VkDeviceAddress device_address{};
@@ -362,6 +376,16 @@ VkDeviceAddress align_address(const VkDeviceAddress address, const VkDeviceSize 
     return remainder == 0U ? address : address + alignment - remainder;
 }
 
+std::string_view image_layout_name(const VkImageLayout layout) noexcept {
+    switch (layout) {
+    case VK_IMAGE_LAYOUT_UNDEFINED: return "undefined";
+    case VK_IMAGE_LAYOUT_GENERAL: return "general";
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: return "shader-read-only-optimal";
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: return "transfer-src-optimal";
+    default: return "other";
+    }
+}
+
 bool require_instance_functions(const InstanceFunctions& functions) {
     return functions.destroy_instance != nullptr && functions.enumerate_physical_devices != nullptr &&
            functions.enumerate_device_extension_properties != nullptr &&
@@ -370,16 +394,33 @@ bool require_instance_functions(const InstanceFunctions& functions) {
            functions.get_physical_device_properties != nullptr &&
            functions.get_physical_device_memory_properties != nullptr &&
            functions.get_physical_device_queue_family_properties != nullptr &&
+           functions.get_physical_device_format_properties != nullptr &&
            functions.get_device_proc_addr != nullptr && functions.create_device != nullptr;
 }
 
-bool require_device_functions(const DeviceFunctions& functions) {
-    return functions.get_device_queue != nullptr && functions.destroy_device != nullptr &&
-           functions.device_wait_idle != nullptr && functions.create_buffer != nullptr &&
+bool require_borrowed_instance_functions(const InstanceFunctions& functions) {
+    return functions.enumerate_device_extension_properties != nullptr &&
+           functions.get_physical_device_features2 != nullptr &&
+           functions.get_physical_device_properties2 != nullptr &&
+           functions.get_physical_device_properties != nullptr &&
+           functions.get_physical_device_memory_properties != nullptr &&
+           functions.get_physical_device_queue_family_properties != nullptr &&
+           functions.get_physical_device_format_properties != nullptr &&
+           functions.get_device_proc_addr != nullptr;
+}
+
+bool require_device_functions(const DeviceFunctions& functions, const bool borrowed_device) {
+    return (borrowed_device || functions.get_device_queue != nullptr) &&
+           (borrowed_device || functions.destroy_device != nullptr) &&
+           (borrowed_device || functions.device_wait_idle != nullptr) &&
+           functions.create_buffer != nullptr &&
            functions.destroy_buffer != nullptr && functions.get_buffer_memory_requirements != nullptr &&
            functions.allocate_memory != nullptr && functions.free_memory != nullptr &&
            functions.bind_buffer_memory != nullptr && functions.map_memory != nullptr &&
            functions.unmap_memory != nullptr && functions.get_buffer_device_address != nullptr &&
+           functions.create_image != nullptr && functions.destroy_image != nullptr &&
+           functions.get_image_memory_requirements != nullptr && functions.bind_image_memory != nullptr &&
+           functions.create_image_view != nullptr && functions.destroy_image_view != nullptr &&
            functions.create_acceleration_structure != nullptr &&
            functions.destroy_acceleration_structure != nullptr &&
            functions.get_acceleration_structure_build_sizes != nullptr &&
@@ -487,6 +528,101 @@ bool create_buffer(const DeviceFunctions& functions,
     return true;
 }
 
+bool create_output_image(const InstanceFunctions& instance_functions,
+                         const DeviceFunctions& device_functions,
+                         const VkPhysicalDevice physical_device,
+                         const VkDevice device,
+                         const VkPhysicalDeviceMemoryProperties& memory_properties,
+                         const std::uint32_t width,
+                         const std::uint32_t height,
+                         const std::uint32_t depth,
+                         ImageResource& result,
+                         std::string& error_code,
+                         std::string& error_detail) {
+    result = {};
+    if (physical_device == VK_NULL_HANDLE || device == VK_NULL_HANDLE || width == 0U || height == 0U ||
+        depth == 0U || instance_functions.get_physical_device_format_properties == nullptr) {
+        error_code = "native-vulkan-rt.output-image-contract-invalid";
+        error_detail = "The runtime-private Vulkan output image arguments are invalid.";
+        return false;
+    }
+    VkFormatProperties format_properties{};
+    instance_functions.get_physical_device_format_properties(
+        physical_device, VK_FORMAT_R32_UINT, &format_properties);
+    if ((format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == 0U) {
+        error_code = "native-vulkan-rt.output-image-format-unsupported";
+        error_detail = "VK_FORMAT_R32_UINT is not available for an optimal-tiled storage image.";
+        return false;
+    }
+    VkImageCreateInfo image_info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image_info.imageType = depth > 1U ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+    image_info.format = VK_FORMAT_R32_UINT;
+    image_info.extent = {width, height, depth};
+    image_info.mipLevels = 1U;
+    image_info.arrayLayers = 1U;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (device_functions.create_image(device, &image_info, nullptr, &result.image) != VK_SUCCESS ||
+        result.image == VK_NULL_HANDLE) {
+        error_code = "native-vulkan-rt.create-output-image-failed";
+        error_detail = "vkCreateImage failed for the runtime-private Vulkan output image.";
+        return false;
+    }
+    VkMemoryRequirements requirements{};
+    device_functions.get_image_memory_requirements(device, result.image, &requirements);
+    const auto memory_type = find_memory_type(
+        memory_properties, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (!memory_type) {
+        device_functions.destroy_image(device, result.image, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.output-image-memory-type-unavailable";
+        error_detail = "No device-local memory type can back the runtime-private output image.";
+        return false;
+    }
+    VkMemoryAllocateInfo allocate_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate_info.allocationSize = requirements.size;
+    allocate_info.memoryTypeIndex = *memory_type;
+    if (device_functions.allocate_memory(device, &allocate_info, nullptr, &result.memory) != VK_SUCCESS ||
+        result.memory == VK_NULL_HANDLE) {
+        device_functions.destroy_image(device, result.image, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.allocate-output-image-memory-failed";
+        error_detail = "vkAllocateMemory failed for the runtime-private output image.";
+        return false;
+    }
+    result.allocation_size = requirements.size;
+    if (device_functions.bind_image_memory(device, result.image, result.memory, 0U) != VK_SUCCESS) {
+        device_functions.free_memory(device, result.memory, nullptr);
+        device_functions.destroy_image(device, result.image, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.bind-output-image-memory-failed";
+        error_detail = "vkBindImageMemory failed for the runtime-private output image.";
+        return false;
+    }
+    VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view_info.image = result.image;
+    view_info.viewType = depth > 1U ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = VK_FORMAT_R32_UINT;
+    view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view_info.subresourceRange.baseMipLevel = 0U;
+    view_info.subresourceRange.levelCount = 1U;
+    view_info.subresourceRange.baseArrayLayer = 0U;
+    view_info.subresourceRange.layerCount = 1U;
+    if (device_functions.create_image_view(device, &view_info, nullptr, &result.view) != VK_SUCCESS ||
+        result.view == VK_NULL_HANDLE) {
+        device_functions.free_memory(device, result.memory, nullptr);
+        device_functions.destroy_image(device, result.image, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.create-output-image-view-failed";
+        error_detail = "vkCreateImageView failed for the runtime-private output image.";
+        return false;
+    }
+    return true;
+}
+
 bool write_buffer(const DeviceFunctions& functions,
                   const VkDevice device,
                   const BufferResource& buffer,
@@ -561,6 +697,13 @@ struct NativeVulkanRayTracingContext::Impl final {
     bool build_submitted{};
     bool build_completed{};
     bool trace_submitted{};
+    bool borrowed_device{};
+    bool output_image_sync_complete{};
+    bool output_image_trace_written{};
+    std::uint64_t output_image_generation{};
+    std::uint64_t output_image_generation_serial{};
+    std::uint64_t output_image_sync_value{};
+    VkImageLayout output_image_layout{VK_IMAGE_LAYOUT_UNDEFINED};
     std::uint64_t generation{};
     std::uint64_t scene_topology_revision{};
     std::uint64_t scene_content_revision{};
@@ -595,6 +738,7 @@ struct NativeVulkanRayTracingContext::Impl final {
     BufferResource tlas_result_buffer;
     BufferResource tlas_scratch_buffer;
     BufferResource output_buffer;
+    ImageResource output_image;
     BufferResource sbt_buffer;
     AccelerationStructureResource blas;
     AccelerationStructureResource tlas;
@@ -627,6 +771,18 @@ struct NativeVulkanRayTracingContext::Impl final {
         options.output_height = std::clamp(options.output_height, 1U, 4096U);
         options.output_depth = std::clamp(options.output_depth, 1U, 64U);
         triangles.reserve(std::min(options.maximum_triangles, std::size_t{256U}));
+    }
+
+    [[nodiscard]] bool borrowed_device_requested() const noexcept {
+        const auto& borrowed = options.borrowed_device;
+        return borrowed.instance != nullptr || borrowed.physical_device != nullptr ||
+               borrowed.device != nullptr || borrowed.queue != nullptr || borrowed.queue_family_index != 0U;
+    }
+
+    [[nodiscard]] bool borrowed_device_complete() const noexcept {
+        const auto& borrowed = options.borrowed_device;
+        return borrowed.instance != nullptr && borrowed.physical_device != nullptr &&
+               borrowed.device != nullptr && borrowed.queue != nullptr;
     }
 
     void destroy_buffer(BufferResource& resource) noexcept {
@@ -662,6 +818,24 @@ struct NativeVulkanRayTracingContext::Impl final {
         native_scene_built = false;
     }
 
+    void destroy_output_image() noexcept {
+        if (device != VK_NULL_HANDLE && output_image.view != VK_NULL_HANDLE &&
+            device_functions.destroy_image_view != nullptr)
+            device_functions.destroy_image_view(device, output_image.view, nullptr);
+        if (device != VK_NULL_HANDLE && output_image.image != VK_NULL_HANDLE &&
+            device_functions.destroy_image != nullptr)
+            device_functions.destroy_image(device, output_image.image, nullptr);
+        if (device != VK_NULL_HANDLE && output_image.memory != VK_NULL_HANDLE &&
+            device_functions.free_memory != nullptr)
+            device_functions.free_memory(device, output_image.memory, nullptr);
+        output_image = {};
+        output_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        output_image_generation = 0U;
+        output_image_sync_value = 0U;
+        output_image_sync_complete = false;
+        output_image_trace_written = false;
+    }
+
     void destroy_trace_objects() noexcept {
         if (device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE &&
             device_functions.destroy_pipeline != nullptr)
@@ -691,10 +865,15 @@ struct NativeVulkanRayTracingContext::Impl final {
     }
 
     void destroy_native() noexcept {
-        if (device != VK_NULL_HANDLE && device_functions.device_wait_idle != nullptr)
+        // A borrowed SDL_GPU device is not owned by this context.  Every
+        // submission made by this context is synchronously fenced before the
+        // corresponding resources are destroyed, so do not impose a global
+        // vkDeviceWaitIdle on the host application's queue/device.
+        if (!borrowed_device && device != VK_NULL_HANDLE && device_functions.device_wait_idle != nullptr)
             static_cast<void>(device_functions.device_wait_idle(device));
         destroy_trace_objects();
         destroy_scene_native();
+        destroy_output_image();
         destroy_buffer(output_buffer);
         if (device != VK_NULL_HANDLE && fence != VK_NULL_HANDLE && device_functions.destroy_fence != nullptr)
             device_functions.destroy_fence(device, fence, nullptr);
@@ -703,12 +882,12 @@ struct NativeVulkanRayTracingContext::Impl final {
             device_functions.destroy_command_pool(device, command_pool, nullptr);
         command_pool = VK_NULL_HANDLE;
         command_buffer = VK_NULL_HANDLE;
-        if (device != VK_NULL_HANDLE && device_functions.destroy_device != nullptr)
+        if (!borrowed_device && device != VK_NULL_HANDLE && device_functions.destroy_device != nullptr)
             device_functions.destroy_device(device, nullptr);
         device = VK_NULL_HANDLE;
         queue = VK_NULL_HANDLE;
         physical_device = VK_NULL_HANDLE;
-        if (instance != VK_NULL_HANDLE && instance_functions.destroy_instance != nullptr)
+        if (!borrowed_device && instance != VK_NULL_HANDLE && instance_functions.destroy_instance != nullptr)
             instance_functions.destroy_instance(instance, nullptr);
         instance = VK_NULL_HANDLE;
         get_instance_proc_addr = nullptr;
@@ -716,6 +895,7 @@ struct NativeVulkanRayTracingContext::Impl final {
         device_functions = {};
         memory_properties = {};
         queue_family_index = 0U;
+        borrowed_device = false;
     }
 
     NativeVulkanRayTracingContextReceipt receipt(
@@ -741,6 +921,20 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.trace_submitted = trace_submitted;
         result.trace_completed = trace_completed;
         result.readback_completed = readback_completed;
+        result.output_image_live = output_image.image != VK_NULL_HANDLE;
+        result.output_image_view_live = output_image.view != VK_NULL_HANDLE;
+        result.output_image_runtime_private = result.output_image_live;
+        // SDL_GPU owns a separate device in the current runtime.  Until a
+        // same-device adapter is explicitly supplied, no image is advertised
+        // as externally importable and no native handle leaves this PImpl.
+        result.output_image_interop_ready = false;
+        result.output_image_external_import_supported = false;
+        result.output_image_same_device_required = result.output_image_live;
+        result.output_image_layout_ready = result.output_image_live &&
+                                           output_image_layout == VK_IMAGE_LAYOUT_GENERAL;
+        result.output_image_sync_complete = result.output_image_live && output_image_sync_complete;
+        result.output_image_trace_written = output_image_trace_written;
+        result.output_image_cpu_readback_supported = false;
         result.resources_live = device != VK_NULL_HANDLE && instance != VK_NULL_HANDLE;
         result.shutdown = result_state == NativeVulkanRayTracingContextState::shutdown ||
                           state == NativeVulkanRayTracingContextState::shutdown;
@@ -757,6 +951,17 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.output_hash = output_hash;
         result.output_bytes = trace_completed ? sizeof(std::uint32_t) : 0U;
         result.readback_bytes = readback_completed ? sizeof(std::uint32_t) : 0U;
+        result.output_image_queue_family = result.output_image_live ? queue_family_index : 0U;
+        result.output_image_generation = result.output_image_live ? output_image_generation : 0U;
+        result.output_image_bytes = result.output_image_live ? output_image.allocation_size : 0U;
+        result.output_image_sync_value = result.output_image_live ? output_image_sync_value : 0U;
+        result.output_image_format = result.output_image_live ? "r32_uint" : "none";
+        result.output_image_layout = result.output_image_live ? std::string(image_layout_name(output_image_layout)) : "none";
+        result.output_image_access = result.output_image_live ? "storage-read-write" : "none";
+        result.output_image_sync_kind = result.output_image_live ? "fence" : "none";
+        result.output_image_interop_boundary = result.output_image_live
+                                                   ? "runtime-private; same-device adapter only; no handle export"
+                                                   : "unavailable";
         return result;
     }
 
@@ -803,35 +1008,141 @@ struct NativeVulkanRayTracingContext::Impl final {
         application_info.apiVersion = VK_API_VERSION_1_1;
         VkInstanceCreateInfo instance_info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         instance_info.pApplicationInfo = &application_info;
-        const auto create_instance = load_global<PFN_vkCreateInstance>(
-            module, get_instance_proc_addr, "vkCreateInstance");
-        if (create_instance == nullptr) {
-            unsupported = true;
-            error_code = "native-vulkan-rt.create-instance-entrypoint-unavailable";
-            error_detail = "vkCreateInstance is missing from the Vulkan loader.";
-            return false;
-        }
-        if (create_instance(&instance_info, nullptr, &instance) != VK_SUCCESS || instance == VK_NULL_HANDLE) {
-            error_code = "native-vulkan-rt.create-instance-failed";
-            error_detail = "vkCreateInstance failed.";
-            return false;
+        const auto borrowed_requested = borrowed_device_requested();
+        if (borrowed_requested) {
+            if (!borrowed_device_complete()) {
+                unsupported = true;
+                error_code = "native-vulkan-rt.shared-device-incomplete";
+                error_detail = "Borrowed SDL_GPU Vulkan adoption requires instance, physical device, device and queue handles.";
+                return false;
+            }
+            instance = reinterpret_cast<VkInstance>(options.borrowed_device.instance);
+            physical_device = reinterpret_cast<VkPhysicalDevice>(options.borrowed_device.physical_device);
+            device = reinterpret_cast<VkDevice>(options.borrowed_device.device);
+            queue = reinterpret_cast<VkQueue>(options.borrowed_device.queue);
+            queue_family_index = options.borrowed_device.queue_family_index;
+            borrowed_device = true;
+        } else {
+            const auto create_instance = load_global<PFN_vkCreateInstance>(
+                module, get_instance_proc_addr, "vkCreateInstance");
+            if (create_instance == nullptr) {
+                unsupported = true;
+                error_code = "native-vulkan-rt.create-instance-entrypoint-unavailable";
+                error_detail = "vkCreateInstance is missing from the Vulkan loader.";
+                return false;
+            }
+            if (create_instance(&instance_info, nullptr, &instance) != VK_SUCCESS || instance == VK_NULL_HANDLE) {
+                error_code = "native-vulkan-rt.create-instance-failed";
+                error_detail = "vkCreateInstance failed.";
+                return false;
+            }
         }
         instance_functions.destroy_instance = load_instance<PFN_vkDestroyInstance>(get_instance_proc_addr, instance, "vkDestroyInstance");
         instance_functions.enumerate_physical_devices = load_instance<PFN_vkEnumeratePhysicalDevices>(get_instance_proc_addr, instance, "vkEnumeratePhysicalDevices");
         instance_functions.enumerate_device_extension_properties = load_instance<PFN_vkEnumerateDeviceExtensionProperties>(get_instance_proc_addr, instance, "vkEnumerateDeviceExtensionProperties");
         instance_functions.get_physical_device_features2 = load_instance<PFN_vkGetPhysicalDeviceFeatures2>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceFeatures2");
+        if (instance_functions.get_physical_device_features2 == nullptr)
+            instance_functions.get_physical_device_features2 =
+                load_instance<PFN_vkGetPhysicalDeviceFeatures2KHR>(
+                    get_instance_proc_addr, instance, "vkGetPhysicalDeviceFeatures2KHR");
         instance_functions.get_physical_device_properties2 = load_instance<PFN_vkGetPhysicalDeviceProperties2>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceProperties2");
+        if (instance_functions.get_physical_device_properties2 == nullptr)
+            instance_functions.get_physical_device_properties2 =
+                load_instance<PFN_vkGetPhysicalDeviceProperties2KHR>(
+                    get_instance_proc_addr, instance, "vkGetPhysicalDeviceProperties2KHR");
         instance_functions.get_physical_device_properties = load_instance<PFN_vkGetPhysicalDeviceProperties>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceProperties");
         instance_functions.get_physical_device_memory_properties = load_instance<PFN_vkGetPhysicalDeviceMemoryProperties>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceMemoryProperties");
         instance_functions.get_physical_device_queue_family_properties = load_instance<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+        instance_functions.get_physical_device_format_properties = load_instance<PFN_vkGetPhysicalDeviceFormatProperties>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceFormatProperties");
         instance_functions.get_device_proc_addr = load_instance<PFN_vkGetDeviceProcAddr>(get_instance_proc_addr, instance, "vkGetDeviceProcAddr");
         instance_functions.create_device = load_instance<PFN_vkCreateDevice>(get_instance_proc_addr, instance, "vkCreateDevice");
-        if (!require_instance_functions(instance_functions)) {
+        if ((borrowed_requested && !require_borrowed_instance_functions(instance_functions)) ||
+            (!borrowed_requested && !require_instance_functions(instance_functions))) {
             unsupported = true;
-            error_code = "native-vulkan-rt.instance-query-entrypoint-unavailable";
-            error_detail = "The Vulkan instance lacks a required physical-device query entry point.";
+            error_code = borrowed_requested ? "native-vulkan-rt.shared-device-unsupported"
+                                            : "native-vulkan-rt.instance-query-entrypoint-unavailable";
+            error_detail = borrowed_requested
+                               ? "The borrowed SDL_GPU instance lacks a required Vulkan RT query entry point."
+                               : "The Vulkan instance lacks a required physical-device query entry point.";
             return false;
         }
+        if (borrowed_requested) {
+            std::uint32_t extension_count = 0U;
+            auto extension_result = instance_functions.enumerate_device_extension_properties(
+                physical_device, nullptr, &extension_count, nullptr);
+            if (extension_result != VK_SUCCESS && extension_result != VK_INCOMPLETE) {
+                unsupported = true;
+                error_code = "native-vulkan-rt.shared-device-unsupported";
+                error_detail = "The borrowed physical device could not expose its device extensions.";
+                return false;
+            }
+            extension_count = std::min(extension_count, 256U);
+            std::vector<VkExtensionProperties> extensions(extension_count);
+            if (extension_count > 0U) {
+                extension_result = instance_functions.enumerate_device_extension_properties(
+                    physical_device, nullptr, &extension_count, extensions.data());
+                if (extension_result != VK_SUCCESS && extension_result != VK_INCOMPLETE) {
+                    unsupported = true;
+                    error_code = "native-vulkan-rt.shared-device-unsupported";
+                    error_detail = "The borrowed physical device extension query was incomplete.";
+                    return false;
+                }
+            }
+            const bool bda_extension = has_extension(extensions, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+            VkPhysicalDeviceProperties borrowed_properties{};
+            instance_functions.get_physical_device_properties(physical_device, &borrowed_properties);
+            if (!has_extension(extensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) ||
+                !has_extension(extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) ||
+                !has_extension(extensions, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) ||
+                !has_extension(extensions, VK_KHR_SPIRV_1_4_EXTENSION_NAME) ||
+                !has_extension(extensions, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME) ||
+                (!bda_extension && borrowed_properties.apiVersion < VK_API_VERSION_1_2)) {
+                unsupported = true;
+                error_code = "native-vulkan-rt.shared-device-unsupported";
+                error_detail = "The borrowed SDL_GPU device was not created with the required Vulkan RT extensions.";
+                return false;
+            }
+            VkPhysicalDeviceBufferDeviceAddressFeatures bda{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+            VkPhysicalDeviceAccelerationStructureFeaturesKHR as{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+            VkPhysicalDeviceRayTracingPipelineFeaturesKHR ray_pipeline{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+            ray_pipeline.pNext = &as;
+            as.pNext = &bda;
+            VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            features.pNext = &ray_pipeline;
+            instance_functions.get_physical_device_features2(physical_device, &features);
+            if (ray_pipeline.rayTracingPipeline != VK_TRUE || as.accelerationStructure != VK_TRUE ||
+                bda.bufferDeviceAddress != VK_TRUE) {
+                unsupported = true;
+                error_code = "native-vulkan-rt.shared-device-unsupported";
+                error_detail = "The borrowed SDL_GPU device does not expose the required Vulkan RT features.";
+                return false;
+            }
+            std::uint32_t family_count = 0U;
+            instance_functions.get_physical_device_queue_family_properties(
+                physical_device, &family_count, nullptr);
+            std::vector<VkQueueFamilyProperties> families(family_count);
+            if (family_count > 0U)
+                instance_functions.get_physical_device_queue_family_properties(
+                    physical_device, &family_count, families.data());
+            if (queue_family_index >= family_count ||
+                (families[queue_family_index].queueFlags & VK_QUEUE_COMPUTE_BIT) == 0U) {
+                unsupported = true;
+                error_code = "native-vulkan-rt.shared-device-unsupported";
+                error_detail = "The borrowed SDL_GPU queue family is not a valid compute queue for RT work.";
+                return false;
+            }
+            instance_functions.get_physical_device_memory_properties(physical_device, &memory_properties);
+            VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            ray_tracing_properties = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+            ray_tracing_properties.pNext = &acceleration_properties;
+            properties2.pNext = &ray_tracing_properties;
+            instance_functions.get_physical_device_properties2(physical_device, &properties2);
+        }
+        if (!borrowed_requested) {
         std::uint32_t device_count = 0U;
         auto enumerate_result = instance_functions.enumerate_physical_devices(instance, &device_count, nullptr);
         if (enumerate_result != VK_SUCCESS && enumerate_result != VK_INCOMPLETE) {
@@ -952,6 +1263,7 @@ struct NativeVulkanRayTracingContext::Impl final {
             error_detail = "vkCreateDevice failed for the acceleration-structure feature chain.";
             return false;
         }
+        }
 #define NOEMANCER_LOAD_DEVICE(member, type, name) \
         device_functions.member = load_device<type>(instance_functions.get_device_proc_addr, device, name)
         NOEMANCER_LOAD_DEVICE(get_device_queue, PFN_vkGetDeviceQueue, "vkGetDeviceQueue");
@@ -968,6 +1280,12 @@ struct NativeVulkanRayTracingContext::Impl final {
         NOEMANCER_LOAD_DEVICE(get_buffer_device_address, PFN_vkGetBufferDeviceAddress, "vkGetBufferDeviceAddress");
         if (device_functions.get_buffer_device_address == nullptr)
             NOEMANCER_LOAD_DEVICE(get_buffer_device_address, PFN_vkGetBufferDeviceAddressKHR, "vkGetBufferDeviceAddressKHR");
+        NOEMANCER_LOAD_DEVICE(create_image, PFN_vkCreateImage, "vkCreateImage");
+        NOEMANCER_LOAD_DEVICE(destroy_image, PFN_vkDestroyImage, "vkDestroyImage");
+        NOEMANCER_LOAD_DEVICE(get_image_memory_requirements, PFN_vkGetImageMemoryRequirements, "vkGetImageMemoryRequirements");
+        NOEMANCER_LOAD_DEVICE(bind_image_memory, PFN_vkBindImageMemory, "vkBindImageMemory");
+        NOEMANCER_LOAD_DEVICE(create_image_view, PFN_vkCreateImageView, "vkCreateImageView");
+        NOEMANCER_LOAD_DEVICE(destroy_image_view, PFN_vkDestroyImageView, "vkDestroyImageView");
         NOEMANCER_LOAD_DEVICE(create_acceleration_structure, PFN_vkCreateAccelerationStructureKHR, "vkCreateAccelerationStructureKHR");
         NOEMANCER_LOAD_DEVICE(destroy_acceleration_structure, PFN_vkDestroyAccelerationStructureKHR, "vkDestroyAccelerationStructureKHR");
         NOEMANCER_LOAD_DEVICE(get_acceleration_structure_build_sizes, PFN_vkGetAccelerationStructureBuildSizesKHR, "vkGetAccelerationStructureBuildSizesKHR");
@@ -1000,16 +1318,26 @@ struct NativeVulkanRayTracingContext::Impl final {
         NOEMANCER_LOAD_DEVICE(cmd_bind_pipeline, PFN_vkCmdBindPipeline, "vkCmdBindPipeline");
         NOEMANCER_LOAD_DEVICE(cmd_bind_descriptor_sets, PFN_vkCmdBindDescriptorSets, "vkCmdBindDescriptorSets");
         NOEMANCER_LOAD_DEVICE(cmd_trace_rays, PFN_vkCmdTraceRaysKHR, "vkCmdTraceRaysKHR");
-#undef NOEMANCER_LOAD_DEVICE
-        if (!require_device_functions(device_functions)) {
+        #undef NOEMANCER_LOAD_DEVICE
+        if (!require_device_functions(device_functions, borrowed_requested)) {
+            if (borrowed_requested) {
+                unsupported = true;
+                error_code = "native-vulkan-rt.shared-device-unsupported";
+                error_detail = "The borrowed SDL_GPU device lacks a required Vulkan RT or output-image entry point.";
+                return false;
+            }
             error_code = "native-vulkan-rt.device-entrypoint-unavailable";
             error_detail = "The Vulkan device lacks a required persistent AS entry point.";
             return false;
         }
-        device_functions.get_device_queue(device, queue_family_index, 0U, &queue);
+        if (!borrowed_requested)
+            device_functions.get_device_queue(device, queue_family_index, 0U, &queue);
         if (queue == VK_NULL_HANDLE) {
-            error_code = "native-vulkan-rt.queue-unavailable";
-            error_detail = "vkGetDeviceQueue returned a null queue.";
+            unsupported = borrowed_requested;
+            error_code = borrowed_requested ? "native-vulkan-rt.shared-device-unsupported"
+                                            : "native-vulkan-rt.queue-unavailable";
+            error_detail = borrowed_requested ? "The borrowed SDL_GPU queue handle is null."
+                                              : "vkGetDeviceQueue returned a null queue.";
             return false;
         }
         VkCommandPoolCreateInfo command_pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -1043,6 +1371,11 @@ struct NativeVulkanRayTracingContext::Impl final {
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                            &output_marker, sizeof(output_marker), output_buffer, error_code, error_detail))
             return false;
+        if (!create_output_image(instance_functions, device_functions, physical_device, device, memory_properties,
+                                 options.output_width, options.output_height, options.output_depth,
+                                 output_image, error_code, error_detail))
+            return false;
+        if (!transition_output_image_to_general(error_code, error_detail)) return false;
         const std::array<VkDescriptorSetLayoutBinding, 2U> descriptor_bindings{
             VkDescriptorSetLayoutBinding{
                 0U, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U,
@@ -1311,6 +1644,73 @@ struct NativeVulkanRayTracingContext::Impl final {
             output_hash ^= static_cast<std::uint8_t>((output_value >> (index * 8U)) & 0xffU);
             output_hash *= kFnvPrime;
         }
+        return true;
+    }
+
+    bool transition_output_image_to_general(std::string& error_code, std::string& error_detail) {
+        if (output_image.image == VK_NULL_HANDLE || command_buffer == VK_NULL_HANDLE ||
+            queue == VK_NULL_HANDLE || fence == VK_NULL_HANDLE) {
+            error_code = "native-vulkan-rt.output-image-sync-unavailable";
+            error_detail = "The runtime-private output image lacks a command stream or synchronization object.";
+            return false;
+        }
+        VkCommandBufferBeginInfo begin_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        if (device_functions.begin_command_buffer(command_buffer, &begin_info) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.output-image-begin-command-buffer-failed";
+            error_detail = "vkBeginCommandBuffer failed for the output image layout transition.";
+            return false;
+        }
+        VkImageMemoryBarrier image_barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        image_barrier.srcAccessMask = 0U;
+        image_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        image_barrier.oldLayout = output_image_layout;
+        image_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        image_barrier.srcQueueFamilyIndex = queue_family_index;
+        image_barrier.dstQueueFamilyIndex = queue_family_index;
+        image_barrier.image = output_image.image;
+        image_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        image_barrier.subresourceRange.baseMipLevel = 0U;
+        image_barrier.subresourceRange.levelCount = 1U;
+        image_barrier.subresourceRange.baseArrayLayer = 0U;
+        image_barrier.subresourceRange.layerCount = 1U;
+        device_functions.cmd_pipeline_barrier(
+            command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0U, 0U, nullptr, 0U, nullptr, 1U, &image_barrier);
+        if (device_functions.end_command_buffer(command_buffer) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.output-image-end-command-buffer-failed";
+            error_detail = "vkEndCommandBuffer failed for the output image layout transition.";
+            return false;
+        }
+        if (device_functions.reset_fences(device, 1U, &fence) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.output-image-reset-fence-failed";
+            error_detail = "vkResetFences failed before the output image layout transition.";
+            return false;
+        }
+        VkSubmitInfo submit_info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit_info.commandBufferCount = 1U;
+        submit_info.pCommandBuffers = &command_buffer;
+        if (device_functions.queue_submit(queue, 1U, &submit_info, fence) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.output-image-submit-failed";
+            error_detail = "vkQueueSubmit failed for the output image layout transition.";
+            return false;
+        }
+        if (device_functions.wait_for_fences(device, 1U, &fence, VK_TRUE,
+                                             std::numeric_limits<std::uint64_t>::max()) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.output-image-fence-wait-failed";
+            error_detail = "vkWaitForFences failed for the output image layout transition.";
+            return false;
+        }
+        output_image_layout = VK_IMAGE_LAYOUT_GENERAL;
+        output_image_sync_complete = true;
+        if (output_image_generation_serial == std::numeric_limits<std::uint64_t>::max() ||
+            output_image_sync_value == std::numeric_limits<std::uint64_t>::max()) {
+            error_code = "native-vulkan-rt.output-image-generation-overflow";
+            error_detail = "The output image generation or synchronization value cannot be incremented safely.";
+            return false;
+        }
+        ++output_image_generation_serial;
+        ++output_image_sync_value;
+        output_image_generation = output_image_generation_serial;
         return true;
     }
 
@@ -1590,6 +1990,16 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.trace_submitted = trace_submitted;
         result.trace_completed = trace_completed;
         result.readback_completed = readback_completed;
+        result.output_image_live = false;
+        result.output_image_view_live = false;
+        result.output_image_runtime_private = false;
+        result.output_image_interop_ready = false;
+        result.output_image_external_import_supported = false;
+        result.output_image_same_device_required = false;
+        result.output_image_layout_ready = false;
+        result.output_image_sync_complete = false;
+        result.output_image_trace_written = false;
+        result.output_image_cpu_readback_supported = false;
         result.resources_live = false;
         result.shutdown = result_state == NativeVulkanRayTracingContextState::shutdown ||
                           state == NativeVulkanRayTracingContextState::shutdown;
@@ -1606,6 +2016,11 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.output_hash = output_hash;
         result.output_bytes = trace_completed ? sizeof(std::uint32_t) : 0U;
         result.readback_bytes = readback_completed ? sizeof(std::uint32_t) : 0U;
+        result.output_image_format = "none";
+        result.output_image_layout = "none";
+        result.output_image_access = "none";
+        result.output_image_sync_kind = "none";
+        result.output_image_interop_boundary = "unavailable";
         return result;
     }
     NativeVulkanRayTracingContextReceipt not_ready(const NativeVulkanRayTracingContextFailureStage stage,

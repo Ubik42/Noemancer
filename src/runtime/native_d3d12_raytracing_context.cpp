@@ -409,6 +409,26 @@ struct NativeD3D12RayTracingContext::Impl final {
     std::string last_detail;
     NativeD3D12RayTracingContextFailureStage last_stage{
         NativeD3D12RayTracingContextFailureStage::none};
+    bool borrowed_device_requested{};
+    bool borrowed_command_queue_requested{};
+    bool device_adopted{};
+    bool command_queue_adopted{};
+    bool shared_device{};
+    bool shared_command_queue{};
+    NativeD3D12RayTracingOutputSurfaceState output_surface_state{
+        NativeD3D12RayTracingOutputSurfaceState::unavailable};
+    std::uint64_t output_resource_generation{};
+    std::uint64_t output_access_token{};
+    std::uint64_t next_output_access_token{1U};
+    std::uint64_t output_fence_value{};
+    std::uint64_t last_submitted_fence_value{};
+    std::uint64_t last_completed_fence_value{};
+    // Common mirrors keep the metadata contract available on non-Windows
+    // builds without leaking the platform-specific resource members below.
+    bool output_surface_resource_ready{};
+    bool output_surface_trace_completed{};
+    bool last_output_copy_submitted{};
+    bool last_output_copy_completed{};
 
 #if defined(_WIN32)
     struct GeometryResources final {
@@ -522,6 +542,14 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.generation = impl.generation;
     result.scene_generation = impl.scene_generation;
     result.resource_generation = impl.resource_generation;
+    result.borrowed_device_requested = impl.borrowed_device_requested;
+    result.borrowed_command_queue_requested = impl.borrowed_command_queue_requested;
+    result.device_adopted = impl.device_adopted;
+    result.command_queue_adopted = impl.command_queue_adopted;
+    result.shared_device = impl.shared_device;
+    result.shared_command_queue = impl.shared_command_queue;
+    result.output_copy_submitted = impl.last_output_copy_submitted;
+    result.output_copy_completed = impl.last_output_copy_completed;
     result.scene_received = impl.scene.has_value();
     if (impl.scene) {
         result.scene_revision = impl.scene->revision;
@@ -535,6 +563,51 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.output_bytes = static_cast<std::uint64_t>(result.output_width) * result.output_height *
         result.output_pixel_stride_bytes;
     result.output_readback_bytes = result.output_bytes;
+    result.output_surface.schema = std::string(native_d3d12_raytracing_output_surface_schema);
+    result.output_surface.resource_kind = "buffer";
+    result.output_surface.format = "R32G32B32A32_UINT";
+    result.output_surface.resource_state = impl.output_surface_state;
+    result.output_surface.width = impl.options.output_width;
+    result.output_surface.height = impl.options.output_height;
+    result.output_surface.depth = 1U;
+    result.output_surface.pixel_stride_bytes = result.output_pixel_stride_bytes;
+    result.output_surface.bytes = result.output_bytes;
+    result.output_surface.resource_generation = impl.output_resource_generation;
+    result.output_surface.context_generation = impl.generation;
+    result.output_surface.submitted_fence_value = impl.output_fence_value;
+    result.output_surface.completed_fence_value = impl.last_completed_fence_value;
+    result.output_surface.resource_ready = impl.output_surface_resource_ready;
+    result.output_surface.gpu_write_complete =
+        impl.output_surface_resource_ready &&
+        impl.output_surface_state == NativeD3D12RayTracingOutputSurfaceState::copy_source &&
+        impl.output_surface_trace_completed &&
+        impl.output_fence_value != 0U &&
+        impl.last_completed_fence_value >= impl.output_fence_value;
+    result.output_surface.valid = result.output_surface.gpu_write_complete;
+    result.output_surface.cpu_readback_required = false;
+    result.output_surface.shared_device = impl.shared_device;
+    result.output_surface.shared_command_queue = impl.shared_command_queue;
+    result.output_surface.direct_sdl_gpu_import_supported = false;
+    result.output_surface.expired =
+        impl.state == NativeD3D12RayTracingContextState::shutdown ||
+        impl.output_surface_state == NativeD3D12RayTracingOutputSurfaceState::released;
+    if (result.output_surface.expired) {
+        result.output_surface.code = "native-d3d12.context.output-surface-expired";
+        result.output_surface.detail =
+            "The retained output resource was released by shutdown; previously borrowed views are invalid.";
+    } else if (result.output_surface.valid) {
+        result.output_surface.code = "native-d3d12.context.output-surface-ready";
+        result.output_surface.detail =
+            "The retained output is fence-complete in COPY_SOURCE state and can be consumed by a GPU-only runtime copy.";
+    } else if (result.output_surface.resource_ready) {
+        result.output_surface.code = "native-d3d12.context.output-surface-not-ready";
+        result.output_surface.detail =
+            "The retained output exists but is not yet a fence-complete COPY_SOURCE surface.";
+    } else {
+        result.output_surface.code = "native-d3d12.context.output-surface-unavailable";
+        result.output_surface.detail =
+            "A retained output surface is created only after the native trace pipeline is ready.";
+    }
 #if defined(_WIN32)
     result.blas_ready = impl.blas_ready;
     result.tlas_ready = impl.tlas_ready;
@@ -790,6 +863,14 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     impl.shader_pipeline_ready = true;
     impl.shader_table_ready = true;
     impl.output_resource_ready = true;
+    impl.output_surface_resource_ready = true;
+    impl.output_surface_state = NativeD3D12RayTracingOutputSurfaceState::unordered_access;
+    if (impl.output_resource_generation == 0U)
+        impl.output_resource_generation = 1U;
+    if (impl.next_output_access_token == 0U ||
+        impl.next_output_access_token == std::numeric_limits<std::uint64_t>::max())
+        impl.next_output_access_token = 1U;
+    impl.output_access_token = impl.next_output_access_token++;
     code = "native-d3d12.context.trace-resources-ready";
     detail = "Persistent root signature, DXR state object, aligned SBT and UAV/readback resources are ready for TraceRays.";
     return true;
@@ -843,7 +924,11 @@ HRESULT submit_and_wait(ID3D12CommandQueue* queue,
                         ID3D12Fence* fence,
                         ID3D12GraphicsCommandList4* command_list,
                         HANDLE& fence_event,
-                        std::uint64_t& next_fence_value) {
+                        std::uint64_t& next_fence_value,
+                        std::uint64_t* submitted_fence_value = nullptr,
+                        std::uint64_t* completed_fence_value = nullptr) {
+    if (submitted_fence_value != nullptr) *submitted_fence_value = 0U;
+    if (completed_fence_value != nullptr) *completed_fence_value = 0U;
     if (queue == nullptr || fence == nullptr || command_list == nullptr ||
         next_fence_value == 0U || next_fence_value == std::numeric_limits<std::uint64_t>::max())
         return E_INVALIDARG;
@@ -852,15 +937,23 @@ HRESULT submit_and_wait(ID3D12CommandQueue* queue,
     const auto fence_value = next_fence_value++;
     HRESULT hr = queue->Signal(fence, fence_value);
     if (FAILED(hr)) return hr;
-    if (fence->GetCompletedValue() >= fence_value) return S_OK;
+    if (submitted_fence_value != nullptr) *submitted_fence_value = fence_value;
+    if (fence->GetCompletedValue() >= fence_value) {
+        if (completed_fence_value != nullptr)
+            *completed_fence_value = fence->GetCompletedValue();
+        return S_OK;
+    }
     if (fence_event == nullptr) {
         fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (fence_event == nullptr) return HRESULT_FROM_WIN32(GetLastError());
     }
     hr = fence->SetEventOnCompletion(fence_value, fence_event);
     if (FAILED(hr)) return hr;
-    return WaitForSingleObject(fence_event, INFINITE) == WAIT_OBJECT_0
-        ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+    if (WaitForSingleObject(fence_event, INFINITE) != WAIT_OBJECT_0)
+        return HRESULT_FROM_WIN32(GetLastError());
+    if (completed_fence_value != nullptr)
+        *completed_fence_value = fence->GetCompletedValue();
+    return S_OK;
 }
 
 void transition_resource(ID3D12GraphicsCommandList4* command_list,
@@ -929,6 +1022,17 @@ std::string_view native_d3d12_raytracing_context_failure_stage_name(
     return "cleanup";
 }
 
+std::string_view native_d3d12_raytracing_output_surface_state_name(
+    const NativeD3D12RayTracingOutputSurfaceState state) noexcept {
+    switch (state) {
+    case NativeD3D12RayTracingOutputSurfaceState::unavailable: return "unavailable";
+    case NativeD3D12RayTracingOutputSurfaceState::unordered_access: return "unordered-access";
+    case NativeD3D12RayTracingOutputSurfaceState::copy_source: return "copy-source";
+    case NativeD3D12RayTracingOutputSurfaceState::released: return "released";
+    }
+    return "unavailable";
+}
+
 NativeD3D12RayTracingContext::NativeD3D12RayTracingContext(
     NativeD3D12RayTracingContextOptions options)
     : impl_(std::make_unique<Impl>(std::move(options))) {}
@@ -970,6 +1074,9 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::initialize() {
                     "The supplied DXIL shader set exceeds the bounded context resource budget.");
         return receipt_from(*impl_, "initialize");
     }
+    impl_->borrowed_device_requested = impl_->options.borrowed_device != nullptr;
+    impl_->borrowed_command_queue_requested =
+        impl_->options.borrowed_command_queue != nullptr;
 
 #if !defined(_WIN32)
     impl_->state = NativeD3D12RayTracingContextState::unsupported;
@@ -981,7 +1088,16 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::initialize() {
     result.fallback_active = true;
     return result;
 #else
-    if (!impl_->d3d12_module.load() || !impl_->dxgi_module.load()) {
+    if (impl_->borrowed_command_queue_requested &&
+        !impl_->borrowed_device_requested) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::device,
+                    "native-d3d12.context.borrowed-queue-without-device",
+                    "A borrowed command queue is only valid when its matching borrowed D3D12 device is supplied.");
+        return receipt_from(*impl_, "initialize");
+    }
+    if (!impl_->d3d12_module.load() ||
+        (!impl_->borrowed_device_requested && !impl_->dxgi_module.load())) {
         impl_->state = NativeD3D12RayTracingContextState::unsupported;
         save_result(*impl_, NativeD3D12RayTracingContextFailureStage::loader,
                     "native-d3d12.context.loader-unavailable",
@@ -991,53 +1107,151 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::initialize() {
         result.fallback_active = true;
         return result;
     }
-    const auto create_device = impl_->d3d12_module.symbol<CreateDeviceFn>("D3D12CreateDevice");
-    const auto create_factory = impl_->dxgi_module.symbol<CreateFactoryFn>("CreateDXGIFactory2");
-    if (create_device == nullptr || create_factory == nullptr) {
-        impl_->state = NativeD3D12RayTracingContextState::unsupported;
-        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::loader,
-                    "native-d3d12.context.entrypoint-unavailable",
-                    "The D3D12CreateDevice or CreateDXGIFactory2 entry point is unavailable.");
-        auto result = receipt_from(*impl_, "initialize");
-        result.state = NativeD3D12RayTracingContextState::unsupported;
-        result.fallback_active = true;
-        return result;
+    HRESULT hr = S_OK;
+    if (impl_->borrowed_device_requested) {
+        auto* borrowed_unknown = reinterpret_cast<IUnknown*>(impl_->options.borrowed_device);
+        Microsoft::WRL::ComPtr<ID3D12Device5> borrowed_device;
+        hr = borrowed_unknown == nullptr
+            ? E_INVALIDARG
+            : borrowed_unknown->QueryInterface(
+                __uuidof(ID3D12Device5),
+                reinterpret_cast<void**>(borrowed_device.GetAddressOf()));
+        if (FAILED(hr) || !borrowed_device) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::device,
+                        "native-d3d12.context.borrowed-device-query-failed",
+                        "The borrowed SDL_GPU D3D12 device did not expose ID3D12Device5 (" +
+                            hresult_hex(hr) + ").");
+            return receipt_from(*impl_, "initialize");
+        }
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
+        hr = borrowed_device->CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5));
+        if (FAILED(hr) ||
+            options5.RaytracingTier == D3D12_RAYTRACING_TIER_NOT_SUPPORTED) {
+            impl_->state = NativeD3D12RayTracingContextState::unsupported;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::feature,
+                        "native-d3d12.context.borrowed-device-raytracing-unsupported",
+                        "The borrowed SDL_GPU D3D12 device has no supported ray-tracing tier; a second device is not created.");
+            auto result = receipt_from(*impl_, "initialize");
+            result.state = NativeD3D12RayTracingContextState::unsupported;
+            result.fallback_active = true;
+            return result;
+        }
+        impl_->device = std::move(borrowed_device);
+        impl_->device_adopted = true;
+        impl_->shared_device = true;
+        impl_->device_name = "borrowed-sdl-gpu-d3d12-device";
+        impl_->raytracing_tier = static_cast<std::uint32_t>(options5.RaytracingTier);
+    } else {
+        const auto create_device = impl_->d3d12_module.symbol<CreateDeviceFn>("D3D12CreateDevice");
+        const auto create_factory = impl_->dxgi_module.symbol<CreateFactoryFn>("CreateDXGIFactory2");
+        if (create_device == nullptr || create_factory == nullptr) {
+            impl_->state = NativeD3D12RayTracingContextState::unsupported;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::loader,
+                        "native-d3d12.context.entrypoint-unavailable",
+                        "The D3D12CreateDevice or CreateDXGIFactory2 entry point is unavailable.");
+            auto result = receipt_from(*impl_, "initialize");
+            result.state = NativeD3D12RayTracingContextState::unsupported;
+            result.fallback_active = true;
+            return result;
+        }
+        hr = create_factory(0U, __uuidof(IDXGIFactory4),
+                            reinterpret_cast<void**>(impl_->factory.GetAddressOf()));
+        if (FAILED(hr) || !impl_->factory) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::factory,
+                        "native-d3d12.context.factory-create-failed",
+                        "CreateDXGIFactory2 failed with " + hresult_hex(hr) + ".");
+            return receipt_from(*impl_, "initialize");
+        }
+        hr = select_hardware_device(impl_->factory.Get(), create_device,
+                                    impl_->device.GetAddressOf(), impl_->device_name,
+                                    impl_->raytracing_tier)
+            ? S_OK : DXGI_ERROR_UNSUPPORTED;
+        if (FAILED(hr) || !impl_->device) {
+            impl_->state = NativeD3D12RayTracingContextState::unsupported;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::feature,
+                        "native-d3d12.context.hardware-unsupported",
+                        impl_->options.probe_warp_fallback
+                            ? "No hardware D3D12 ray-tracing device was available; WARP is recorded only as a raster fallback."
+                            : "No hardware D3D12 device with a ray-tracing tier was available.");
+            auto result = receipt_from(*impl_, "initialize");
+            result.state = NativeD3D12RayTracingContextState::unsupported;
+            result.fallback_active = true;
+            return result;
+        }
     }
-    HRESULT hr = create_factory(0U, __uuidof(IDXGIFactory4),
-                                reinterpret_cast<void**>(impl_->factory.GetAddressOf()));
-    if (FAILED(hr) || !impl_->factory) {
-        impl_->state = NativeD3D12RayTracingContextState::failed;
-        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::factory,
-                    "native-d3d12.context.factory-create-failed",
-                    "CreateDXGIFactory2 failed with " + hresult_hex(hr) + ".");
-        return receipt_from(*impl_, "initialize");
-    }
-    hr = select_hardware_device(impl_->factory.Get(), create_device,
-                                impl_->device.GetAddressOf(), impl_->device_name,
-                                impl_->raytracing_tier)
-        ? S_OK : DXGI_ERROR_UNSUPPORTED;
-    if (FAILED(hr) || !impl_->device) {
-        impl_->state = NativeD3D12RayTracingContextState::unsupported;
-        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::feature,
-                    "native-d3d12.context.hardware-unsupported",
-                    impl_->options.probe_warp_fallback
-                        ? "No hardware D3D12 ray-tracing device was available; WARP is recorded only as a raster fallback."
-                        : "No hardware D3D12 device with a ray-tracing tier was available.");
-        auto result = receipt_from(*impl_, "initialize");
-        result.state = NativeD3D12RayTracingContextState::unsupported;
-        result.fallback_active = true;
-        return result;
-    }
-    D3D12_COMMAND_QUEUE_DESC queue_description{};
-    queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    hr = impl_->device->CreateCommandQueue(&queue_description,
-                                           IID_PPV_ARGS(&impl_->command_queue));
-    if (FAILED(hr) || !impl_->command_queue) {
-        impl_->state = NativeD3D12RayTracingContextState::failed;
-        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_queue,
-                    "native-d3d12.context.command-queue-create-failed",
-                    "CreateCommandQueue failed with " + hresult_hex(hr) + ".");
-        return receipt_from(*impl_, "initialize");
+    if (impl_->borrowed_command_queue_requested) {
+        auto* borrowed_unknown = reinterpret_cast<IUnknown*>(
+            impl_->options.borrowed_command_queue);
+        ComPtr<ID3D12CommandQueue> borrowed_queue;
+        hr = borrowed_unknown == nullptr
+            ? E_INVALIDARG
+            : borrowed_unknown->QueryInterface(
+                __uuidof(ID3D12CommandQueue),
+                reinterpret_cast<void**>(borrowed_queue.GetAddressOf()));
+        if (FAILED(hr) || !borrowed_queue) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_queue,
+                        "native-d3d12.context.borrowed-queue-query-failed",
+                        "The borrowed SDL_GPU D3D12 command queue did not expose ID3D12CommandQueue (" +
+                            hresult_hex(hr) + ").");
+            return receipt_from(*impl_, "initialize");
+        }
+        const auto queue_description = borrowed_queue->GetDesc();
+        if (queue_description.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_queue,
+                        "native-d3d12.context.borrowed-queue-type-invalid",
+                        "The borrowed SDL_GPU command queue is not a direct queue and cannot record ray-tracing work.");
+            return receipt_from(*impl_, "initialize");
+        }
+        ComPtr<ID3D12Device> queue_device;
+        hr = borrowed_queue->GetDevice(
+            __uuidof(ID3D12Device),
+            reinterpret_cast<void**>(queue_device.GetAddressOf()));
+        if (FAILED(hr) || !queue_device) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_queue,
+                        "native-d3d12.context.borrowed-queue-device-query-failed",
+                        "The borrowed SDL_GPU command queue did not expose its owning D3D12 device (" +
+                            hresult_hex(hr) + ").");
+            return receipt_from(*impl_, "initialize");
+        }
+        ComPtr<IUnknown> queue_identity;
+        ComPtr<IUnknown> context_identity;
+        hr = queue_device->QueryInterface(
+            __uuidof(IUnknown),
+            reinterpret_cast<void**>(queue_identity.GetAddressOf()));
+        if (SUCCEEDED(hr)) {
+            hr = impl_->device->QueryInterface(
+                __uuidof(IUnknown),
+                reinterpret_cast<void**>(context_identity.GetAddressOf()));
+        }
+        if (FAILED(hr) || !queue_identity || !context_identity ||
+            queue_identity.Get() != context_identity.Get()) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_queue,
+                        "native-d3d12.context.borrowed-queue-device-mismatch",
+                        "The borrowed SDL_GPU command queue belongs to a different D3D12 device; no cross-device resource path is attempted.");
+            return receipt_from(*impl_, "initialize");
+        }
+        impl_->command_queue = std::move(borrowed_queue);
+        impl_->command_queue_adopted = true;
+        impl_->shared_command_queue = true;
+    } else {
+        D3D12_COMMAND_QUEUE_DESC queue_description{};
+        queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        hr = impl_->device->CreateCommandQueue(&queue_description,
+                                               IID_PPV_ARGS(&impl_->command_queue));
+        if (FAILED(hr) || !impl_->command_queue) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::command_queue,
+                        "native-d3d12.context.command-queue-create-failed",
+                        "CreateCommandQueue failed with " + hresult_hex(hr) + ".");
+            return receipt_from(*impl_, "initialize");
+        }
     }
     hr = impl_->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                                 IID_PPV_ARGS(&impl_->command_allocator));
@@ -1107,6 +1321,16 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::ensure_scene(
         impl_->scene = std::move(canonical_scene);
         impl_->scene_hash = signature;
         impl_->scene_dirty = true;
+        // A previously published output belongs to the old scene.  Keep the
+        // allocation alive for reuse, but invalidate its borrowed view until
+        // a new TraceRays completion publishes a fresh access token.
+        impl_->output_surface_trace_completed = false;
+#if defined(_WIN32)
+        impl_->last_trace_completed = false;
+        impl_->last_readback_completed = false;
+        impl_->last_output_copy_submitted = false;
+        impl_->last_output_copy_completed = false;
+#endif
         if (impl_->scene_generation != std::numeric_limits<std::uint64_t>::max())
             ++impl_->scene_generation;
     }
@@ -1548,14 +1772,19 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::build_or_updat
     }
     impl_->last_build_submitted = true;
     impl_->last_update_submitted = !rebuild;
+    std::uint64_t submitted_fence_value = 0U;
+    std::uint64_t completed_fence_value = 0U;
     hr = submit_and_wait(impl_->command_queue.Get(), impl_->fence.Get(),
                          impl_->command_list.Get(), impl_->fence_event,
-                         impl_->next_fence_value);
+                         impl_->next_fence_value,
+                         &submitted_fence_value, &completed_fence_value);
     if (FAILED(hr)) {
         return fail(NativeD3D12RayTracingContextFailureStage::synchronization,
                     "native-d3d12.context.as-build-wait-failed",
                     "Waiting for the persistent BLAS/TLAS build failed with " + hresult_hex(hr) + ".");
     }
+    impl_->last_submitted_fence_value = submitted_fence_value;
+    impl_->last_completed_fence_value = completed_fence_value;
 
     if (rebuild) {
         impl_->geometry_resources = std::move(next_geometry_resources);
@@ -1596,6 +1825,9 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     impl_->last_trace_submitted = false;
     impl_->last_trace_completed = false;
     impl_->last_readback_completed = false;
+    impl_->output_surface_trace_completed = false;
+    impl_->last_output_copy_submitted = false;
+    impl_->last_output_copy_completed = false;
     impl_->last_synchronization_completed = false;
 #endif
     auto result = receipt_from(*impl_, "trace");
@@ -1668,6 +1900,7 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
         transition_resource(impl_->command_list.Get(), impl_->output_resource.Get(),
                             D3D12_RESOURCE_STATE_COPY_SOURCE,
                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        impl_->output_surface_state = NativeD3D12RayTracingOutputSurfaceState::unordered_access;
     }
     uav_barrier(impl_->command_list.Get(), impl_->tlas_result.Get());
     impl_->command_list->SetComputeRootSignature(impl_->trace_root_signature.Get());
@@ -1707,9 +1940,12 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
         return result;
     }
     impl_->last_trace_submitted = true;
+    std::uint64_t submitted_fence_value = 0U;
+    std::uint64_t completed_fence_value = 0U;
     hr = submit_and_wait(impl_->command_queue.Get(), impl_->fence.Get(),
                          impl_->command_list.Get(), impl_->fence_event,
-                         impl_->next_fence_value);
+                         impl_->next_fence_value,
+                         &submitted_fence_value, &completed_fence_value);
     if (FAILED(hr)) {
         impl_->state = NativeD3D12RayTracingContextState::failed;
         save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
@@ -1719,7 +1955,16 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
         result.state = NativeD3D12RayTracingContextState::failed;
         return result;
     }
+    impl_->last_submitted_fence_value = submitted_fence_value;
+    impl_->last_completed_fence_value = completed_fence_value;
+    impl_->output_fence_value = submitted_fence_value;
     impl_->output_in_copy_source = true;
+    impl_->output_surface_state = NativeD3D12RayTracingOutputSurfaceState::copy_source;
+    impl_->output_surface_trace_completed = true;
+    if (impl_->next_output_access_token == 0U ||
+        impl_->next_output_access_token == std::numeric_limits<std::uint64_t>::max())
+        impl_->next_output_access_token = 1U;
+    impl_->output_access_token = impl_->next_output_access_token++;
     impl_->last_trace_completed = true;
     impl_->last_synchronization_completed = true;
     save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
@@ -1856,6 +2101,15 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     impl_->shader_pipeline_ready = false;
     impl_->shader_table_ready = false;
     impl_->output_resource_ready = false;
+    impl_->output_surface_resource_ready = false;
+    impl_->output_surface_trace_completed = false;
+    impl_->output_surface_state = NativeD3D12RayTracingOutputSurfaceState::released;
+    impl_->output_access_token = 0U;
+    impl_->output_fence_value = 0U;
+    impl_->last_submitted_fence_value = 0U;
+    impl_->last_completed_fence_value = 0U;
+    impl_->last_output_copy_submitted = false;
+    impl_->last_output_copy_completed = false;
     impl_->last_trace_submitted = false;
     impl_->last_trace_completed = false;
     impl_->last_readback_completed = false;
@@ -1874,9 +2128,25 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
         impl_->fence_event = nullptr;
     }
 #endif
+    // Keep the output contract terminal on every platform.  On Windows the
+    // platform block above also releases the COM resources; these assignments
+    // make the stale-view state explicit for portable tests and callers.
+    impl_->output_surface_resource_ready = false;
+    impl_->output_surface_trace_completed = false;
+    impl_->output_surface_state = NativeD3D12RayTracingOutputSurfaceState::released;
+    impl_->output_access_token = 0U;
+    impl_->output_fence_value = 0U;
+    impl_->last_submitted_fence_value = 0U;
+    impl_->last_completed_fence_value = 0U;
+    impl_->last_output_copy_submitted = false;
+    impl_->last_output_copy_completed = false;
     impl_->state = NativeD3D12RayTracingContextState::shutdown;
     impl_->scene.reset();
     impl_->scene_dirty = false;
+    impl_->device_adopted = false;
+    impl_->command_queue_adopted = false;
+    impl_->shared_device = false;
+    impl_->shared_command_queue = false;
     save_result(*impl_, NativeD3D12RayTracingContextFailureStage::cleanup,
                 "native-d3d12.context.shutdown-complete",
                 "Persistent D3D12 handles and cached scene state were released exactly once.");
@@ -1886,6 +2156,159 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     result.shutdown_completed = true;
     result.fallback_active = false;
     return result;
+}
+
+NativeD3D12RayTracingOutputSurfaceMetadata
+NativeD3D12RayTracingContext::output_surface_metadata() const {
+    return receipt_from(*impl_, "output-surface").output_surface;
+}
+
+NativeD3D12RayTracingContextPrivateOutputView
+NativeD3D12RayTracingContext::private_output_surface_view() const {
+    NativeD3D12RayTracingContextPrivateOutputView view;
+    view.metadata = output_surface_metadata();
+    if (!view.metadata.valid || impl_->output_access_token == 0U)
+        return view;
+#if defined(_WIN32)
+    if (impl_->output_resource == nullptr || impl_->device == nullptr ||
+        impl_->command_queue == nullptr || impl_->fence == nullptr)
+        return view;
+    view.access_token = impl_->output_access_token;
+    view.resource = impl_->output_resource.Get();
+    view.device = impl_->device.Get();
+    view.command_queue = impl_->command_queue.Get();
+    view.fence = impl_->fence.Get();
+#endif
+    return view;
+}
+
+bool NativeD3D12RayTracingContext::is_private_output_surface_view_current(
+    const NativeD3D12RayTracingContextPrivateOutputView& view) const noexcept {
+    if (impl_->state == NativeD3D12RayTracingContextState::shutdown ||
+        impl_->output_access_token == 0U || view.access_token == 0U ||
+        view.access_token != impl_->output_access_token ||
+        view.metadata.resource_generation != impl_->output_resource_generation ||
+        view.metadata.context_generation != impl_->generation ||
+        !view.metadata.valid || !impl_->output_surface_resource_ready ||
+        !impl_->output_surface_trace_completed ||
+        impl_->output_surface_state != NativeD3D12RayTracingOutputSurfaceState::copy_source)
+        return false;
+#if defined(_WIN32)
+    return view.resource == impl_->output_resource.Get() &&
+        view.device == impl_->device.Get() &&
+        view.command_queue == impl_->command_queue.Get() &&
+        view.fence == impl_->fence.Get();
+#else
+    return false;
+#endif
+}
+
+NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::copy_output_to(
+    const NativeD3D12RayTracingContextPrivateOutputView& view,
+    void* destination_resource) {
+    impl_->last_output_copy_submitted = false;
+    impl_->last_output_copy_completed = false;
+    const auto fail = [&](const std::string_view code, const std::string_view detail) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::output,
+                    code, detail);
+        auto result = receipt_from(*impl_, "copy-output");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        result.fallback_active = false;
+        return result;
+    };
+    if (!is_private_output_surface_view_current(view)) {
+        return fail("native-d3d12.context.output-view-stale",
+                    "The output view token, generation, resource state or fence proof is no longer current.");
+    }
+    if (destination_resource == nullptr) {
+        return fail("native-d3d12.context.output-destination-null",
+                    "A runtime-private copy requires a non-null same-device destination resource.");
+    }
+#if !defined(_WIN32)
+    (void)destination_resource;
+    return fail("native-d3d12.context.platform-unavailable",
+                "The runtime-private D3D12 output copy is unavailable on this platform.");
+#else
+    auto* destination = reinterpret_cast<ID3D12Resource*>(destination_resource);
+    if (destination == impl_->output_resource.Get()) {
+        return fail("native-d3d12.context.output-destination-alias",
+                    "The output copy destination must be a distinct resource; self-copy is rejected.");
+    }
+    ComPtr<ID3D12Device> destination_device;
+    HRESULT hr = destination->GetDevice(
+        __uuidof(ID3D12Device),
+        reinterpret_cast<void**>(destination_device.GetAddressOf()));
+    if (FAILED(hr) || !destination_device) {
+        return fail("native-d3d12.context.output-destination-device-query-failed",
+                    "The output copy destination did not expose its owning D3D12 device (" +
+                        hresult_hex(hr) + ").");
+    }
+    ComPtr<IUnknown> destination_identity;
+    ComPtr<IUnknown> source_identity;
+    hr = destination_device->QueryInterface(
+        __uuidof(IUnknown),
+        reinterpret_cast<void**>(destination_identity.GetAddressOf()));
+    if (SUCCEEDED(hr)) {
+        hr = impl_->device->QueryInterface(
+            __uuidof(IUnknown),
+            reinterpret_cast<void**>(source_identity.GetAddressOf()));
+    }
+    if (FAILED(hr) || !destination_identity || !source_identity ||
+        destination_identity.Get() != source_identity.Get()) {
+        return fail("native-d3d12.context.output-destination-device-mismatch",
+                    "The output copy destination belongs to a different D3D12 device; cross-device sharing is rejected.");
+    }
+    const auto source_description = impl_->output_resource->GetDesc();
+    const auto destination_description = destination->GetDesc();
+    if (source_description.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+        destination_description.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+        destination_description.Width < source_description.Width) {
+        return fail("native-d3d12.context.output-destination-layout-unsupported",
+                    "The current output contract is a linear buffer; the destination must be a same-size-or-larger buffer in COPY_DEST state.");
+    }
+    hr = impl_->command_allocator->Reset();
+    if (FAILED(hr)) {
+        return fail("native-d3d12.context.output-copy-command-allocator-reset-failed",
+                    "Resetting the output copy command allocator failed with " + hresult_hex(hr) + ".");
+    }
+    hr = impl_->command_list->Reset(impl_->command_allocator.Get(), nullptr);
+    if (FAILED(hr)) {
+        return fail("native-d3d12.context.output-copy-command-list-reset-failed",
+                    "Resetting the output copy command list failed with " + hresult_hex(hr) + ".");
+    }
+    // The source is published in COPY_SOURCE state.  The destination state is
+    // deliberately owned by the interop adapter; it must have transitioned the
+    // resource to COPY_DEST before calling this runtime-private entry point.
+    impl_->command_list->CopyBufferRegion(
+        destination, 0U, impl_->output_resource.Get(), 0U,
+        impl_->output_resource_bytes);
+    hr = impl_->command_list->Close();
+    if (FAILED(hr)) {
+        return fail("native-d3d12.context.output-copy-command-list-close-failed",
+                    "Closing the output copy command list failed with " + hresult_hex(hr) + ".");
+    }
+    std::uint64_t submitted_fence_value = 0U;
+    std::uint64_t completed_fence_value = 0U;
+    hr = submit_and_wait(impl_->command_queue.Get(), impl_->fence.Get(),
+                         impl_->command_list.Get(), impl_->fence_event,
+                         impl_->next_fence_value,
+                         &submitted_fence_value, &completed_fence_value);
+    if (FAILED(hr)) {
+        return fail("native-d3d12.context.output-copy-wait-failed",
+                    "Waiting for the GPU-only output copy failed with " + hresult_hex(hr) + ".");
+    }
+    impl_->last_submitted_fence_value = submitted_fence_value;
+    impl_->last_completed_fence_value = completed_fence_value;
+    impl_->output_fence_value = submitted_fence_value;
+    impl_->last_output_copy_submitted = true;
+    impl_->last_output_copy_completed = true;
+    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                "native-d3d12.context.output-copy-complete",
+                "The retained output was copied to a same-device D3D12 buffer by GPU command; no CPU readback or native handle was returned in the receipt.");
+    auto result = receipt_from(*impl_, "copy-output");
+    result.state = NativeD3D12RayTracingContextState::ready;
+    return result;
+#endif
 }
 
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::status() const {

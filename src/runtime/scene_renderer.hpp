@@ -22,6 +22,8 @@
 #include "runtime/gpu_pass_timestamp_adapter.hpp"
 #include "runtime/scene_raytracing_geometry_cache.hpp"
 #include "runtime/scene_raytracing_geometry_source_adapter.hpp"
+#include "runtime/sdl_gpu_native_device_bridge.hpp"
+#include "runtime/sdl_gpu_native_texture_bridge.hpp"
 #include "runtime/texture_resource_table.hpp"
 
 #include <array>
@@ -190,6 +192,9 @@ private:
     std::string gpu_driver_name_;
     std::string gpu_driver_version_;
     std::string gpu_driver_info_;
+    SdlGpuNativeDeviceBridgeResult sdl_native_device_bridge_;
+    SdlGpuNativeTextureExport native_rt_texture_export_;
+    std::uint64_t native_rt_texture_generation_{};
     std::string shader_artifact_format_;
     std::vector<std::string> available_gpu_backends_;
     SDL_GPUBuffer* vertex_buffer_{nullptr};

@@ -20,6 +20,9 @@ add_executable(noemancer
     scene_raytracing_bridge.cpp
     scene_raytracing_geometry_cache.cpp
     scene_raytracing_geometry_source_adapter.cpp
+    raytracing_output_interop.cpp
+    sdl_gpu_native_device_bridge.cpp
+    sdl_gpu_native_texture_bridge.cpp
     package_vfs_bootstrap.cpp
     main.cpp
     performance_evidence.cpp

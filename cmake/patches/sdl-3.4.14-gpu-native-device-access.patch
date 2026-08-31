@@ -1,0 +1,51 @@
+diff --git a/src/gpu/d3d12/SDL_gpu_d3d12.c b/src/gpu/d3d12/SDL_gpu_d3d12.c
+--- a/src/gpu/d3d12/SDL_gpu_d3d12.c
++++ b/src/gpu/d3d12/SDL_gpu_d3d12.c
+@@ -2054,4 +2054,8 @@ static SDL_PropertiesID D3D12_GetDeviceProperties(SDL_GPUDevice *device)
+ {
+     D3D12Renderer *renderer = (D3D12Renderer *)device->driverData;
++    // Borrowed runtime-private handles for Noemancer's native RHI bridge.
++    // They remain owned by SDL_GPU and are invalid after device destruction.
++    SDL_SetPointerProperty(renderer->props, "Noemancer.gpu.native.d3d12.device", renderer->device);
++    SDL_SetPointerProperty(renderer->props, "Noemancer.gpu.native.d3d12.command_queue", renderer->commandQueue);
+     return renderer->props;
+ }
+@@ -4031,4 +4035,9 @@ static SDL_GPUTexture *D3D12_CreateTexture(
+     texture->container = container;
+     texture->containerIndex = 0;
++
++    if (createinfo->props && SDL_GetBooleanProperty(createinfo->props, "Noemancer.gpu.native.export", false)) {
++        container->canBeCycled = false;
++        SDL_SetPointerProperty(createinfo->props, "Noemancer.gpu.native.d3d12.texture", texture->resource);
++    }
+ 
+     return (SDL_GPUTexture *)container;
+ }
+diff --git a/src/gpu/vulkan/SDL_gpu_vulkan.c b/src/gpu/vulkan/SDL_gpu_vulkan.c
+--- a/src/gpu/vulkan/SDL_gpu_vulkan.c
++++ b/src/gpu/vulkan/SDL_gpu_vulkan.c
+@@ -5295,5 +5295,12 @@ static SDL_PropertiesID VULKAN_GetDeviceProperties(
+     SDL_GPUDevice *device)
+ {
+     VulkanRenderer *renderer = (VulkanRenderer *)device->driverData;
++    // Borrowed runtime-private handles for Noemancer's native RHI bridge.
++    // They remain owned by SDL_GPU and are invalid after device destruction.
++    SDL_SetPointerProperty(renderer->props, "Noemancer.gpu.native.vulkan.instance", renderer->instance);
++    SDL_SetPointerProperty(renderer->props, "Noemancer.gpu.native.vulkan.physical_device", renderer->physicalDevice);
++    SDL_SetPointerProperty(renderer->props, "Noemancer.gpu.native.vulkan.device", renderer->logicalDevice);
++    SDL_SetPointerProperty(renderer->props, "Noemancer.gpu.native.vulkan.queue", renderer->unifiedQueue);
++    SDL_SetNumberProperty(renderer->props, "Noemancer.gpu.native.vulkan.queue_family", renderer->queueFamilyIndex);
+     return renderer->props;
+ }
+@@ -7197,4 +7204,10 @@ static SDL_GPUTexture *VULKAN_CreateTexture(
+         }
+     }
++
++    if (createinfo->props && SDL_GetBooleanProperty(createinfo->props, "Noemancer.gpu.native.export", false)) {
++        container->canBeCycled = false;
++        SDL_SetPointerProperty(createinfo->props, "Noemancer.gpu.native.vulkan.image", (void *)(uintptr_t)texture->image);
++        SDL_SetPointerProperty(createinfo->props, "Noemancer.gpu.native.vulkan.image_view", (void *)(uintptr_t)texture->fullView);
++    }
+ 
+     return (SDL_GPUTexture *)container;
+ }

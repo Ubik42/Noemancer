@@ -2,6 +2,7 @@
 
 #include "runtime/raytracing_context_session.hpp"
 #include "runtime/scene_raytracing_geometry_cache.hpp"
+#include "runtime/sdl_gpu_native_device_bridge.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -24,6 +25,9 @@ struct SceneRayTracingBridgeOptions final {
     std::uint32_t output_width{1U};
     std::uint32_t output_height{1U};
     std::uint64_t graph_generation{1U};
+    // Runtime-private borrowed SDL_GPU handles. They are consumed only by the
+    // selected native context and never copied into a receipt.
+    SdlGpuNativeDeviceHandles native_device;
 };
 
 struct SceneRayTracingBridgeRequest final {
@@ -54,6 +58,13 @@ struct SceneRayTracingBridgeReceipt final {
     bool scene_accepted{};
     bool native_as_ready{};
     bool native_trace_ready{};
+    bool shared_device{};
+    bool shared_queue{};
+    bool output_resource_live{};
+    bool output_trace_written{};
+    bool output_transfer_candidate{};
+    std::uint64_t output_resource_generation{};
+    std::string output_format;
 
     // Additional bounded lifecycle evidence keeps fallback and reuse
     // decisions inspectable without exposing backend objects.

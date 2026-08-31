@@ -697,6 +697,7 @@ SceneRenderer::SceneRenderer(SDL_GPUDevice* device, const AssetRegistry& asset_r
       asset_vfs_catalog_(asset_vfs_catalog), texture_resources_(texture_resources),
       gpu_debug_(gpu_debug), gpu_pass_timestamps_(device), render_graph_(make_forward_render_graph()) {
     gpu_backend_=SDL_GetGPUDeviceDriver(device_);
+    sdl_native_device_bridge_=inspect_sdl_gpu_native_device(device_);
     const auto properties=SDL_GetGPUDeviceProperties(device_);
     gpu_device_name_=SDL_GetStringProperty(properties,SDL_PROP_GPU_DEVICE_NAME_STRING,"unknown");
     gpu_driver_name_=SDL_GetStringProperty(properties,SDL_PROP_GPU_DEVICE_DRIVER_NAME_STRING,"unknown");
@@ -2898,7 +2899,19 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
             {"triangleCount",cache_update.statistics.world_triangle_count},{"rtgiReady",false}}.dump();
         return;
     }
-    if(!scene_raytracing_bridge_)scene_raytracing_bridge_=std::make_unique<SceneRayTracingBridge>();
+    if(!native_rt_texture_export_.ready||native_rt_texture_export_.width!=width_||
+        native_rt_texture_export_.height!=height_) {
+        release_sdl_gpu_native_rt_texture(device_,native_rt_texture_export_);
+        if(native_rt_texture_generation_!=std::numeric_limits<std::uint64_t>::max())
+            ++native_rt_texture_generation_;
+        native_rt_texture_export_=create_sdl_gpu_native_rt_texture(
+            device_,std::max(width_,1U),std::max(height_,1U),native_rt_texture_generation_);
+        scene_raytracing_bridge_.reset();
+    }
+    if(!scene_raytracing_bridge_)scene_raytracing_bridge_=std::make_unique<SceneRayTracingBridge>(
+        SceneRayTracingBridgeOptions{.allow_fallback=true,.output_width=std::max(width_,1U),
+            .output_height=std::max(height_,1U),.graph_generation=native_rt_texture_generation_,
+            .native_device=sdl_native_device_bridge_.handles});
     // Production rendering keeps the native result on the GPU. The context
     // readback path is a diagnostic proof for controlled fixtures and would
     // otherwise serialize every frame (and mistake a legitimate miss in an
@@ -2915,11 +2928,25 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
         {"fallbackDetail",receipt.fallback_detail},{"planFingerprint",receipt.plan_fingerprint},
         {"planValid",receipt.plan_valid},{"planSupported",receipt.plan_supported},
         {"sessionExecuted",receipt.session_executed},{"failed",receipt.failed},
+        {"sharedDevice",receipt.shared_device},{"sharedQueue",receipt.shared_queue},
+        {"outputResourceLive",receipt.output_resource_live},
+        {"outputTraceWritten",receipt.output_trace_written},
+        {"outputTransferCandidate",receipt.output_transfer_candidate},
+        {"outputResourceGeneration",receipt.output_resource_generation},
+        {"outputFormat",receipt.output_format},
         {"contentUpdated",receipt.content_updated},{"topologyRebuilt",receipt.topology_rebuilt},
         {"frameGeneration",receipt.frame_generation},{"graphGeneration",receipt.graph_generation},
         {"topologyRevision",receipt.topology_revision},{"contentRevision",receipt.content_revision},
         {"triangleCount",receipt.triangle_count},{"rtgiReady",false},
-        {"resourceInterop","native-context-output-not-shared-with-sdl-gpu"}}.dump();
+        {"resourceInterop",sdl_native_device_bridge_.observation.same_device_candidate?
+            "sdl-native-device-ready-output-not-shared":"native-context-output-not-shared-with-sdl-gpu"},
+        {"sdlNativeDevice",{{"backend",sdl_native_device_bridge_.observation.backend},
+            {"sameDeviceCandidate",sdl_native_device_bridge_.observation.same_device_candidate},
+            {"code",sdl_native_device_bridge_.observation.code}}},
+        {"sdlNativeOutput",{{"ready",native_rt_texture_export_.ready},
+            {"code",native_rt_texture_export_.code},{"format",native_rt_texture_export_.format},
+            {"width",native_rt_texture_export_.width},{"height",native_rt_texture_export_.height},
+            {"generation",native_rt_texture_export_.generation}}}}.dump();
 }
 
 void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnapshot& render_world) {
@@ -5932,6 +5959,7 @@ void SceneRenderer::release_targets() {
 void SceneRenderer::release() {
     release_targets();
     scene_raytracing_bridge_.reset();
+    release_sdl_gpu_native_rt_texture(device_,native_rt_texture_export_);
     raytracing_geometry_cache_.clear();
     raytracing_geometries_.clear();
     native_raytracing_status_json_.clear();

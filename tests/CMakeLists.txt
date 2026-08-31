@@ -387,6 +387,14 @@ target_link_libraries(noemancer_scene_raytracing_bridge_tests PRIVATE
 add_test(NAME noemancer.scene_raytracing_bridge
     COMMAND noemancer_scene_raytracing_bridge_tests)
 
+add_executable(noemancer_raytracing_output_interop_tests
+    raytracing_output_interop_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/raytracing_output_interop.cpp)
+target_include_directories(noemancer_raytracing_output_interop_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME noemancer.raytracing_output_interop
+    COMMAND noemancer_raytracing_output_interop_tests)
+
 add_executable(noemancer_native_raytracing_execution_adapter_tests
     native_raytracing_execution_adapter_tests.cpp
     ${PROJECT_SOURCE_DIR}/src/runtime/native_raytracing_execution_adapter.cpp)
