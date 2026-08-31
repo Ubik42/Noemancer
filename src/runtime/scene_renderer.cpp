@@ -17,6 +17,7 @@
 #include "engine/visibility_culling.hpp"
 #include "runtime/runtime_texture_upload.hpp"
 #include "runtime/gpu_batch_resource_identity.hpp"
+#include "runtime/scene_raytracing_bridge.hpp"
 #include "runtime/shader_artifact_contract.hpp"
 
 #include <SDL3/SDL.h>
@@ -1826,6 +1827,33 @@ bool SceneRenderer::create_geometry() {
             upload_indices.insert(upload_indices.end(),{current,next,current+1U,current+1U,next,next+1U});
         }
     }
+    raytracing_geometries_.clear();
+    const auto retain_builtin_geometry=[&](const std::string_view geometry_id,
+                                           const std::size_t first_vertex,
+                                           const std::size_t vertex_count,
+                                           const std::size_t first_index,
+                                           const std::size_t index_count) {
+        std::vector<std::array<float,3U>> positions;
+        positions.reserve(vertex_count);
+        for(std::size_t index=0U;index<vertex_count;++index) {
+            const auto& source=upload_vertices[first_vertex+index].position;
+            positions.push_back({source[0],source[1],source[2]});
+        }
+        std::vector<std::uint32_t> local_indices;
+        local_indices.reserve(index_count);
+        for(std::size_t index=0U;index<index_count;++index)
+            local_indices.push_back(upload_indices[first_index+index]-static_cast<std::uint32_t>(first_vertex));
+        SceneRayTracingPrimitiveInput primitive;
+        primitive.primitive_id=std::string(geometry_id)+"#0";
+        primitive.index_count=static_cast<std::uint32_t>(local_indices.size());
+        auto geometry=make_builtin_scene_raytracing_geometry_input(
+            geometry_id,positions,local_indices,std::span<const SceneRayTracingPrimitiveInput>(&primitive,1U));
+        raytracing_geometries_.insert_or_assign(std::string(geometry_id),std::move(geometry));
+    };
+    retain_builtin_geometry("asset.primitive.cube",0U,24U,0U,36U);
+    retain_builtin_geometry("asset.primitive.plane",24U,4U,36U,6U);
+    retain_builtin_geometry("asset.primitive.sphere",sphere_vertex_offset,
+        upload_vertices.size()-sphere_vertex_offset,builtin_sphere_first_index,builtin_sphere_index_count);
     const auto vertex_bytes=static_cast<Uint32>(upload_vertices.size()*sizeof(Vertex));
     const auto index_bytes=static_cast<Uint32>(upload_indices.size()*sizeof(std::uint32_t));
     SDL_GPUBufferCreateInfo vertex_info{SDL_GPU_BUFFERUSAGE_VERTEX, vertex_bytes, 0};
@@ -2025,6 +2053,8 @@ bool SceneRenderer::create_imported_geometry() {
             mesh.primitives.push_back(std::move(gpu));
         }
         imported_primitives_ += mesh.primitives.size();
+        raytracing_geometries_.insert_or_assign(
+            asset.id,make_scene_raytracing_geometry_input(asset.id,decoded));
         gpu_meshes_.emplace(asset.id, std::move(mesh));
         gpu_batch_resource_keys_.clear();
         gpu_driven_cached_plan_valid_=false;
@@ -2813,6 +2843,85 @@ void SceneRenderer::set_capture_contract_json(std::string contract_json) {
     capture_contract_json_=std::move(contract_json);
 }
 
+void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& render_world) {
+    const auto backend=gpu_backend_=="direct3d12"?std::string{"d3d12"}:gpu_backend_;
+    if(!native_raytracing_session_enabled_) {
+        native_raytracing_status_json_=nlohmann::json{
+            {"schema",std::string(scene_raytracing_bridge_schema)},
+            {"requested",false},{"enabled",false},{"backend",backend},
+            {"sceneAccepted",false},{"nativeAsReady",false},{"nativeTraceReady",false},
+            {"visualPath","ssgi-raster-fallback"},{"fallbackCode","bridge.disabled"},
+            {"fallbackDetail","Native RT production binding is opt-in until its output can be shared with SDL_GPU."},
+            {"rtgiReady",false}}.dump();
+        return;
+    }
+
+    std::vector<const RenderInstanceSnapshot*> eligible;
+    eligible.reserve(render_world.instances.size());
+    std::unordered_set<std::string> geometry_ids;
+    for(const auto& instance:render_world.instances) {
+        if(!instance.visible||instance.vfx_particle||!raytracing_geometries_.contains(instance.mesh_asset))continue;
+        eligible.push_back(&instance);geometry_ids.insert(instance.mesh_asset);
+    }
+    std::ranges::sort(eligible,[](const auto* left,const auto* right) {
+        if(left->entity_id!=right->entity_id)return left->entity_id<right->entity_id;
+        return left->mesh_asset<right->mesh_asset;
+    });
+    std::vector<std::string> ordered_geometry_ids(geometry_ids.begin(),geometry_ids.end());
+    std::ranges::sort(ordered_geometry_ids);
+
+    SceneRayTracingGeometryCacheInput input;
+    input.scene_id=render_world.extraction_id.empty()?"scene.renderer":render_world.extraction_id;
+    input.allow_update=true;
+    input.geometries.reserve(ordered_geometry_ids.size());
+    for(const auto& id:ordered_geometry_ids)input.geometries.push_back(raytracing_geometries_.at(id));
+    input.instances.reserve(eligible.size());
+    for(const auto* instance:eligible) {
+        SceneRayTracingInstanceInput transfer;
+        transfer.instance_id=instance->entity_id;
+        transfer.geometry_id=instance->mesh_asset;
+        transfer.transform=model_matrix(
+            {instance->position[0],instance->position[1],instance->position[2]},
+            {instance->scale[0],instance->scale[1],instance->scale[2]},instance->rotation).value;
+        input.instances.push_back(std::move(transfer));
+    }
+
+    const auto cache_update=raytracing_geometry_cache_.update(input);
+    if(!cache_update.accepted) {
+        native_raytracing_status_json_=nlohmann::json{
+            {"schema",std::string(scene_raytracing_bridge_schema)},
+            {"requested",true},{"enabled",true},{"backend",backend},
+            {"sceneAccepted",false},{"cacheState",scene_raytracing_geometry_cache_state_name(cache_update.state)},
+            {"nativeAsReady",false},{"nativeTraceReady",false},{"visualPath","ssgi-raster-fallback"},
+            {"fallbackCode",cache_update.fallback.code},{"fallbackDetail",cache_update.fallback.detail},
+            {"topologyRevision",cache_update.topology_revision},{"contentRevision",cache_update.content_revision},
+            {"triangleCount",cache_update.statistics.world_triangle_count},{"rtgiReady",false}}.dump();
+        return;
+    }
+    if(!scene_raytracing_bridge_)scene_raytracing_bridge_=std::make_unique<SceneRayTracingBridge>();
+    // Production rendering keeps the native result on the GPU. The context
+    // readback path is a diagnostic proof for controlled fixtures and would
+    // otherwise serialize every frame (and mistake a legitimate miss in an
+    // arbitrary scene for a failed fixture). Presentation interop consumes
+    // this native output directly once resource sharing lands.
+    const auto receipt=scene_raytracing_bridge_->execute(
+        {.backend=backend,.enabled=true,.request_trace=true,.request_readback=false},
+        raytracing_geometry_cache_.snapshot());
+    native_raytracing_status_json_=nlohmann::json{
+        {"schema",receipt.schema},{"requested",receipt.requested},{"enabled",receipt.enabled},
+        {"backend",receipt.backend},{"sceneAccepted",receipt.scene_accepted},{"cacheState",receipt.cache_state},
+        {"nativeAsReady",receipt.native_as_ready},{"nativeTraceReady",receipt.native_trace_ready},
+        {"visualPath",receipt.visual_path},{"fallbackCode",receipt.fallback_code},
+        {"fallbackDetail",receipt.fallback_detail},{"planFingerprint",receipt.plan_fingerprint},
+        {"planValid",receipt.plan_valid},{"planSupported",receipt.plan_supported},
+        {"sessionExecuted",receipt.session_executed},{"failed",receipt.failed},
+        {"contentUpdated",receipt.content_updated},{"topologyRebuilt",receipt.topology_rebuilt},
+        {"frameGeneration",receipt.frame_generation},{"graphGeneration",receipt.graph_generation},
+        {"topologyRevision",receipt.topology_revision},{"contentRevision",receipt.content_revision},
+        {"triangleCount",receipt.triangle_count},{"rtgiReady",false},
+        {"resourceInterop","native-context-output-not-shared-with-sdl-gpu"}}.dump();
+}
+
 void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnapshot& render_world) {
     last_error_.clear();
     gpu_occlusion_used_this_frame_=false;
@@ -2822,6 +2931,7 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
     extraction_id_ = render_world.extraction_id;
     world_revision_ = render_world.world_revision;
     frame_index_ = render_world.frame_index;
+    update_native_raytracing_scene(render_world);
     record_texture_streaming(command,render_world);
     skinned_render_instances_=0;skinning_joint_matrices_=0;
     for(const auto& instance:render_world.instances)if(!instance.skinning_matrices.empty()) {
@@ -5332,6 +5442,15 @@ std::string SceneRenderer::status_json() const {
             {"code",std::string(shader_contract.error_code())}}},
         {"portabilityScope","D3D12/DXIL and Vulkan/SPIR-V; Metal artifact pipeline pending"}
     };
+    auto native_raytracing_evidence=nlohmann::json::parse(native_raytracing_status_json_,nullptr,false);
+    if(native_raytracing_evidence.is_discarded()||!native_raytracing_evidence.is_object()) {
+        native_raytracing_evidence=nlohmann::json{
+            {"schema",std::string(scene_raytracing_bridge_schema)},
+            {"requested",false},{"enabled",false},{"backend",gpu_backend_},
+            {"sceneAccepted",false},{"nativeAsReady",false},{"nativeTraceReady",false},
+            {"visualPath","ssgi-raster-fallback"},{"fallbackCode","bridge.not-observed"},
+            {"rtgiReady",false}};
+    }
     nlohmann::json stream_states=nlohmann::json::array();
     std::size_t authored_mip_levels_total{};
     for(std::size_t index=0;index<texture_streams_.size();++index) {
@@ -5456,6 +5575,7 @@ std::string SceneRenderer::status_json() const {
 
     std::ostringstream out;
     out << "{\"schemaVersion\":\"noemancer.renderer-status.v30\",\"renderer\":\"SDL_GPU\",\"device\":" << device_evidence.dump()
+        << ",\"nativeRayTracing\":" << native_raytracing_evidence.dump()
         << ",\"pipeline\":\"forward-lit\",\"builtInPrimitives\":{\"sphere\":{\"topology\":\"uv-sphere\",\"segments\":"
         << builtin_sphere_segments << ",\"rings\":" << builtin_sphere_rings << ",\"triangles\":"
         << builtin_sphere_index_count/3U << "}},\"surface\":{\"width\":" << width_
@@ -5811,6 +5931,10 @@ void SceneRenderer::release_targets() {
 
 void SceneRenderer::release() {
     release_targets();
+    scene_raytracing_bridge_.reset();
+    raytracing_geometry_cache_.clear();
+    raytracing_geometries_.clear();
+    native_raytracing_status_json_.clear();
     for (auto& [id, mesh] : gpu_meshes_) {
         static_cast<void>(id);
         for (const auto handle : mesh.textures_srgb) if(handle.valid())

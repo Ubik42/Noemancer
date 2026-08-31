@@ -17,7 +17,9 @@ add_executable(noemancer
     native_vulkan_raytracing_executor.cpp
     native_vulkan_raytracing_context.cpp
     raytracing_context_session.cpp
+    scene_raytracing_bridge.cpp
     scene_raytracing_geometry_cache.cpp
+    scene_raytracing_geometry_source_adapter.cpp
     package_vfs_bootstrap.cpp
     main.cpp
     performance_evidence.cpp

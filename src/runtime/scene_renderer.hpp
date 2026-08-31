@@ -20,6 +20,8 @@
 #include "runtime/runtime_texture_upload.hpp"
 #include "runtime/asset_vfs_catalog.hpp"
 #include "runtime/gpu_pass_timestamp_adapter.hpp"
+#include "runtime/scene_raytracing_geometry_cache.hpp"
+#include "runtime/scene_raytracing_geometry_source_adapter.hpp"
 #include "runtime/texture_resource_table.hpp"
 
 #include <array>
@@ -34,6 +36,8 @@
 #include <vector>
 
 namespace noemancer {
+
+class SceneRayTracingBridge;
 
 class SceneRenderer final {
 public:
@@ -65,6 +69,9 @@ public:
         const std::string& debug_mode);
     void set_gpu_driven_enabled(bool enabled);
     void set_gpu_occlusion_enabled(bool enabled) noexcept { gpu_occlusion_enabled_ = enabled; }
+    void set_native_raytracing_session_enabled(bool enabled) noexcept {
+        native_raytracing_session_enabled_ = enabled;
+    }
     void set_gpu_pass_timing_enabled(bool enabled) noexcept { gpu_pass_timestamps_.set_enabled(enabled); }
     [[nodiscard]] bool gpu_pass_timing_submission_pending() const noexcept {
         return gpu_pass_timestamps_.submission_requires_fence();
@@ -108,6 +115,7 @@ private:
     [[nodiscard]] bool create_material_resources();
     [[nodiscard]] bool create_sprite_resources();
     void record_texture_streaming(SDL_GPUCommandBuffer* command_buffer,const RenderWorldSnapshot& render_world);
+    void update_native_raytracing_scene(const RenderWorldSnapshot& render_world);
     void refresh_texture_stream_bindings();
     void refresh_texture_streaming_statistics();
     [[nodiscard]] SDL_GPUSampler* sprite_sampler(SDL_GPUTexture* texture,bool nearest);
@@ -177,6 +185,7 @@ private:
     GpuPassTimestampAdapter gpu_pass_timestamps_;
     bool gpu_driven_enabled_{true};
     bool gpu_occlusion_enabled_{};
+    bool native_raytracing_session_enabled_{};
     std::string gpu_device_name_;
     std::string gpu_driver_name_;
     std::string gpu_driver_version_;
@@ -612,6 +621,13 @@ private:
     std::uint64_t world_revision_{};
     std::uint64_t frame_index_{};
     std::unordered_map<std::string, GpuMesh> gpu_meshes_;
+    // Derived CPU geometry retained only for the opt-in native RT production
+    // bridge. Scene/Render World remain authoritative; this map has no native
+    // handle and is never persisted.
+    std::unordered_map<std::string,SceneRayTracingGeometryInput> raytracing_geometries_;
+    SceneRayTracingGeometryCache raytracing_geometry_cache_;
+    std::unique_ptr<SceneRayTracingBridge> scene_raytracing_bridge_;
+    std::string native_raytracing_status_json_;
     std::unordered_map<std::string,TextureResourceHandle> sprite_textures_;
     std::unordered_map<std::string,TextureResourceHandle> sprite_linear_textures_;
     std::vector<RuntimeTextureStream> texture_streams_;

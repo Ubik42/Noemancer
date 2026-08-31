@@ -86,7 +86,7 @@ void print_usage() {
         << "                 [--animation-physics-stress]\n"
         << "                 [--physics-showcase]\n"
         << "                 [--vfx-respawn-interval N]\n"
-        << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--enable-gpu-occlusion] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr] [--disable-ssgi]\n"
+        << "                 [--gpu-backend auto|direct3d12|vulkan|metal] [--gpu-debug] [--disable-gpu-driven] [--enable-gpu-occlusion] [--disable-ambient-occlusion] [--disable-auto-exposure] [--disable-ssr] [--disable-ssgi] [--enable-native-rt-session]\n"
         << "                 [--gpu-visibility-readback] [--render-stress-offscreen-percent N]\n"
         << "                 [--ui-locale LOCALE] [--ui-scale SCALE]\n"
         << "                 [--project PATH]\n"
@@ -731,6 +731,8 @@ int main(int argc, char** argv) {
             options.disable_ssr=true;
         } else if(argument=="--disable-ssgi") {
             options.disable_ssgi=true;
+        } else if(argument=="--enable-native-rt-session") {
+            options.enable_native_rt_session=true;
         } else if(argument=="--gpu-visibility-readback") {
             options.gpu_visibility_readback=true;
         } else if(argument=="--render-stress-offscreen-percent"&&index<argc) {

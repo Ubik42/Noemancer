@@ -98,9 +98,9 @@ bool draw_icon_button(const char* id,const EditorIcon icon,const char* label,con
     const auto hovered=ImGui::IsItemHovered();const auto held=ImGui::IsItemActive();
     const auto background=held?ImGuiCol_ButtonActive:hovered?ImGuiCol_ButtonHovered:ImGuiCol_Button;
     auto color=ImGui::GetColorU32(background);
-    if(active&&!hovered&&!held)color=ImGui::ColorConvertFloat4ToU32({0.12F,0.27F,0.39F,1.0F});
+    if(active&&!hovered&&!held)color=ImGui::ColorConvertFloat4ToU32({0.32F,0.22F,0.14F,1.0F});
     ImGui::GetWindowDrawList()->AddRectFilled(position,{position.x+width,position.y+height},color,ImGui::GetStyle().FrameRounding);
-    const auto text_color=ImGui::GetColorU32(active?ImVec4{0.76F,0.90F,1.0F,1.0F}:ImGui::GetStyleColorVec4(ImGuiCol_Text));
+    const auto text_color=ImGui::GetColorU32(active?ImVec4{0.98F,0.89F,0.68F,1.0F}:ImGui::GetStyleColorVec4(ImGuiCol_Text));
     const ImVec2 icon_center{position.x+(has_label?14.0F:width*0.5F),position.y+height*0.5F};
     draw_editor_icon(ImGui::GetWindowDrawList(),icon,icon_center,12.0F,text_color);
     if(has_label)ImGui::GetWindowDrawList()->AddText({position.x+27.0F,position.y+(height-ImGui::GetTextLineHeight())*0.5F},text_color,label);
@@ -244,10 +244,10 @@ void draw_isometric_cube(
     const ImVec2 top[] = {points[0], points[1], points[5], points[4]};
     const ImVec2 front[] = {points[0], points[4], points[7], points[3]};
     const ImVec2 side[] = {points[1], points[2], points[6], points[5]};
-    draw_list->AddConvexPolyFilled(top, 4, IM_COL32(87, 168, 229, 255));
-    draw_list->AddConvexPolyFilled(front, 4, IM_COL32(47, 104, 158, 255));
-    draw_list->AddConvexPolyFilled(side, 4, IM_COL32(35, 78, 126, 255));
-    const ImU32 outline = selected ? IM_COL32(255, 191, 82, 255) : IM_COL32(154, 208, 248, 210);
+    draw_list->AddConvexPolyFilled(top, 4, IM_COL32(193, 149, 83, 255));
+    draw_list->AddConvexPolyFilled(front, 4, IM_COL32(112, 78, 48, 255));
+    draw_list->AddConvexPolyFilled(side, 4, IM_COL32(72, 54, 39, 255));
+    const ImU32 outline = selected ? IM_COL32(255, 191, 82, 255) : IM_COL32(193, 161, 110, 210);
     for (int index = 0; index < 4; ++index) {
         const int next = (index + 1) % 4;
         draw_list->AddLine(points[index], points[next], outline, selected ? 2.5F : 1.2F);
@@ -261,22 +261,22 @@ void draw_sphere(
     const ImVec2 center,
     const float radius,
     const bool selected) {
-    draw_list->AddCircleFilled(center, radius, IM_COL32(199, 103, 133, 255), 48);
+    draw_list->AddCircleFilled(center, radius, IM_COL32(174, 92, 70, 255), 48);
     draw_list->AddCircleFilled(
         {center.x - radius * 0.28F, center.y - radius * 0.32F},
         radius * 0.42F,
-        IM_COL32(242, 156, 181, 180),
+        IM_COL32(218, 139, 104, 180),
         32);
     draw_list->AddCircle(
         center,
         radius,
-        selected ? IM_COL32(255, 191, 82, 255) : IM_COL32(255, 190, 211, 210),
+        selected ? IM_COL32(255, 191, 82, 255) : IM_COL32(226, 168, 128, 210),
         48,
         selected ? 2.5F : 1.2F);
     draw_list->AddEllipse(
         center,
         {radius, radius * 0.34F},
-        IM_COL32(255, 205, 220, 110),
+        IM_COL32(245, 197, 158, 110),
         0.0F,
         40,
         1.0F);
@@ -2085,7 +2085,7 @@ void EditorUi::draw_root_dockspace() {
             ImGui::SameLine();if(ImGui::Button("Build Distribution"))package_request_=EditorPackageRequest{package_output_path_.data(),
                 package_profile_index_==0?"windows-x64-release":"windows-x64-debug",false};
             ImGui::EndDisabled();
-            if(package_busy_) {ImGui::SameLine();ImGui::TextColored({0.42F,0.65F,0.95F,1.0F},"PACKAGING...");}
+            if(package_busy_) {ImGui::SameLine();ImGui::TextColored(color_warning,"PACKAGING...");}
             const auto status=nlohmann::json::parse(package_status_json_,nullptr,false);
             if(status.is_object()) {
                 const auto success=status.value("success",false);const auto code=status.value("code",std::string{});
@@ -2128,7 +2128,7 @@ void EditorUi::draw_root_dockspace() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{10.0F,4.0F});
     if(ImGui::BeginChild("##editor-status-bar",{0,0},ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar)) {
         const auto status_color=last_action_status_.find("fail")!=std::string::npos||last_action_status_.find("error")!=std::string::npos?
-            color_danger:ImVec4{0.55F,0.62F,0.72F,1.0F};
+            color_danger:ImVec4{0.67F,0.58F,0.42F,1.0F};
         ImGui::TextColored(status_color,"%s",last_action_status_.c_str());
         const auto right_text=script_compile_busy_?localized("C# build in progress","正在编译 C#"):
             localized("Workspace ready","工作台就绪");
@@ -2365,12 +2365,12 @@ void EditorUi::draw_scene_view() {
         auto* draw_list = ImGui::GetWindowDrawList();
         draw_list->AddText(
             {canvas_position.x + 14.0F, canvas_position.y + 14.0F},
-            IM_COL32(220, 232, 246, 220),
+            IM_COL32(242, 233, 211, 220),
             "SCENE  |  SHADED");
         const ImVec2 axis_center{canvas_end.x - 42.0F, canvas_position.y + 42.0F};
         draw_list->AddLine(axis_center, {axis_center.x + 22.0F, axis_center.y}, IM_COL32(235, 82, 82, 255), 2.0F);
         draw_list->AddLine(axis_center, {axis_center.x, axis_center.y - 22.0F}, IM_COL32(91, 214, 122, 255), 2.0F);
-        draw_list->AddLine(axis_center, {axis_center.x - 14.0F, axis_center.y + 14.0F}, IM_COL32(79, 145, 240, 255), 2.0F);
+        draw_list->AddLine(axis_center, {axis_center.x - 14.0F, axis_center.y + 14.0F}, IM_COL32(196, 155, 83, 255), 2.0F);
         ImGui::End();
         return;
     }
@@ -2420,20 +2420,20 @@ void EditorUi::draw_scene_view() {
 
     draw_list->AddText(
         {canvas_position.x + 14.0F, canvas_position.y + 14.0F},
-        IM_COL32(179, 194, 214, 255),
+        IM_COL32(220, 207, 178, 255),
         "Bootstrap Scene Document  |  live World + procedural preview");
     draw_list->AddText(
         {canvas_position.x + 14.0F, canvas_end.y - 26.0F},
-        IM_COL32(117, 136, 160, 255),
+        IM_COL32(157, 147, 126, 255),
         "RMB orbit/fly  |  MMB pan  |  Wheel dolly  |  F frame selected");
 
     const ImVec2 axis_center{canvas_end.x - 42.0F, canvas_position.y + 42.0F};
     draw_list->AddLine(axis_center, {axis_center.x + 22.0F, axis_center.y}, IM_COL32(235, 82, 82, 255), 2.0F);
     draw_list->AddLine(axis_center, {axis_center.x, axis_center.y - 22.0F}, IM_COL32(91, 214, 122, 255), 2.0F);
-    draw_list->AddLine(axis_center, {axis_center.x - 14.0F, axis_center.y + 14.0F}, IM_COL32(79, 145, 240, 255), 2.0F);
+    draw_list->AddLine(axis_center, {axis_center.x - 14.0F, axis_center.y + 14.0F}, IM_COL32(196, 155, 83, 255), 2.0F);
     draw_list->AddText({axis_center.x + 24.0F, axis_center.y - 7.0F}, IM_COL32(235, 82, 82, 255), "X");
     draw_list->AddText({axis_center.x - 4.0F, axis_center.y - 38.0F}, IM_COL32(91, 214, 122, 255), "Y");
-    draw_list->AddText({axis_center.x - 28.0F, axis_center.y + 13.0F}, IM_COL32(79, 145, 240, 255), "Z");
+    draw_list->AddText({axis_center.x - 28.0F, axis_center.y + 13.0F}, IM_COL32(196, 155, 83, 255), "Z");
 
     ImGui::End();
 }
@@ -2551,11 +2551,11 @@ void EditorUi::handle_tilemap_brush(const float x,const float y,const float widt
             const auto vertical_x=static_cast<float>(center_x+line)*cell_width;
             const auto va=project(world_point(vertical_x,static_cast<float>(center_y-radius)*cell_height));
             const auto vb=project(world_point(vertical_x,static_cast<float>(center_y+radius+1)*cell_height));
-            if(va&&vb)draw_list->AddLine(*va,*vb,line==0||line==1?IM_COL32(120,205,255,185):IM_COL32(100,165,205,90),line==0||line==1?1.5F:1.0F);
+            if(va&&vb)draw_list->AddLine(*va,*vb,line==0||line==1?IM_COL32(191,145,78,185):IM_COL32(100,82,58,90),line==0||line==1?1.5F:1.0F);
             const auto horizontal_y=static_cast<float>(center_y+line)*cell_height;
             const auto ha=project(world_point(static_cast<float>(center_x-radius)*cell_width,horizontal_y));
             const auto hb=project(world_point(static_cast<float>(center_x+radius+1)*cell_width,horizontal_y));
-            if(ha&&hb)draw_list->AddLine(*ha,*hb,line==0||line==1?IM_COL32(120,205,255,185):IM_COL32(100,165,205,90),line==0||line==1?1.5F:1.0F);
+            if(ha&&hb)draw_list->AddLine(*ha,*hb,line==0||line==1?IM_COL32(191,145,78,185):IM_COL32(100,82,58,90),line==0||line==1?1.5F:1.0F);
         }
         const auto draw_cell=[&](const std::int32_t cell_x,const std::int32_t cell_y,const ImU32 fill,const ImU32 outline) {
             const std::array local{world_point(static_cast<float>(cell_x)*cell_width,static_cast<float>(cell_y)*cell_height),
@@ -2565,14 +2565,14 @@ void EditorUi::handle_tilemap_brush(const float x,const float y,const float widt
             std::array<ImVec2,4> screen{};for(std::size_t index=0;index<local.size();++index) {const auto point=project(local[index]);if(!point)return;screen[index]=*point;}
             draw_list->AddConvexPolyFilled(screen.data(),4,fill);draw_list->AddPolyline(screen.data(),4,outline,ImDrawFlags_Closed,2.0F);
         };
-        for(const auto& edit:tile_stroke_edits_)draw_cell(edit.x,edit.y,edit.tile_id?IM_COL32(63,170,255,70):IM_COL32(255,88,96,70),
-            edit.tile_id?IM_COL32(84,190,255,210):IM_COL32(255,105,110,220));
+        for(const auto& edit:tile_stroke_edits_)draw_cell(edit.x,edit.y,edit.tile_id?IM_COL32(190,123,78,70):IM_COL32(255,88,96,70),
+            edit.tile_id?IM_COL32(214,160,96,210):IM_COL32(255,105,110,220));
         if(tile_brush_hover_cell_)draw_cell(tile_brush_hover_cell_->at(0),tile_brush_hover_cell_->at(1),
-            tile_brush_erase_?IM_COL32(255,70,80,85):IM_COL32(75,190,255,95),tile_brush_erase_?IM_COL32(255,120,125,255):IM_COL32(130,220,255,255));
+            tile_brush_erase_?IM_COL32(255,70,80,85):IM_COL32(181,112,78,95),tile_brush_erase_?IM_COL32(255,120,125,255):IM_COL32(232,181,112,255));
         const auto label_point=project(world_point(static_cast<float>(center_x)*cell_width,static_cast<float>(center_y+1)*cell_height));
         if(label_point) {const auto label="cell ["+std::to_string(center_x)+", "+std::to_string(center_y)+"]  "+
             (tile_brush_erase_?"erase":tile_brush_tile_id_.empty()?"select a tile":"paint "+tile_brush_tile_id_);
-            draw_list->AddText({label_point->x+6.0F,label_point->y-20.0F},IM_COL32(225,242,255,255),label.c_str());}
+            draw_list->AddText({label_point->x+6.0F,label_point->y-20.0F},IM_COL32(245,232,204,255),label.c_str());}
         draw_list->PopClipRect();
     }
     if(tile_stroke_active_&&ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -3191,7 +3191,7 @@ void EditorUi::draw_animation_graph() {
         const ImVec2 end{origin.x+projection.pan_x+edge.to_x*projection.zoom,
             origin.y+projection.pan_y+edge.to_y*projection.zoom};
         const auto bend=std::max(42.0F,std::abs(end.x-start.x)*0.42F);
-        draw->AddBezierCubic(start,{start.x+bend,start.y},{end.x-bend,end.y},end,IM_COL32(93,137,184,210),2.0F);
+        draw->AddBezierCubic(start,{start.x+bend,start.y},{end.x-bend,end.y},end,IM_COL32(146,111,69,210),2.0F);
     }
     for(const auto& node:projection.nodes) {
         const auto top_left=position_of(node);const ImVec2 size{node.width*projection.zoom,node.height*projection.zoom};
@@ -3212,21 +3212,21 @@ void EditorUi::draw_animation_graph() {
             }
         }
         const auto selected=std::ranges::find(animation_graph_canvas_.selection(),node.node_id)!=animation_graph_canvas_.selection().end();
-        const auto fill=selected?IM_COL32(38,88,126,255):(node_hovered?IM_COL32(40,52,70,255):IM_COL32(29,38,52,255));
+        const auto fill=selected?IM_COL32(101,67,43,255):(node_hovered?IM_COL32(53,48,40,255):IM_COL32(32,31,27,255));
         draw->AddRectFilled(top_left,{top_left.x+size.x,top_left.y+size.y},fill,7.0F);
-        draw->AddRect(top_left,{top_left.x+size.x,top_left.y+size.y},selected?accent:IM_COL32(82,98,120,255),7.0F,0,selected?2.2F:1.0F);
+        draw->AddRect(top_left,{top_left.x+size.x,top_left.y+size.y},selected?accent:IM_COL32(104,92,70,255),7.0F,0,selected?2.2F:1.0F);
         draw->AddRectFilled(top_left,{top_left.x+size.x,top_left.y+24.0F*projection.zoom},
-            node.kind=="blend-1d"?IM_COL32(102,70,150,255):node.kind=="state-machine"?IM_COL32(48,103,118,255):IM_COL32(48,76,111,255),7.0F);
+            node.kind=="blend-1d"?IM_COL32(138,96,58,255):node.kind=="state-machine"?IM_COL32(55,106,85,255):IM_COL32(75,64,48,255),7.0F);
         draw->AddText({top_left.x+10.0F,top_left.y+5.0F},IM_COL32_WHITE,node.kind.c_str());
-        draw->AddText({top_left.x+10.0F,top_left.y+31.0F*projection.zoom},IM_COL32(218,226,239,255),node.node_id.c_str());
+        draw->AddText({top_left.x+10.0F,top_left.y+31.0F*projection.zoom},IM_COL32(231,222,202,255),node.node_id.c_str());
         ImGui::PopID();
     }
     for(const auto& port:projection.ports) {
         const ImVec2 center{origin.x+projection.pan_x+port.x*projection.zoom,
             origin.y+projection.pan_y+port.y*projection.zoom};
         const auto radius=std::clamp(port.radius*projection.zoom,4.0F,9.0F);
-        draw->AddCircleFilled(center,radius,port.direction=="input"?IM_COL32(170,119,220,255):IM_COL32(84,177,205,255));
-        draw->AddCircle(center,radius,IM_COL32(225,235,247,255),0,1.0F);
+        draw->AddCircleFilled(center,radius,port.direction=="input"?IM_COL32(187,112,81,255):IM_COL32(112,161,137,255));
+        draw->AddCircle(center,radius,IM_COL32(238,228,206,255),0,1.0F);
         ImGui::SetCursorScreenPos({center.x-radius-2.0F,center.y-radius-2.0F});
         ImGui::PushID((port.node_id+"/"+port.port_id).c_str());
         ImGui::InvisibleButton("##port",{radius*2.0F+4.0F,radius*2.0F+4.0F});
@@ -3423,9 +3423,9 @@ void EditorUi::draw_asset_browser() {
             ImGui::Image(static_cast<ImTextureID>(resident->second),{card_width,52.0F});
             if(ImGui::IsItemClicked())static_cast<void>(select_asset(asset.id));
             if(selected)ImGui::GetWindowDrawList()->AddRect(top_left,{top_left.x+card_width,top_left.y+52.0F},
-                IM_COL32(76,170,232,255),3.0F,0,2.0F);
+                IM_COL32(205,151,79,255),3.0F,0,2.0F);
         } else {
-            ImGui::PushStyleColor(ImGuiCol_Button,selected?ImVec4(0.16F,0.32F,0.46F,1.0F):ImVec4(channel(0),channel(8),channel(16),1.0F));
+            ImGui::PushStyleColor(ImGuiCol_Button,selected?ImVec4(0.32F,0.22F,0.14F,1.0F):ImVec4(channel(0),channel(8),channel(16),1.0F));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(channel(0)+0.08F,channel(8)+0.08F,channel(16)+0.08F,1.0F));
             if(ImGui::Button(preview,{card_width,52.0F}))static_cast<void>(select_asset(asset.id));
             ImGui::PopStyleColor(2);
@@ -3489,7 +3489,7 @@ void EditorUi::draw_asset_browser() {
             for(std::size_t tile_index=0;tile_index<tiles.size();++tile_index) {
                 const auto id=tiles.at(tile_index).value("id",std::string{});const auto collision=tiles.at(tile_index).value("collision",std::string{});
                 if(tile_index%4!=0)ImGui::SameLine();
-                const auto selected_tile=id==tile_brush_tile_id_;if(selected_tile)ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.16F,0.32F,0.46F,1.0F));
+                const auto selected_tile=id==tile_brush_tile_id_;if(selected_tile)ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.32F,0.22F,0.14F,1.0F));
                 if(ImGui::Button((id+"\n"+collision).c_str(),{112,44})) {tile_brush_tile_id_=id;tile_brush_erase_=false;palette_rule_tile_id_.clear();}
                 if(selected_tile)ImGui::PopStyleColor();
             }
@@ -3512,7 +3512,7 @@ void EditorUi::draw_asset_browser() {
                 for(std::size_t mask=0;mask<16;++mask) {
                     ImGui::PushID(static_cast<int>(mask));if(mask%4!=0)ImGui::SameLine();
                     const auto label=std::to_string(mask)+" "+(mask&1?"N":"-")+(mask&2?"E":"-")+(mask&4?"S":"-")+(mask&8?"W":"-");
-                    if(palette_rule_enabled_[mask])ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.16F,0.32F,0.46F,1.0F));
+                    if(palette_rule_enabled_[mask])ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.32F,0.22F,0.14F,1.0F));
                     if(ImGui::Button(label.c_str(),{105,30})) {palette_rule_enabled_[mask]=!palette_rule_enabled_[mask];
                         if(palette_rule_enabled_[mask]&&palette_rule_frames_[mask][0]=='\0')std::snprintf(palette_rule_frames_[mask].data(),palette_rule_frames_[mask].size(),"%s",base_frame.c_str());}
                     if(palette_rule_enabled_[mask])ImGui::PopStyleColor();ImGui::PopID();
@@ -3607,7 +3607,7 @@ void EditorUi::draw_console() {
     }
     if(script_compile_busy_) {
         const auto job=nlohmann::json::parse(script_compile_job_json_,nullptr,false);
-        ImGui::TextColored(ImVec4{0.42F,0.65F,0.95F,1.0F},"BUILD RUNNING  %s  %lld ms",
+        ImGui::TextColored(color_warning,"BUILD RUNNING  %s  %lld ms",
             job.value("configuration",std::string{}).c_str(),static_cast<long long>(job.value("elapsedMilliseconds",0LL)));
     }
     if(project.contains("sourceState")&&project.at("sourceState").is_object()) {
@@ -3669,7 +3669,7 @@ void EditorUi::draw_console() {
                 managed_debug_breakpoint_line_=static_cast<int>(location.value("line",1U));
             }
             for(const auto& source_line:location.value("excerpt",nlohmann::json::array()))
-                ImGui::TextColored(source_line.value("focus",false)?ImVec4{0.95F,0.72F,0.28F,1.0F}:ImVec4{0.72F,0.76F,0.82F,1.0F},
+                ImGui::TextColored(source_line.value("focus",false)?ImVec4{0.95F,0.72F,0.28F,1.0F}:ImVec4{0.72F,0.69F,0.61F,1.0F},
                     "%4u %s",source_line.value("line",0U),source_line.value("text",std::string{}).c_str());
         }
     }
@@ -3694,7 +3694,7 @@ void EditorUi::draw_console() {
     ImGui::TextColored({0.42F, 0.78F, 0.58F, 1.0F}, "INFO");
     ImGui::SameLine();
     ImGui::TextUnformatted("Editor shell initialized on SDL3 + SDL_GPU");
-    ImGui::TextColored({0.42F, 0.65F, 0.95F, 1.0F}, "TRACE");
+    ImGui::TextColored(color_accent, "TRACE");
     ImGui::SameLine();
     ImGui::Text("Bootstrap scene: %zu live World entities", model_.objects().size());
     ImGui::TextColored({0.42F, 0.78F, 0.58F, 1.0F}, "READY");

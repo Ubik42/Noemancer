@@ -362,6 +362,31 @@ target_include_directories(noemancer_scene_raytracing_geometry_cache_tests PRIVA
 add_test(NAME noemancer.scene_raytracing_geometry_cache
     COMMAND noemancer_scene_raytracing_geometry_cache_tests)
 
+add_executable(noemancer_scene_raytracing_geometry_source_adapter_tests
+    scene_raytracing_geometry_source_adapter_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/scene_raytracing_geometry_source_adapter.cpp)
+target_include_directories(noemancer_scene_raytracing_geometry_source_adapter_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(noemancer_scene_raytracing_geometry_source_adapter_tests PRIVATE
+    noemancer_engine)
+add_test(NAME noemancer.scene_raytracing_geometry_source_adapter
+    COMMAND noemancer_scene_raytracing_geometry_source_adapter_tests)
+
+add_executable(noemancer_scene_raytracing_bridge_tests
+    scene_raytracing_bridge_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/scene_raytracing_bridge.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/scene_raytracing_geometry_cache.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/raytracing_context_session.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/native_d3d12_raytracing_context.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/native_vulkan_raytracing_context.cpp)
+target_include_directories(noemancer_scene_raytracing_bridge_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${SDL3_SOURCE_DIR}/src/video/khronos)
+target_link_libraries(noemancer_scene_raytracing_bridge_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+add_test(NAME noemancer.scene_raytracing_bridge
+    COMMAND noemancer_scene_raytracing_bridge_tests)
+
 add_executable(noemancer_native_raytracing_execution_adapter_tests
     native_raytracing_execution_adapter_tests.cpp
     ${PROJECT_SOURCE_DIR}/src/runtime/native_raytracing_execution_adapter.cpp)

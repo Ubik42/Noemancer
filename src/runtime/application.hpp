@@ -75,6 +75,9 @@ struct RunOptions {
     bool disable_auto_exposure{};
     bool disable_ssr{};
     bool disable_ssgi{};
+    // Development-facing production binding proof. It is opt-in until the
+    // native output texture can be shared with the SDL_GPU raster frame.
+    bool enable_native_rt_session{};
     bool gpu_visibility_readback{};
     // Explicit opt-in fixture for exercising real GPU HiZ occlusion.  The
     // regular bootstrap/editor scene must remain unchanged when this is off.

@@ -2109,6 +2109,7 @@ int Application::run_interactive() {
     std::uint64_t applied_sky_atmosphere_revision=sky_atmosphere_revision_;
     scene_renderer->set_gpu_driven_enabled(!options_.disable_gpu_driven);
     scene_renderer->set_gpu_occlusion_enabled(options_.enable_gpu_occlusion);
+    scene_renderer->set_native_raytracing_session_enabled(options_.enable_native_rt_session);
     scene_renderer->set_ambient_occlusion_enabled(!options_.disable_ambient_occlusion);
     scene_renderer->set_auto_exposure_enabled(!options_.disable_auto_exposure);
     if(!scene_renderer->set_ssr_options(!options_.disable_ssr,options_.ssr_quality,options_.ssr_debug_mode)) {
