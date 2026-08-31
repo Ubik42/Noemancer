@@ -90,6 +90,8 @@ public static class EngineSchema
         {
             public static readonly PropertyId<bool> AllowSleeping = new("engine.entity.rigidBody.allowSleeping");
             public static readonly PropertyId<float> AngularDamping = new("engine.entity.rigidBody.angularDamping");
+            public static readonly PropertyId<uint> CollisionLayer = new("engine.entity.rigidBody.collisionLayer");
+            public static readonly PropertyId<uint> CollisionMask = new("engine.entity.rigidBody.collisionMask");
             public static readonly PropertyId<bool> ContinuousCollision = new("engine.entity.rigidBody.continuousCollision");
             public static readonly PropertyId<float> GravityFactor = new("engine.entity.rigidBody.gravityFactor");
             public static readonly PropertyId<float> LinearDamping = new("engine.entity.rigidBody.linearDamping");

@@ -187,6 +187,8 @@ const std::vector<InspectorPropertySchema>& inspector_property_schemas() {
         {"RigidBody","angularDamping","engine.entity.rigidBody.angularDamping","Angular Damping","f32","slider",{{"minimum",0.0},{"maximum",1.0}}},
         {"RigidBody","continuousCollision","engine.entity.rigidBody.continuousCollision","Continuous Collision","bool","checkbox",Json::object()},
         {"RigidBody","allowSleeping","engine.entity.rigidBody.allowSleeping","Allow Sleeping","bool","checkbox",Json::object()},
+        {"RigidBody","collisionLayer","engine.entity.rigidBody.collisionLayer","Collision Layer","u32","drag",{{"minimum",0U},{"maximum",4294967295ULL},{"step",1U}}},
+        {"RigidBody","collisionMask","engine.entity.rigidBody.collisionMask","Collision Mask","u32","drag",{{"minimum",0U},{"maximum",4294967295ULL},{"step",1U}}},
         {"PbrMaterial","baseColor","engine.entity.material.baseColor","Base Color","color3","color",{{"minimum",0.0},{"maximum",1.0}}},
         {"PbrMaterial","metallic","engine.entity.material.metallic","Metallic","f32","slider",{{"minimum",0.0},{"maximum",1.0}}},
         {"PbrMaterial","roughness","engine.entity.material.roughness","Roughness","f32","slider",{{"minimum",0.0},{"maximum",1.0}}},
@@ -250,6 +252,8 @@ std::optional<PhysicsBodyState> physics_state(const WorldEntityView& view) {
     state.angular_damping=view.rigid_body->angular_damping;
     state.continuous_collision=view.rigid_body->continuous_collision;
     state.allow_sleeping=view.rigid_body->allow_sleeping;
+    state.collision_layer=view.rigid_body->collision_layer;
+    state.collision_mask=view.rigid_body->collision_mask;
     state.mass=view.rigid_body->mass;
     state.one_way=view.platform_2d&&view.platform_2d->collision_mode=="one-way";
     // CharacterMotor2D defines an XY platformer body. Keep this policy at the
@@ -446,7 +450,7 @@ SceneLoadResult World::load_scene_internal(const SceneDocument& document, const 
             entity.set<RigidBody>({motion_type(source.rigid_body->motion_type), static_cast<float>(source.rigid_body->mass),
                 static_cast<float>(source.rigid_body->gravity_factor), static_cast<float>(source.rigid_body->linear_damping),
                 static_cast<float>(source.rigid_body->angular_damping),source.rigid_body->continuous_collision,
-                source.rigid_body->allow_sleeping});
+                source.rigid_body->allow_sleeping,source.rigid_body->collision_layer,source.rigid_body->collision_mask});
         }
         if (source.box_collider) {
             entity.set<BoxCollider>({static_cast<float>(source.box_collider->half_extents.x), static_cast<float>(source.box_collider->half_extents.y),
@@ -584,7 +588,10 @@ SceneLoadResult World::load_scene_internal(const SceneDocument& document, const 
         if (auto body = physics_state(view)) initial_bodies.push_back(std::move(*body));
     }
     append_tilemap_physics_bodies(initial_views,initial_bodies);
-    physics_runtime_.step(initial_bodies, 0.0F);
+    const auto constraint_result=physics_runtime_.step(initial_bodies,0.0F,document.physics_constraints);
+    if(!constraint_result.success) {
+        return SceneLoadResult{.errors={{"scene.physics-constraint-runtime","physicsConstraints",constraint_result.detail}}};
+    }
     ++revision_;
     return SceneLoadResult{
         .success = true,
@@ -806,7 +813,8 @@ void World::tick(const float delta_seconds) {
         if (auto body = physics_state(view)) bodies.push_back(std::move(*body));
     }
     append_tilemap_physics_bodies(views,bodies);
-    physics_runtime_.step(bodies, delta_seconds);
+    const auto constraint_result=physics_runtime_.step(bodies,delta_seconds,scene_document_.physics_constraints);
+    (void)constraint_result;
     std::unordered_map<std::string,PhysicsContact> current_contacts;
     for(const auto& contact:physics_runtime_.contacts()) {
         const auto key=contact_key(contact.body_a,contact.body_b);
@@ -1295,7 +1303,8 @@ std::string World::observe_json(const ObservationQuery& query) const {
             entity["rigidBody"] = {{"motionType", motion_type_name(view.rigid_body->motion_type)}, {"mass", view.rigid_body->mass},
                 {"gravityFactor", view.rigid_body->gravity_factor}, {"linearDamping", view.rigid_body->linear_damping},
                 {"angularDamping",view.rigid_body->angular_damping},{"continuousCollision",view.rigid_body->continuous_collision},
-                {"allowSleeping",view.rigid_body->allow_sleeping}};
+                {"allowSleeping",view.rigid_body->allow_sleeping},{"collisionLayer",view.rigid_body->collision_layer},
+                {"collisionMask",view.rigid_body->collision_mask}};
         }
         if ((all_fields || fields.contains("physics")) && view.box_collider) {
             entity["boxCollider"] = {{"halfExtents", vector_json({view.box_collider->half_x, view.box_collider->half_y, view.box_collider->half_z})},
@@ -1494,6 +1503,8 @@ std::optional<std::string> World::property_value_json(const std::string_view ent
         if(property=="engine.entity.rigidBody.angularDamping")return Json(value->angular_damping).dump();
         if(property=="engine.entity.rigidBody.continuousCollision")return Json(value->continuous_collision).dump();
         if(property=="engine.entity.rigidBody.allowSleeping")return Json(value->allow_sleeping).dump();
+        if(property=="engine.entity.rigidBody.collisionLayer")return Json(value->collision_layer).dump();
+        if(property=="engine.entity.rigidBody.collisionMask")return Json(value->collision_mask).dump();
     }
     if (const auto* value = entity.try_get<PbrMaterial>()) {
         if (property == "engine.entity.material.baseColor") return vector_json({value->base_r, value->base_g, value->base_b}).dump();
@@ -1605,6 +1616,8 @@ PropertyChangePlan World::plan_property_update(const std::string_view entity_id,
     else if(property=="engine.entity.rigidBody.linearDamping"||property=="engine.entity.rigidBody.angularDamping")
         valid=finite_number()&&value.get<double>()>=0.0&&value.get<double>()<=1.0;
     else if(property=="engine.entity.rigidBody.continuousCollision"||property=="engine.entity.rigidBody.allowSleeping")valid=value.is_boolean();
+    else if(property=="engine.entity.rigidBody.collisionLayer"||property=="engine.entity.rigidBody.collisionMask")
+        valid=value.is_number_unsigned()&&value.get<std::uint64_t>()<=std::numeric_limits<std::uint32_t>::max();
     else if (property == "engine.entity.transform.scale") valid = finite_vector() && value.at("x").get<double>()>0.0 &&
         value.at("y").get<double>()>0.0 && value.at("z").get<double>()>0.0;
     else if (property == "engine.entity.material.baseColor") valid = finite_vector() && value.at("x").get<double>()>=0.0 &&
@@ -1796,6 +1809,8 @@ bool World::set_property_json(const std::string_view entity_id, const std::strin
             else if(property=="engine.entity.rigidBody.angularDamping"){body->angular_damping=value.get<float>();applied=true;}
             else if(property=="engine.entity.rigidBody.continuousCollision"){body->continuous_collision=value.get<bool>();applied=true;}
             else if(property=="engine.entity.rigidBody.allowSleeping"){body->allow_sleeping=value.get<bool>();applied=true;}
+            else if(property=="engine.entity.rigidBody.collisionLayer"){body->collision_layer=value.get<std::uint32_t>();applied=true;}
+            else if(property=="engine.entity.rigidBody.collisionMask"){body->collision_mask=value.get<std::uint32_t>();applied=true;}
             if(applied)entity.modified<RigidBody>();
         }
     }
@@ -1926,6 +1941,8 @@ bool World::set_property_json(const std::string_view entity_id, const std::strin
             else if(property=="engine.entity.rigidBody.angularDamping")document_entity.rigid_body->angular_damping=value.get<double>();
             else if(property=="engine.entity.rigidBody.continuousCollision")document_entity.rigid_body->continuous_collision=value.get<bool>();
             else if(property=="engine.entity.rigidBody.allowSleeping")document_entity.rigid_body->allow_sleeping=value.get<bool>();
+            else if(property=="engine.entity.rigidBody.collisionLayer")document_entity.rigid_body->collision_layer=value.get<std::uint32_t>();
+            else if(property=="engine.entity.rigidBody.collisionMask")document_entity.rigid_body->collision_mask=value.get<std::uint32_t>();
         }
         else if (document_entity.pbr_material) {
             if (property == "engine.entity.material.baseColor") { const auto v=vector(); document_entity.pbr_material->base_color={v.x,v.y,v.z}; }
@@ -2794,7 +2811,8 @@ std::string World::snapshot_json() const {
             components["RigidBody"] = {{"schemaRef", "schema://noemancer/component/rigid-body/0.1"},
                 {"motionType", motion_type_name(body->motion_type)}, {"mass", body->mass}, {"gravityFactor", body->gravity_factor},
                 {"linearDamping", body->linear_damping},{"angularDamping",body->angular_damping},
-                {"continuousCollision",body->continuous_collision},{"allowSleeping",body->allow_sleeping}};
+                {"continuousCollision",body->continuous_collision},{"allowSleeping",body->allow_sleeping},
+                {"collisionLayer",body->collision_layer},{"collisionMask",body->collision_mask}};
         }
         if (const auto* collider = entity.try_get<BoxCollider>()) {
             components["BoxCollider"] = {{"schemaRef", "schema://noemancer/component/box-collider/0.1"},
@@ -2905,7 +2923,8 @@ std::string World::physics_observation_json() const {
             {"position", vector_json(semantic_vector(*view.transform))}, {"mass", view.rigid_body->mass},
             {"gravityFactor", view.rigid_body->gravity_factor}, {"linearDamping", view.rigid_body->linear_damping},
             {"angularDamping",view.rigid_body->angular_damping},{"continuousCollision",view.rigid_body->continuous_collision},
-            {"allowSleeping",view.rigid_body->allow_sleeping}};
+            {"allowSleeping",view.rigid_body->allow_sleeping},{"collisionLayer",view.rigid_body->collision_layer},
+            {"collisionMask",view.rigid_body->collision_mask}};
         body["rotationQuaternion"]={{"x",view.transform->rotation_x},{"y",view.transform->rotation_y},
             {"z",view.transform->rotation_z},{"w",view.transform->rotation_w}};
         body["rotationEulerDegrees"]=rotation_euler_json(*view.transform);
@@ -2935,9 +2954,17 @@ std::string World::physics_observation_json() const {
     for (const auto& contact : physics_runtime_.contacts()) contacts.push_back({{"bodyA", contact.body_a}, {"bodyB", contact.body_b},
         {"normal", vector_json({contact.normal_x, contact.normal_y, contact.normal_z})}, {"penetration", contact.penetration},
         {"isTrigger",contact.is_trigger}});
-    return Json{{"schemaVersion", "noemancer.physics-observation/0.1"}, {"revision", revision_},
+    Json constraints=Json::array();
+    for(const auto& constraint:physics_runtime_.observe_constraints())constraints.push_back({
+        {"id",constraint.id},{"type",physics_constraint_type_name(constraint.type)},
+        {"bodyA",constraint.body_a},{"bodyB",constraint.body_b},{"enabled",constraint.enabled},
+        {"backendCreated",constraint.backend_created},{"backendActive",constraint.backend_active},
+        {"measuredValue",constraint.measured_value},{"targetValue",constraint.target_value},
+        {"error",constraint.error},{"revision",constraint.revision}});
+    return Json{{"schemaVersion", "noemancer.physics-observation/0.2"}, {"revision", revision_},
         {"backend", physics_runtime_.backend_id()}, {"fixedStepSeconds", 1.0 / 60.0}, {"bodies", std::move(bodies)},
-        {"contacts", std::move(contacts)}}.dump();
+        {"contacts", std::move(contacts)},{"constraints",std::move(constraints)},
+        {"constraintRevision",physics_runtime_.constraint_revision()}}.dump();
 }
 
 std::string World::physics_ray_cast_json(const Transform origin, const Transform direction) const {
@@ -3994,7 +4021,8 @@ std::string World::inspector_document_json(const std::string_view entity_id) con
         {"component","RigidBody"},{"label","Rigid Body"},{"defaultExpanded",true},{"properties",Json::array({
             node("engine.entity.rigidBody.motionType"),node("engine.entity.rigidBody.mass"),node("engine.entity.rigidBody.gravityFactor"),
             node("engine.entity.rigidBody.linearDamping"),node("engine.entity.rigidBody.angularDamping"),
-            node("engine.entity.rigidBody.continuousCollision"),node("engine.entity.rigidBody.allowSleeping")})}});
+            node("engine.entity.rigidBody.continuousCollision"),node("engine.entity.rigidBody.allowSleeping"),
+            node("engine.entity.rigidBody.collisionLayer"),node("engine.entity.rigidBody.collisionMask")})}});
     if(found->pbr_material) sections.push_back({{"id","editor.inspector."+std::string(entity_id)+".section.material"},{"role","group"},
         {"component","PbrMaterial"},{"label","Material"},{"defaultExpanded",true},{"properties",Json::array({
             node("engine.entity.material.baseColor"),node("engine.entity.material.metallic"),node("engine.entity.material.roughness"),
@@ -4222,6 +4250,7 @@ std::string World::managed_bindings_source() const {
     auto managed_type=[](const std::string_view value_type) -> std::string_view {
         if(value_type=="f32")return "float";
         if(value_type=="i32")return "int";
+        if(value_type=="u32")return "uint";
         if(value_type=="bool")return "bool";
         if(value_type=="asset-id")return "AssetId";
         if(value_type=="vector3")return "Float3";

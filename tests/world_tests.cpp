@@ -614,6 +614,46 @@ int main() {
     if(!visible_tilemap.tilemap_early_visibility_applied||visible_tilemap.tilemap_resolved_chunk_count!=1||
        visible_tilemap.tilemap_skipped_chunk_count!=1||visible_tilemap.tilemap_cells_skipped_before_resolution!=1||
        visible_tilemap.tilemap_cells.size()!=2)return 37;
+
+    noemancer::SceneDocument constrained_scene;
+    constrained_scene.scene_guid="scene.world-constraint";
+    constrained_scene.name="World Constraint";
+    noemancer::SceneEntityDocument anchor;
+    anchor.guid="entity.constraint-anchor";anchor.name="Constraint Anchor";
+    anchor.transform=noemancer::SceneTransform{.position={0.0,0.0,0.0}};
+    anchor.rigid_body=noemancer::SceneRigidBody{.motion_type="static",.collision_layer=2U,.collision_mask=4U};
+    anchor.box_collider=noemancer::SceneBoxCollider{};
+    noemancer::SceneEntityDocument payload;
+    payload.guid="entity.constraint-payload";payload.name="Constraint Payload";
+    payload.transform=noemancer::SceneTransform{.position={0.0,-1.0,0.0}};
+    payload.rigid_body=noemancer::SceneRigidBody{.motion_type="dynamic",.allow_sleeping=false,
+        .collision_layer=4U,.collision_mask=2U};
+    payload.box_collider=noemancer::SceneBoxCollider{};
+    constrained_scene.entities={anchor,payload};
+    noemancer::PhysicsConstraintSpec distance;
+    distance.id="constraint.world.distance";distance.type=noemancer::PhysicsConstraintType::distance;
+    distance.body_a=anchor.guid;distance.body_b=payload.guid;
+    distance.frame.anchor_a={0.0F,0.0F,0.0F};distance.frame.anchor_b={0.0F,-1.0F,0.0F};
+    distance.lower_limit=0.75F;distance.upper_limit=1.25F;distance.rest_length=1.0F;
+    constrained_scene.physics_constraints.push_back(distance);
+    noemancer::World constrained_world;
+    const auto constrained_load=constrained_world.load_scene(constrained_scene);
+    constrained_world.tick(1.0F/60.0F);
+    const auto constrained_observation=nlohmann::json::parse(constrained_world.physics_observation_json());
+    const auto constrained_canonical=nlohmann::json::parse(constrained_world.canonical_scene_json());
+    const auto layer_plan=constrained_world.plan_property_update(payload.guid,"engine.entity.rigidBody.collisionMask","7",
+        constrained_world.revision(),"test.physics-inspector");
+    const auto layer_apply=constrained_world.apply_property_plan(layer_plan,false);
+    if(!constrained_load.success||constrained_observation.at("schemaVersion")!="noemancer.physics-observation/0.2"||
+       constrained_observation.at("constraints").size()!=1||
+       constrained_observation.at("constraints").front().at("id")!=distance.id||
+       !constrained_observation.at("constraints").front().at("backendCreated")||
+       constrained_observation.at("bodies").front().find("collisionLayer")==constrained_observation.at("bodies").front().end()||
+       constrained_canonical.at("physicsConstraints").size()!=1||!layer_plan.valid||!layer_apply.success||
+       constrained_world.inspector_document_json(payload.guid).find("engine.entity.rigidBody.collisionMask")==std::string::npos) {
+        std::cerr<<"Canonical World did not integrate constraint, collision filtering, observation, and Inspector authority\n";
+        return 38;
+    }
     std::filesystem::remove_all(tile_tool_root);
     return 0;
     } catch (const std::exception& error) {

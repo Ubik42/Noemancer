@@ -21,6 +21,10 @@
 #include <Jolt/Physics/Body/BodyFilter.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/Shape/SubShapeIDPair.h>
+#include <Jolt/Physics/Constraints/DistanceConstraint.h>
+#include <Jolt/Physics/Constraints/FixedConstraint.h>
+#include <Jolt/Physics/Constraints/HingeConstraint.h>
+#include <Jolt/Physics/Constraints/SliderConstraint.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 
 #include <ozz/animation/offline/animation_builder.h>
@@ -267,6 +271,64 @@ JPH::EMotionType jolt_motion_type(const PhysicsMotionType type) {
     if (type == PhysicsMotionType::kinematic_body) return JPH::EMotionType::Kinematic;
     return JPH::EMotionType::Dynamic;
 }
+
+bool same_constraint_spec(const PhysicsConstraintSpec& left, const PhysicsConstraintSpec& right) noexcept {
+    const auto same_vec = [](const PhysicsConstraintVec3& first, const PhysicsConstraintVec3& second) noexcept {
+        return first.x == second.x && first.y == second.y && first.z == second.z;
+    };
+    const auto same_frame = [&](const PhysicsConstraintFrame& first, const PhysicsConstraintFrame& second) noexcept {
+        return same_vec(first.anchor_a, second.anchor_a) && same_vec(first.anchor_b, second.anchor_b) &&
+            same_vec(first.primary_axis_a, second.primary_axis_a) &&
+            same_vec(first.secondary_axis_a, second.secondary_axis_a) &&
+            same_vec(first.primary_axis_b, second.primary_axis_b) &&
+            same_vec(first.secondary_axis_b, second.secondary_axis_b);
+    };
+    return left.id == right.id && left.type == right.type && left.body_a == right.body_a &&
+        left.body_b == right.body_b && same_frame(left.frame, right.frame) &&
+        left.lower_limit == right.lower_limit && left.upper_limit == right.upper_limit &&
+        left.rest_length == right.rest_length && left.spring_frequency_hz == right.spring_frequency_hz &&
+        left.spring_damping_ratio == right.spring_damping_ratio && left.enabled == right.enabled;
+}
+
+JPH::Vec3 jolt_constraint_vec(const PhysicsConstraintVec3& value) {
+    return JPH::Vec3(value.x, value.y, value.z);
+}
+
+JPH::RVec3 jolt_constraint_rvec(const PhysicsConstraintVec3& value) {
+    return JPH::RVec3(value.x, value.y, value.z);
+}
+
+PhysicsConstraintVec3 normalized_constraint_axis(const PhysicsConstraintVec3& value) {
+    const auto length = std::sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
+    if (length <= 0.0F) return {};
+    return {value.x / length, value.y / length, value.z / length};
+}
+
+PhysicsConstraintVec3 production_body_position(const JPH::BodyInterface& body_interface, const JPH::BodyID id) {
+    const auto position = body_interface.GetPosition(id);
+    return {static_cast<float>(position.GetX()), static_cast<float>(position.GetY()),
+            static_cast<float>(position.GetZ())};
+}
+
+PhysicsConstraintVec3 production_world_anchor(const JPH::BodyInterface& body_interface, const JPH::BodyID id,
+                                              const PhysicsConstraintVec3& local_anchor) {
+    const auto position = production_body_position(body_interface, id);
+    const auto rotated = body_interface.GetRotation(id) * jolt_constraint_vec(local_anchor);
+    return {position.x + rotated.GetX(), position.y + rotated.GetY(), position.z + rotated.GetZ()};
+}
+
+float production_distance(const PhysicsConstraintVec3& first, const PhysicsConstraintVec3& second) {
+    const auto x = first.x - second.x;
+    const auto y = first.y - second.y;
+    const auto z = first.z - second.z;
+    return std::sqrt(x * x + y * y + z * z);
+}
+
+float production_range_error(const float value, const float lower, const float upper) {
+    if (value < lower) return value - lower;
+    if (value > upper) return value - upper;
+    return 0.0F;
+}
 }
 
 struct PhysicsRuntime::Impl final : JPH::ContactListener {
@@ -293,6 +355,10 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
         float angular_velocity_x{}, angular_velocity_y{}, angular_velocity_z{};
         float rotation_x{},rotation_y{},rotation_z{},rotation_w{1.0F};
     };
+    struct ConstraintRecord final {
+        PhysicsConstraintSpec spec;
+        JPH::Ref<JPH::Constraint> native;
+    };
 
     CollisionFilterTable collision_filters;
     BroadPhaseLayerInterface broad_phase_layers;
@@ -305,6 +371,8 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
     std::unordered_map<std::string, Definition> definitions;
     std::unordered_map<std::string, LastState> last_states;
     std::unordered_map<JPH::uint32, std::string> entities;
+    std::unordered_map<std::string, ConstraintRecord> constraints;
+    std::uint64_t constraint_revision{1U};
     std::mutex contact_mutex;
     std::unordered_map<std::uint64_t, PendingContact> active_contacts;
 
@@ -348,12 +416,278 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
     }
 
     ~Impl() override {
+        for (auto& [unused, record] : constraints) {
+            static_cast<void>(unused);
+            if (record.native != nullptr) system->RemoveConstraint(record.native);
+        }
+        constraints.clear();
         auto& interface = system->GetBodyInterface();
         for (const auto& [unused, id] : bodies) {
             static_cast<void>(unused);
             interface.RemoveBody(id);
             interface.DestroyBody(id);
         }
+    }
+
+    void remove_native_constraint(ConstraintRecord& record) {
+        if (record.native == nullptr) return;
+        system->RemoveConstraint(record.native);
+        record.native = nullptr;
+        ++constraint_revision;
+    }
+
+    void invalidate_constraints_for_body(const std::string_view entity_id) {
+        for (auto& [unused, record] : constraints) {
+            static_cast<void>(unused);
+            if (record.spec.body_a == entity_id || record.spec.body_b == entity_id)
+                remove_native_constraint(record);
+        }
+    }
+
+    JPH::Ref<JPH::Constraint> make_native_constraint(const PhysicsConstraintSpec& spec,
+                                                      const JPH::BodyID body_a_id,
+                                                      const JPH::BodyID body_b_id) const {
+        const auto& lock_interface = system->GetBodyLockInterfaceNoLock();
+        auto* body_a = lock_interface.TryGetBody(body_a_id);
+        auto* body_b = lock_interface.TryGetBody(body_b_id);
+        if (body_a == nullptr || body_b == nullptr) return {};
+
+        const auto primary_a = normalized_constraint_axis(spec.frame.primary_axis_a);
+        const auto secondary_a = normalized_constraint_axis(spec.frame.secondary_axis_a);
+        const auto primary_b = normalized_constraint_axis(spec.frame.primary_axis_b);
+        const auto secondary_b = normalized_constraint_axis(spec.frame.secondary_axis_b);
+        JPH::Ref<JPH::Constraint> native;
+        switch (spec.type) {
+        case PhysicsConstraintType::fixed: {
+            JPH::FixedConstraintSettings settings;
+            settings.mSpace = JPH::EConstraintSpace::WorldSpace;
+            settings.mPoint1 = jolt_constraint_rvec(spec.frame.anchor_a);
+            settings.mPoint2 = jolt_constraint_rvec(spec.frame.anchor_b);
+            settings.mAxisX1 = jolt_constraint_vec(primary_a);
+            settings.mAxisY1 = jolt_constraint_vec(secondary_a);
+            settings.mAxisX2 = jolt_constraint_vec(primary_b);
+            settings.mAxisY2 = jolt_constraint_vec(secondary_b);
+            settings.mEnabled = spec.enabled;
+            native = settings.Create(*body_a, *body_b);
+            break;
+        }
+        case PhysicsConstraintType::distance: {
+            JPH::DistanceConstraintSettings settings;
+            settings.mSpace = JPH::EConstraintSpace::WorldSpace;
+            settings.mPoint1 = jolt_constraint_rvec(spec.frame.anchor_a);
+            settings.mPoint2 = jolt_constraint_rvec(spec.frame.anchor_b);
+            settings.mMinDistance = spec.lower_limit;
+            settings.mMaxDistance = spec.upper_limit;
+            settings.mEnabled = spec.enabled;
+            settings.mLimitsSpringSettings.mFrequency = spec.spring_frequency_hz;
+            settings.mLimitsSpringSettings.mDamping = spec.spring_damping_ratio;
+            native = settings.Create(*body_a, *body_b);
+            break;
+        }
+        case PhysicsConstraintType::hinge: {
+            JPH::HingeConstraintSettings settings;
+            settings.mSpace = JPH::EConstraintSpace::WorldSpace;
+            settings.mPoint1 = jolt_constraint_rvec(spec.frame.anchor_a);
+            settings.mPoint2 = jolt_constraint_rvec(spec.frame.anchor_b);
+            settings.mHingeAxis1 = jolt_constraint_vec(primary_a);
+            settings.mNormalAxis1 = jolt_constraint_vec(secondary_a);
+            settings.mHingeAxis2 = jolt_constraint_vec(primary_b);
+            settings.mNormalAxis2 = jolt_constraint_vec(secondary_b);
+            settings.mLimitsMin = spec.lower_limit;
+            settings.mLimitsMax = spec.upper_limit;
+            settings.mLimitsSpringSettings.mFrequency = spec.spring_frequency_hz;
+            settings.mLimitsSpringSettings.mDamping = spec.spring_damping_ratio;
+            settings.mEnabled = spec.enabled;
+            native = settings.Create(*body_a, *body_b);
+            break;
+        }
+        case PhysicsConstraintType::slider: {
+            JPH::SliderConstraintSettings settings;
+            settings.mSpace = JPH::EConstraintSpace::WorldSpace;
+            settings.mPoint1 = jolt_constraint_rvec(spec.frame.anchor_a);
+            settings.mPoint2 = jolt_constraint_rvec(spec.frame.anchor_b);
+            settings.mSliderAxis1 = jolt_constraint_vec(primary_a);
+            settings.mNormalAxis1 = jolt_constraint_vec(secondary_a);
+            settings.mSliderAxis2 = jolt_constraint_vec(primary_b);
+            settings.mNormalAxis2 = jolt_constraint_vec(secondary_b);
+            settings.mLimitsMin = spec.lower_limit;
+            settings.mLimitsMax = spec.upper_limit;
+            settings.mLimitsSpringSettings.mFrequency = spec.spring_frequency_hz;
+            settings.mLimitsSpringSettings.mDamping = spec.spring_damping_ratio;
+            settings.mEnabled = spec.enabled;
+            native = settings.Create(*body_a, *body_b);
+            break;
+        }
+        case PhysicsConstraintType::spring: {
+            JPH::DistanceConstraintSettings settings;
+            settings.mSpace = JPH::EConstraintSpace::WorldSpace;
+            settings.mPoint1 = jolt_constraint_rvec(spec.frame.anchor_a);
+            settings.mPoint2 = jolt_constraint_rvec(spec.frame.anchor_b);
+            settings.mMinDistance = spec.rest_length;
+            settings.mMaxDistance = spec.rest_length;
+            settings.mLimitsSpringSettings.mFrequency = spec.spring_frequency_hz;
+            settings.mLimitsSpringSettings.mDamping = spec.spring_damping_ratio;
+            settings.mEnabled = spec.enabled;
+            native = settings.Create(*body_a, *body_b);
+            break;
+        }
+        }
+        return native;
+    }
+
+    PhysicsConstraintResult sync_constraints(std::span<const PhysicsConstraintSpec> requested) {
+        constexpr std::size_t maximum_constraints = 65536U;
+        if (requested.size() > maximum_constraints)
+            return PhysicsConstraintResult::failed(PhysicsConstraintErrorCode::constraint_limit_reached,
+                                                   "constraint snapshot exceeds the runtime capacity");
+
+        std::unordered_map<std::string, PhysicsConstraintSpec> snapshot;
+        snapshot.reserve(requested.size());
+        for (const auto& spec : requested) {
+            const auto validation = validate_physics_constraint_spec(spec);
+            if (!validation.success) return validation;
+            if (!snapshot.emplace(spec.id, spec).second)
+                return PhysicsConstraintResult::failed(PhysicsConstraintErrorCode::constraint_exists,
+                                                       "constraint snapshot contains a duplicate stable id");
+        }
+
+        bool changed = false;
+        for (auto iterator = constraints.begin(); iterator != constraints.end();) {
+            if (snapshot.contains(iterator->first)) {
+                ++iterator;
+                continue;
+            }
+            remove_native_constraint(iterator->second);
+            iterator = constraints.erase(iterator);
+            changed = true;
+        }
+        for (const auto& [id, spec] : snapshot) {
+            const auto found = constraints.find(id);
+            if (found == constraints.end()) {
+                constraints.emplace(id, ConstraintRecord{spec, {}});
+                changed = true;
+                continue;
+            }
+            if (same_constraint_spec(found->second.spec, spec)) continue;
+            remove_native_constraint(found->second);
+            found->second.spec = spec;
+            changed = true;
+        }
+        if (changed) ++constraint_revision;
+        return PhysicsConstraintResult::succeeded("constraint snapshot synchronized");
+    }
+
+    PhysicsConstraintResult materialize_constraints() {
+        std::vector<std::string> ids;
+        ids.reserve(constraints.size());
+        for (const auto& [id, unused] : constraints) {
+            static_cast<void>(unused);
+            ids.push_back(id);
+        }
+        std::sort(ids.begin(), ids.end());
+        for (const auto& id : ids) {
+            auto found = constraints.find(id);
+            if (found == constraints.end() || found->second.native != nullptr) continue;
+            const auto body_a = bodies.find(found->second.spec.body_a);
+            const auto body_b = bodies.find(found->second.spec.body_b);
+            if (body_a == bodies.end() || body_b == bodies.end())
+                return PhysicsConstraintResult::failed(PhysicsConstraintErrorCode::body_not_found,
+                                                       "constraint references a body not present in the runtime");
+            const auto native = make_native_constraint(found->second.spec, body_a->second, body_b->second);
+            if (native == nullptr)
+                return PhysicsConstraintResult::failed(PhysicsConstraintErrorCode::backend_failure,
+                                                       "Jolt could not create the requested production constraint");
+            system->AddConstraint(native);
+            found->second.native = native;
+            ++constraint_revision;
+        }
+        return PhysicsConstraintResult::succeeded("constraints materialized in the production PhysicsSystem");
+    }
+
+    std::vector<PhysicsConstraintSpec> constraint_snapshot() const {
+        std::vector<std::string> ids;
+        ids.reserve(constraints.size());
+        for (const auto& [id, unused] : constraints) {
+            static_cast<void>(unused);
+            ids.push_back(id);
+        }
+        std::sort(ids.begin(), ids.end());
+        std::vector<PhysicsConstraintSpec> result;
+        result.reserve(ids.size());
+        for (const auto& id : ids) {
+            const auto found = constraints.find(id);
+            if (found != constraints.end()) result.push_back(found->second.spec);
+        }
+        return result;
+    }
+
+    std::optional<PhysicsConstraintObservation> observe_constraint(const std::string_view id) const {
+        const auto found = constraints.find(std::string(id));
+        if (found == constraints.end()) return std::nullopt;
+        const auto& record = found->second;
+        PhysicsConstraintObservation result;
+        result.id = record.spec.id;
+        result.type = record.spec.type;
+        result.body_a = record.spec.body_a;
+        result.body_b = record.spec.body_b;
+        result.enabled = record.spec.enabled;
+        result.backend_created = record.native != nullptr;
+        result.backend_active = record.native != nullptr && record.native->IsActive();
+        result.revision = constraint_revision;
+
+        const auto body_a = bodies.find(record.spec.body_a);
+        const auto body_b = bodies.find(record.spec.body_b);
+        if (body_a == bodies.end() || body_b == bodies.end()) return result;
+        const auto& body_interface = system->GetBodyInterface();
+        const auto anchor_a = production_world_anchor(body_interface, body_a->second, record.spec.frame.anchor_a);
+        const auto anchor_b = production_world_anchor(body_interface, body_b->second, record.spec.frame.anchor_b);
+        const auto measured_distance = production_distance(anchor_a, anchor_b);
+        switch (record.spec.type) {
+        case PhysicsConstraintType::fixed:
+            result.measured_value = measured_distance;
+            result.target_value = 0.0F;
+            result.error = measured_distance;
+            break;
+        case PhysicsConstraintType::distance:
+            result.measured_value = measured_distance;
+            result.target_value = (record.spec.lower_limit + record.spec.upper_limit) * 0.5F;
+            result.error = production_range_error(measured_distance, record.spec.lower_limit, record.spec.upper_limit);
+            break;
+        case PhysicsConstraintType::hinge:
+            if (record.native != nullptr)
+                result.measured_value = static_cast<const JPH::HingeConstraint*>(record.native.GetPtr())->GetCurrentAngle();
+            result.target_value = 0.0F;
+            result.error = production_range_error(result.measured_value, record.spec.lower_limit, record.spec.upper_limit);
+            break;
+        case PhysicsConstraintType::slider:
+            if (record.native != nullptr)
+                result.measured_value = static_cast<const JPH::SliderConstraint*>(record.native.GetPtr())->GetCurrentPosition();
+            result.target_value = 0.0F;
+            result.error = production_range_error(result.measured_value, record.spec.lower_limit, record.spec.upper_limit);
+            break;
+        case PhysicsConstraintType::spring:
+            result.measured_value = measured_distance;
+            result.target_value = record.spec.rest_length;
+            result.error = measured_distance - record.spec.rest_length;
+            break;
+        }
+        return result;
+    }
+
+    std::vector<PhysicsConstraintObservation> observe_constraints() const {
+        std::vector<std::string> ids;
+        ids.reserve(constraints.size());
+        for (const auto& [id, unused] : constraints) {
+            static_cast<void>(unused);
+            ids.push_back(id);
+        }
+        std::sort(ids.begin(), ids.end());
+        std::vector<PhysicsConstraintObservation> result;
+        result.reserve(ids.size());
+        for (const auto& id : ids) {
+            if (const auto observation = observe_constraint(id)) result.push_back(*observation);
+        }
+        return result;
     }
 
     JPH::ValidateResult OnContactValidate(const JPH::Body& first, const JPH::Body& second, JPH::RVec3Arg,
@@ -423,12 +757,25 @@ PhysicsRuntime::PhysicsRuntime() : impl_(std::make_unique<Impl>()) {}
 PhysicsRuntime::~PhysicsRuntime() = default;
 
 void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float delta_seconds) {
+    const auto snapshot = impl_->constraint_snapshot();
+    static_cast<void>(step(states, delta_seconds, std::span<const PhysicsConstraintSpec>(snapshot)));
+}
+
+PhysicsConstraintResult PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float delta_seconds,
+                                             const std::span<const PhysicsConstraintSpec> constraints) {
+    if (!std::isfinite(delta_seconds) || delta_seconds < 0.0F)
+        return PhysicsConstraintResult::failed(PhysicsConstraintErrorCode::invalid_argument,
+                                               "delta_seconds must be finite and non-negative");
+    const auto synchronized = impl_->sync_constraints(constraints);
+    if (!synchronized.success) return synchronized;
+    auto constraint_result = PhysicsConstraintResult::succeeded();
     auto& body_interface = impl_->system->GetBodyInterface();
     std::unordered_set<std::string> live;
     live.reserve(states.size());
     for (const auto& state : states) live.insert(state.entity_id);
     for (auto iterator = impl_->bodies.begin(); iterator != impl_->bodies.end();) {
         if (live.contains(iterator->first)) { ++iterator; continue; }
+        impl_->invalidate_constraints_for_body(iterator->first);
         {
             std::scoped_lock lock(impl_->contact_mutex);
             std::erase_if(impl_->active_contacts, [&](const auto& item) {
@@ -449,6 +796,7 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
         if (body == impl_->bodies.end() || definition == impl_->definitions.end() ||
             Impl::same_definition(definition->second, Impl::definition(state))) continue;
         const auto id = body->second;
+        impl_->invalidate_constraints_for_body(state.entity_id);
         impl_->entities.erase(id.GetIndexAndSequenceNumber());
         body_interface.RemoveBody(id);
         body_interface.DestroyBody(id);
@@ -512,6 +860,11 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
             state.angular_velocity_y, state.angular_velocity_z, state.rotation_x,state.rotation_y,state.rotation_z,state.rotation_w});
         impl_->entities.emplace(id.GetIndexAndSequenceNumber(), state.entity_id);
     }
+
+    // Recreate native handles only after body additions and rebuilds complete.
+    // Declarative records survive a body rebuild, but no Jolt handle is ever
+    // allowed to outlive either of its referenced bodies.
+    constraint_result = impl_->materialize_constraints();
 
     for (const auto& state : states) {
         const auto found = impl_->bodies.find(state.entity_id);
@@ -605,6 +958,19 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
                 first.position_y >= second.position_y ? 1.0F : -1.0F, 0.0F, std::max(0.0F, overlap_y),first.is_trigger||second.is_trigger});
         }
     }
+    return constraint_result;
+}
+
+std::optional<PhysicsConstraintObservation> PhysicsRuntime::observe_constraint(const std::string_view id) const {
+    return impl_->observe_constraint(id);
+}
+
+std::vector<PhysicsConstraintObservation> PhysicsRuntime::observe_constraints() const {
+    return impl_->observe_constraints();
+}
+
+std::uint64_t PhysicsRuntime::constraint_revision() const noexcept {
+    return impl_->constraint_revision;
 }
 
 namespace {

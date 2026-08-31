@@ -181,14 +181,105 @@ SceneEntityDocument make_convex_body(
     return entity;
 }
 
+PhysicsConstraintFrame make_shared_world_anchor_frame(
+    const SceneVector3 anchor,
+    const PhysicsConstraintVec3 primary_axis = {0.0F, 1.0F, 0.0F},
+    const PhysicsConstraintVec3 secondary_axis = {1.0F, 0.0F, 0.0F}) {
+    const PhysicsConstraintVec3 world_anchor{
+        static_cast<float>(anchor.x), static_cast<float>(anchor.y),
+        static_cast<float>(anchor.z)};
+    PhysicsConstraintFrame frame;
+    frame.anchor_a = world_anchor;
+    frame.anchor_b = world_anchor;
+    frame.primary_axis_a = primary_axis;
+    frame.secondary_axis_a = secondary_axis;
+    frame.primary_axis_b = primary_axis;
+    frame.secondary_axis_b = secondary_axis;
+    return frame;
+}
+
+PhysicsConstraintSpec make_showcase_constraint(
+    const std::string_view id,
+    const PhysicsConstraintType type,
+    const std::string_view body_a,
+    const std::string_view body_b,
+    const PhysicsConstraintFrame frame) {
+    PhysicsConstraintSpec spec;
+    spec.id = std::string(id);
+    spec.type = type;
+    spec.body_a = std::string(body_a);
+    spec.body_b = std::string(body_b);
+    spec.frame = frame;
+    return spec;
+}
+
 } // namespace
+
+std::vector<PhysicsConstraintSpec> make_physics_showcase_constraints() {
+    std::vector<PhysicsConstraintSpec> constraints;
+    constraints.reserve(5U);
+
+    // The anchor frames use world-space points, matching the public
+    // PhysicsConstraintSpec contract.  Each pair is physically isolated from
+    // the old stress fixtures and has an intentionally legible ID.
+    auto fixed = make_showcase_constraint(
+        "constraint.physics-showcase.fixed-weld", PhysicsConstraintType::fixed,
+        "entity.physics-showcase-fixed-anchor",
+        "entity.physics-showcase-fixed-payload",
+        make_shared_world_anchor_frame({-12.65, 1.45, -8.5}));
+    constraints.push_back(std::move(fixed));
+
+    auto distance = make_showcase_constraint(
+        "constraint.physics-showcase.distance-link", PhysicsConstraintType::distance,
+        "entity.physics-showcase-distance-a",
+        "entity.physics-showcase-distance-b",
+        make_shared_world_anchor_frame({-6.5, 3.15, -8.5}));
+    distance.frame.anchor_a = {-7.5F, 3.15F, -8.5F};
+    distance.frame.anchor_b = {-5.5F, 3.15F, -8.5F};
+    distance.lower_limit = 1.6F;
+    distance.upper_limit = 2.4F;
+    constraints.push_back(std::move(distance));
+
+    auto hinge = make_showcase_constraint(
+        "constraint.physics-showcase.hinge-door", PhysicsConstraintType::hinge,
+        "entity.physics-showcase-hinge-post",
+        "entity.physics-showcase-hinge-door",
+        make_shared_world_anchor_frame({0.75, 2.0, -8.5}));
+    hinge.lower_limit = -1.2F;
+    hinge.upper_limit = 1.2F;
+    constraints.push_back(std::move(hinge));
+
+    auto slider = make_showcase_constraint(
+        "constraint.physics-showcase.slider-carriage", PhysicsConstraintType::slider,
+        "entity.physics-showcase-slider-rail",
+        "entity.physics-showcase-slider-carriage",
+        make_shared_world_anchor_frame({5.75, 4.1, -8.5},
+                                        {1.0F, 0.0F, 0.0F},
+                                        {0.0F, 1.0F, 0.0F}));
+    slider.lower_limit = -1.8F;
+    slider.upper_limit = 1.8F;
+    constraints.push_back(std::move(slider));
+
+    auto spring = make_showcase_constraint(
+        "constraint.physics-showcase.spring-tether", PhysicsConstraintType::spring,
+        "entity.physics-showcase-spring-a",
+        "entity.physics-showcase-spring-b",
+        make_shared_world_anchor_frame({11.25, 2.8, -8.5}));
+    spring.frame.anchor_a = {10.0F, 2.8F, -8.5F};
+    spring.frame.anchor_b = {12.5F, 2.8F, -8.5F};
+    spring.rest_length = 2.5F;
+    spring.spring_frequency_hz = 2.5F;
+    spring.spring_damping_ratio = 0.75F;
+    constraints.push_back(std::move(spring));
+    return constraints;
+}
 
 SceneDocument make_physics_showcase_scene_document() {
     SceneDocument document{
         .scene_guid = std::string(physics_showcase_scene_guid),
         .name = "Physics Showcase Scene",
         .source_uri = "generated://scenes/physics-showcase.scene.json"};
-    document.entities.reserve(48U);
+    document.entities.reserve(56U);
 
     document.entities.push_back(SceneEntityDocument{
         .guid = std::string(root_id),
@@ -333,6 +424,56 @@ SceneDocument make_physics_showcase_scene_document() {
         {14.0, 4.8, -0.4}, 0.42, 0.78, {0.42, 0.66, 0.96}));
     document.entities.push_back(make_convex_body(
         "entity.physics-showcase-convex", "Convex Hull Tester", {11.2, 2.0, 3.0}));
+
+    // Constraint gallery: five ordinary, named pairs provide a compact visual
+    // teaching aid for the editor and a deterministic headless fixture.  They
+    // are deliberately plain boxes/spheres, not a particle or VFX display.
+    document.entities.push_back(make_box_body(
+        "entity.physics-showcase-fixed-anchor", "Fixed Anchor",
+        {-13.5, 1.45, -8.5}, {0.55, 0.55, 0.55}, "static", 1.0, 0.65,
+        0.02, {0.82, 0.52, 0.18}, 0.16, 0.34));
+    document.entities.push_back(make_box_body(
+        "entity.physics-showcase-fixed-payload", "Fixed Payload",
+        {-11.8, 1.45, -8.5}, {0.55, 0.55, 0.55}, "dynamic", 1.0, 0.65,
+        0.02, {0.96, 0.72, 0.28}, 0.18, 0.30));
+
+    document.entities.push_back(make_sphere_body(
+        "entity.physics-showcase-distance-a", "Distance Link A",
+        {-7.5, 3.15, -8.5}, 0.42, "dynamic", 0.75, 0.48, 0.03,
+        {0.20, 0.65, 0.88}));
+    document.entities.push_back(make_sphere_body(
+        "entity.physics-showcase-distance-b", "Distance Link B",
+        {-5.5, 3.15, -8.5}, 0.42, "dynamic", 0.75, 0.48, 0.03,
+        {0.30, 0.82, 0.92}));
+
+    document.entities.push_back(make_box_body(
+        "entity.physics-showcase-hinge-post", "Hinge Post",
+        {0.0, 2.0, -8.5}, {0.55, 0.9, 0.55}, "static", 1.0, 0.72, 0.02,
+        {0.42, 0.48, 0.52}, 0.10, 0.48));
+    document.entities.push_back(make_box_body(
+        "entity.physics-showcase-hinge-door", "Hinge Door",
+        {1.5, 2.0, -8.5}, {0.75, 0.85, 0.18}, "dynamic", 1.1, 0.62, 0.04,
+        {0.76, 0.36, 0.20}, 0.14, 0.36));
+
+    document.entities.push_back(make_box_body(
+        "entity.physics-showcase-slider-rail", "Slider Rail",
+        {4.5, 4.1, -8.5}, {1.15, 0.16, 0.16}, "static", 1.0, 0.68, 0.02,
+        {0.34, 0.38, 0.42}, 0.12, 0.42));
+    document.entities.push_back(make_box_body(
+        "entity.physics-showcase-slider-carriage", "Slider Carriage",
+        {6.8, 4.1, -8.5}, {0.48, 0.42, 0.48}, "dynamic", 0.85, 0.58, 0.04,
+        {0.78, 0.46, 0.20}, 0.16, 0.34));
+
+    document.entities.push_back(make_sphere_body(
+        "entity.physics-showcase-spring-a", "Spring Tether A",
+        {10.0, 2.8, -8.5}, 0.46, "dynamic", 0.80, 0.45, 0.05,
+        {0.72, 0.34, 0.74}));
+    document.entities.push_back(make_sphere_body(
+        "entity.physics-showcase-spring-b", "Spring Tether B",
+        {12.5, 2.8, -8.5}, 0.46, "dynamic", 0.80, 0.45, 0.05,
+        {0.88, 0.48, 0.84}));
+
+    document.physics_constraints = make_physics_showcase_constraints();
 
     return document;
 }

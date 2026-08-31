@@ -1,5 +1,7 @@
 #pragma once
 
+#include "engine/physics_constraint_types.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -33,6 +35,8 @@ struct SceneRigidBody final {
     double angular_damping{0.05};
     bool continuous_collision{false};
     bool allow_sleeping{true};
+    std::uint32_t collision_layer{1U};
+    std::uint32_t collision_mask{0xffffffffU};
 };
 
 struct SceneBoxCollider final {
@@ -211,6 +215,7 @@ struct SceneDocument final {
     std::string name;
     std::string source_uri;
     std::vector<SceneEntityDocument> entities;
+    std::vector<PhysicsConstraintSpec> physics_constraints;
 };
 
 struct SceneDocumentError final {

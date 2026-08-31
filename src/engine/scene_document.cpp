@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -94,7 +95,109 @@ bool read_bool(
     return true;
 }
 
+bool read_uint32(
+    const Json& object,
+    const std::string_view name,
+    const std::string& path,
+    std::uint32_t& result,
+    std::vector<SceneDocumentError>& errors) {
+    if (!object.contains(name) || !object.at(name).is_number_unsigned()) {
+        add_error(errors, "scene.invalid-uint32", path + "/" + std::string(name),
+            "Expected an unsigned 32-bit integer.");
+        return false;
+    }
+    const auto value = object.at(name).get<std::uint64_t>();
+    if (value > std::numeric_limits<std::uint32_t>::max()) {
+        add_error(errors, "scene.integer-range", path + "/" + std::string(name),
+            "Unsigned integer exceeds the 32-bit range.");
+        return false;
+    }
+    result = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+bool read_constraint_vec3(
+    const Json& value,
+    const std::string& path,
+    PhysicsConstraintVec3& result,
+    std::vector<SceneDocumentError>& errors) {
+    if (!value.is_array() || value.size() != 3 ||
+        !value[0].is_number() || !value[1].is_number() || !value[2].is_number()) {
+        add_error(errors, "scene.invalid-vector3", path, "Expected an array containing three numbers.");
+        return false;
+    }
+    const auto x = value[0].get<double>();
+    const auto y = value[1].get<double>();
+    const auto z = value[2].get<double>();
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+        add_error(errors, "scene.non-finite-number", path, "Scene numbers must be finite.");
+        return false;
+    }
+    result = {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    if (!std::isfinite(result.x) || !std::isfinite(result.y) || !std::isfinite(result.z)) {
+        add_error(errors, "scene.non-finite-number", path, "Scene numbers exceed the supported float range.");
+        return false;
+    }
+    return true;
+}
+
+bool read_constraint_float(
+    const Json& object,
+    const std::string_view name,
+    const std::string& path,
+    float& result,
+    std::vector<SceneDocumentError>& errors) {
+    double value{};
+    if (!read_number(object, name, path, value, errors)) return false;
+    result = static_cast<float>(value);
+    if (!std::isfinite(result)) {
+        add_error(errors, "scene.non-finite-number", path + "/" + std::string(name),
+            "Number exceeds the supported float range.");
+        return false;
+    }
+    return true;
+}
+
+bool read_required_string(
+    const Json& object,
+    const std::string_view name,
+    const std::string& path,
+    std::string& result,
+    std::vector<SceneDocumentError>& errors,
+    const std::string_view message) {
+    if (!object.contains(name) || !object.at(name).is_string()) {
+        add_error(errors, "scene.invalid-string", path + "/" + std::string(name), std::string(message));
+        return false;
+    }
+    result = object.at(name).get<std::string>();
+    return true;
+}
+
+bool read_constraint_type(
+    const Json& object,
+    const std::string& path,
+    PhysicsConstraintType& result,
+    std::vector<SceneDocumentError>& errors) {
+    std::string value;
+    if (!read_required_string(object, "type", path, value, errors, "Constraint type must be a string.")) return false;
+    if (value == "fixed") result = PhysicsConstraintType::fixed;
+    else if (value == "distance") result = PhysicsConstraintType::distance;
+    else if (value == "hinge") result = PhysicsConstraintType::hinge;
+    else if (value == "slider") result = PhysicsConstraintType::slider;
+    else if (value == "spring") result = PhysicsConstraintType::spring;
+    else {
+        add_error(errors, "scene.invalid-constraint-type", path + "/type",
+            "Constraint type must be fixed, distance, hinge, slider, or spring.");
+        return false;
+    }
+    return true;
+}
+
 Json vector3_json(const SceneVector3& value) {
+    return Json::array({value.x, value.y, value.z});
+}
+
+Json constraint_vector3_json(const PhysicsConstraintVec3& value) {
     return Json::array({value.x, value.y, value.z});
 }
 
@@ -128,7 +231,7 @@ SceneDocumentParseResult SceneDocumentCodec::parse_json(
         add_error(result.errors, "scene.invalid-root", "", "The scene document root must be an object.");
         return result;
     }
-    reject_unknown_fields(input, {"schema", "sceneGuid", "name", "entities"}, "", result.errors);
+    reject_unknown_fields(input, {"schema", "sceneGuid", "name", "entities", "physicsConstraints"}, "", result.errors);
 
     SceneDocument document;
     document.source_uri = std::move(source_uri);
@@ -217,7 +320,7 @@ SceneDocumentParseResult SceneDocumentCodec::parse_json(
                             continue;
                         }
                         reject_unknown_fields(component, {"motionType", "mass", "gravityFactor", "linearDamping",
-                            "angularDamping", "continuousCollision", "allowSleeping"}, path, result.errors);
+                            "angularDamping", "continuousCollision", "allowSleeping", "collisionLayer", "collisionMask"}, path, result.errors);
                         SceneRigidBody body;
                         bool valid = component.contains("motionType") && component.at("motionType").is_string();
                         if (!valid) add_error(result.errors, "scene.invalid-string", path + "/motionType", "A motion type is required.");
@@ -231,6 +334,10 @@ SceneDocumentParseResult SceneDocumentCodec::parse_json(
                             valid &= read_bool(component, "continuousCollision", path, body.continuous_collision, result.errors);
                         if (component.contains("allowSleeping"))
                             valid &= read_bool(component, "allowSleeping", path, body.allow_sleeping, result.errors);
+                        if (component.contains("collisionLayer"))
+                            valid &= read_uint32(component, "collisionLayer", path, body.collision_layer, result.errors);
+                        if (component.contains("collisionMask"))
+                            valid &= read_uint32(component, "collisionMask", path, body.collision_mask, result.errors);
                         if (valid) entity.rigid_body = body;
                     } else if (component_name == "BoxCollider") {
                         const auto path = base_path + "/components/BoxCollider";
@@ -538,6 +645,80 @@ SceneDocumentParseResult SceneDocumentCodec::parse_json(
         }
     }
 
+    if (input.contains("physicsConstraints")) {
+        const auto path = std::string{"/physicsConstraints"};
+        const auto& constraints = input.at("physicsConstraints");
+        if (!constraints.is_array()) {
+            add_error(result.errors, "scene.invalid-physics-constraints", path,
+                "physicsConstraints must be an array.");
+        } else {
+            if (constraints.size() > 1024U) {
+                add_error(result.errors, "scene.physics-constraint-limit", path,
+                    "A scene may contain at most 1024 physics constraints.");
+            }
+            const auto count = std::min<std::size_t>(constraints.size(), 1024U);
+            for (std::size_t index = 0; index < count; ++index) {
+                const auto item_path = path + "/" + std::to_string(index);
+                const auto& value = constraints.at(index);
+                if (!value.is_object()) {
+                    add_error(result.errors, "scene.invalid-physics-constraint", item_path,
+                        "A physics constraint must be an object.");
+                    continue;
+                }
+                reject_unknown_fields(value, {"id", "type", "bodyA", "bodyB", "frame", "lowerLimit",
+                    "upperLimit", "restLength", "springFrequencyHz", "springDampingRatio", "enabled"},
+                    item_path, result.errors);
+
+                PhysicsConstraintSpec spec;
+                bool valid = true;
+                valid &= read_required_string(value, "id", item_path, spec.id, result.errors,
+                    "Constraint id must be a string.");
+                valid &= read_constraint_type(value, item_path, spec.type, result.errors);
+                valid &= read_required_string(value, "bodyA", item_path, spec.body_a, result.errors,
+                    "Constraint bodyA must be a string.");
+                valid &= read_required_string(value, "bodyB", item_path, spec.body_b, result.errors,
+                    "Constraint bodyB must be a string.");
+
+                if (!value.contains("frame") || !value.at("frame").is_object()) {
+                    add_error(result.errors, "scene.invalid-constraint-frame", item_path + "/frame",
+                        "Constraint frame must be an object containing six vector values.");
+                    valid = false;
+                } else {
+                    const auto& frame = value.at("frame");
+                    const auto frame_path = item_path + "/frame";
+                    reject_unknown_fields(frame, {"anchorA", "anchorB", "primaryAxisA", "secondaryAxisA",
+                        "primaryAxisB", "secondaryAxisB"}, frame_path, result.errors);
+                    const auto read_frame_vector = [&](const std::string_view name, PhysicsConstraintVec3& target) {
+                        if (!frame.contains(name)) {
+                            add_error(result.errors, "scene.missing-field", frame_path + "/" + std::string(name),
+                                "Constraint frame vectors are required.");
+                            valid = false;
+                        } else {
+                            valid &= read_constraint_vec3(frame.at(name), frame_path + "/" + std::string(name),
+                                target, result.errors);
+                        }
+                    };
+                    read_frame_vector("anchorA", spec.frame.anchor_a);
+                    read_frame_vector("anchorB", spec.frame.anchor_b);
+                    read_frame_vector("primaryAxisA", spec.frame.primary_axis_a);
+                    read_frame_vector("secondaryAxisA", spec.frame.secondary_axis_a);
+                    read_frame_vector("primaryAxisB", spec.frame.primary_axis_b);
+                    read_frame_vector("secondaryAxisB", spec.frame.secondary_axis_b);
+                }
+
+                valid &= read_constraint_float(value, "lowerLimit", item_path, spec.lower_limit, result.errors);
+                valid &= read_constraint_float(value, "upperLimit", item_path, spec.upper_limit, result.errors);
+                valid &= read_constraint_float(value, "restLength", item_path, spec.rest_length, result.errors);
+                valid &= read_constraint_float(value, "springFrequencyHz", item_path,
+                    spec.spring_frequency_hz, result.errors);
+                valid &= read_constraint_float(value, "springDampingRatio", item_path,
+                    spec.spring_damping_ratio, result.errors);
+                valid &= read_bool(value, "enabled", item_path, spec.enabled, result.errors);
+                if (valid) document.physics_constraints.push_back(std::move(spec));
+            }
+        }
+    }
+
     if (result.errors.empty()) {
         result.errors = validate(document);
     }
@@ -702,6 +883,43 @@ std::vector<SceneDocumentError> SceneDocumentCodec::validate(const SceneDocument
         }
     }
 
+    if (document.physics_constraints.size() > 1024U) {
+        add_error(errors, "scene.physics-constraint-limit", "/physicsConstraints",
+            "A scene may contain at most 1024 physics constraints.");
+    }
+    std::unordered_set<std::string> constraint_ids;
+    const auto has_collider = [](const SceneEntityDocument& entity) {
+        return entity.box_collider.has_value() || entity.sphere_collider.has_value() ||
+            entity.capsule_collider.has_value() || entity.convex_hull_collider.has_value();
+    };
+    for (std::size_t index = 0; index < document.physics_constraints.size(); ++index) {
+        const auto& constraint = document.physics_constraints[index];
+        const auto path = "/physicsConstraints/" + std::to_string(index);
+        if (!constraint_ids.emplace(constraint.id).second) {
+            add_error(errors, "scene.duplicate-constraint-id", path + "/id",
+                "Physics constraint id must be unique within the scene.");
+        }
+        const auto validation = validate_physics_constraint_spec(constraint);
+        if (!validation.success) {
+            add_error(errors, "scene.invalid-physics-constraint", path, validation.detail);
+        }
+        const auto validate_body_reference = [&](const std::string& body_id, const std::string_view field) {
+            const auto found = indices.find(body_id);
+            if (found == indices.end()) {
+                add_error(errors, "scene.missing-constraint-body", path + "/" + std::string(field),
+                    "Physics constraint body reference does not exist in this scene.");
+                return;
+            }
+            const auto& entity = document.entities[found->second];
+            if (!entity.rigid_body || !has_collider(entity)) {
+                add_error(errors, "scene.invalid-constraint-body", path + "/" + std::string(field),
+                    "Physics constraint bodies require both RigidBody and a collider component.");
+            }
+        };
+        validate_body_reference(constraint.body_a, "bodyA");
+        validate_body_reference(constraint.body_b, "bodyB");
+    }
+
     for (std::size_t index = 0; index < document.entities.size(); ++index) {
         const auto& entity = document.entities[index];
         if (!entity.parent_guid.empty()) {
@@ -763,6 +981,10 @@ std::string SceneDocumentCodec::write_canonical_json(const SceneDocument& docume
                 components["RigidBody"]["continuousCollision"] = true;
             if (!entity.rigid_body->allow_sleeping)
                 components["RigidBody"]["allowSleeping"] = false;
+            if (entity.rigid_body->collision_layer != 1U)
+                components["RigidBody"]["collisionLayer"] = entity.rigid_body->collision_layer;
+            if (entity.rigid_body->collision_mask != 0xffffffffU)
+                components["RigidBody"]["collisionMask"] = entity.rigid_body->collision_mask;
         }
         if (entity.box_collider) {
             components["BoxCollider"] = {{"friction", entity.box_collider->friction},
@@ -887,12 +1109,44 @@ std::string SceneDocumentCodec::write_canonical_json(const SceneDocument& docume
             {"parent", entity.parent_guid.empty() ? Json(nullptr) : Json(entity.parent_guid)}
         });
     }
-    const Json output = {
+    auto constraints = document.physics_constraints;
+    std::ranges::sort(constraints, [](const PhysicsConstraintSpec& left, const PhysicsConstraintSpec& right) {
+        if (left.id != right.id) return left.id < right.id;
+        if (left.body_a != right.body_a) return left.body_a < right.body_a;
+        if (left.body_b != right.body_b) return left.body_b < right.body_b;
+        return static_cast<std::uint8_t>(left.type) < static_cast<std::uint8_t>(right.type);
+    });
+    Json constraint_values = Json::array();
+    for (const auto& constraint : constraints) {
+        const Json frame = {
+            {"anchorA", constraint_vector3_json(constraint.frame.anchor_a)},
+            {"anchorB", constraint_vector3_json(constraint.frame.anchor_b)},
+            {"primaryAxisA", constraint_vector3_json(constraint.frame.primary_axis_a)},
+            {"secondaryAxisA", constraint_vector3_json(constraint.frame.secondary_axis_a)},
+            {"primaryAxisB", constraint_vector3_json(constraint.frame.primary_axis_b)},
+            {"secondaryAxisB", constraint_vector3_json(constraint.frame.secondary_axis_b)}
+        };
+        constraint_values.push_back({
+            {"id", constraint.id},
+            {"type", std::string(physics_constraint_type_name(constraint.type))},
+            {"bodyA", constraint.body_a},
+            {"bodyB", constraint.body_b},
+            {"frame", frame},
+            {"lowerLimit", constraint.lower_limit},
+            {"upperLimit", constraint.upper_limit},
+            {"restLength", constraint.rest_length},
+            {"springFrequencyHz", constraint.spring_frequency_hz},
+            {"springDampingRatio", constraint.spring_damping_ratio},
+            {"enabled", constraint.enabled}
+        });
+    }
+    Json output = {
         {"entities", std::move(entity_values)},
         {"name", document.name},
         {"sceneGuid", document.scene_guid},
         {"schema", document.schema}
     };
+    if (!constraint_values.empty()) output["physicsConstraints"] = std::move(constraint_values);
     return output.dump(2) + "\n";
 }
 

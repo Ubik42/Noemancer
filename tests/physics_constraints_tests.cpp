@@ -120,5 +120,60 @@ int main() {
     }
     if (!expect(runtime.remove_body("slider").success && runtime.remove_body("anchor").success,
                 "body cleanup failed after removing constraints")) return 23;
+
+    // Production PhysicsRuntime must materialize the same declarative records
+    // in its existing body PhysicsSystem.  This is intentionally separate
+    // from the fixture adapter above: a body rebuild invalidates native
+    // handles, then the next snapshot must recreate them without a dangling
+    // Jolt reference.
+    PhysicsRuntime production_constraints;
+    std::vector<PhysicsBodyState> production_bodies{
+        box_body("production-anchor", PhysicsMotionType::static_body, 0.0F),
+        box_body("production-dynamic", PhysicsMotionType::dynamic_body, 3.0F),
+    };
+    production_bodies[1].velocity_x = 8.0F;
+    auto production_fixed = pair_spec("production-weld", PhysicsConstraintType::fixed,
+                                      "production-anchor", "production-dynamic");
+    std::vector<PhysicsConstraintSpec> production_specs{production_fixed};
+    auto production_step = production_constraints.step(production_bodies, 0.0F,
+                                                       std::span<const PhysicsConstraintSpec>(production_specs));
+    if (!expect(production_step.success, "production constraint snapshot did not synchronize")) return 24;
+    const auto production_created = production_constraints.observe_constraint("production-weld");
+    if (!expect(production_created.has_value() && production_created->backend_created,
+                "production PhysicsRuntime did not create a native constraint")) return 25;
+    for (int step = 0; step < 30; ++step) {
+        production_step = production_constraints.step(production_bodies, 1.0F / 60.0F,
+                                                      std::span<const PhysicsConstraintSpec>(production_specs));
+        if (!expect(production_step.success, "production constraint step failed")) return 26;
+    }
+    if (!expect(std::abs(production_bodies[1].position_x - 3.0F) < 0.25F &&
+                    std::abs(production_bodies[1].velocity_x) < 0.5F,
+                "production constraint did not affect the body in the shared PhysicsSystem")) return 27;
+
+    // Changing a shape causes the body bridge to rebuild its Jolt body.  The
+    // constraint record remains stable and is recreated against the new body.
+    const auto old_revision = production_constraints.constraint_revision();
+    production_bodies[1].half_x = 0.5F;
+    production_step = production_constraints.step(production_bodies, 0.0F,
+                                                   std::span<const PhysicsConstraintSpec>(production_specs));
+    const auto rebuilt = production_constraints.observe_constraint("production-weld");
+    if (!expect(production_step.success && rebuilt.has_value() && rebuilt->backend_created &&
+                    production_constraints.constraint_revision() > old_revision,
+                "production body rebuild left a dangling or missing native constraint")) return 28;
+
+    production_bodies.erase(production_bodies.begin() + 1);
+    production_step = production_constraints.step(production_bodies, 0.0F,
+                                                   std::span<const PhysicsConstraintSpec>(production_specs));
+    const auto missing_body = production_constraints.observe_constraint("production-weld");
+    if (!expect(!production_step.success && production_step.code == PhysicsConstraintErrorCode::body_not_found &&
+                    missing_body.has_value() && !missing_body->backend_created,
+                "production constraint did not report a missing body without retaining a native handle")) return 29;
+
+    production_bodies.push_back(box_body("production-dynamic", PhysicsMotionType::dynamic_body, 3.0F));
+    production_step = production_constraints.step(production_bodies, 0.0F,
+                                                   std::span<const PhysicsConstraintSpec>(production_specs));
+    const auto reattached = production_constraints.observe_constraint("production-weld");
+    if (!expect(production_step.success && reattached.has_value() && reattached->backend_created,
+                "production constraint was not recreated after its body returned")) return 30;
     return 0;
 }

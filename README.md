@@ -59,8 +59,10 @@ Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 
 ### 物理
 
 - Box、Sphere、Capsule 与 Convex Collider，Static/Dynamic/Kinematic RigidBody，以及质量、重力、摩擦、弹性、线/角阻尼、CCD 和休眠。
-- Contact/Trigger 生命周期、Ray/Sphere Sweep、2D Character Motor；声明式 Inspector、Scene JSON、C# 与 Agent 使用同一稳定属性身份。
-- 内置 `--physics-showcase` 场景覆盖摩擦坡道、刚体堆叠、多米诺、弹性球、高速 CCD、运动平台与 Trigger。关节/约束、碰撞 Layer/Mask 和更完整的形状查询是当前下一阶段。
+- Contact/Trigger 生命周期、带过滤的 Ray/Sphere/Box/Capsule Sweep 与 Box/Sphere/Capsule Overlap，以及 2D Character Motor。
+- Fixed、Distance、Hinge、Slider、Spring 使用稳定 plain-data 合同，并在与刚体相同的 Jolt Physics System 中创建、更新、移除和观测；不会另建一套“演示物理世界”。
+- 声明式 Inspector、Scene JSON、生成式 C# Schema 与 Agent 观测使用同一属性身份；Collision Layer/Mask 已贯通上述边界。
+- 内置 `--physics-showcase` 场景除摩擦、堆叠、多米诺、弹性、CCD、运动平台与 Trigger 外，还包含五组命名清楚的约束装置。当前下一步是约束的专用编辑器/C# 命令、调试绘制和更完整项目验收。
 
 ### 实时渲染
 

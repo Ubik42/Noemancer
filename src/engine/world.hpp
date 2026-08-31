@@ -56,6 +56,8 @@ struct RigidBody {
     float angular_damping{0.05F};
     bool continuous_collision{};
     bool allow_sleeping{true};
+    std::uint32_t collision_layer{1U};
+    std::uint32_t collision_mask{0xffffffffU};
 };
 
 struct BoxCollider {

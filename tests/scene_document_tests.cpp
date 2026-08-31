@@ -31,7 +31,8 @@ int main() {
         source,
         "asset://scenes/bootstrap.scene.json");
     if (!parsed || parsed.document->entities.size() != 10 ||
-        !parsed.document->entities[1].camera || !parsed.document->entities[2].mesh_renderer) {
+        !parsed.document->entities[1].camera || !parsed.document->entities[2].mesh_renderer ||
+        !parsed.document->physics_constraints.empty()) {
         std::cerr << "Canonical bootstrap scene did not parse\n";
         return 2;
     }
@@ -45,6 +46,90 @@ int main() {
     if (noemancer::SceneDocumentCodec::write_canonical_json(*parsed.document) != normalized_source) {
         std::cerr << "Bootstrap scene is not in canonical form\n";
         return 3;
+    }
+
+    const std::string constraint_source = R"({
+        "schema":"noemancer.scene/0.1",
+        "sceneGuid":"scene.constraints",
+        "name":"Constraint Persistence",
+        "entities":[
+            {"guid":"entity.body-a","name":"Body A","parent":null,"components":{
+                "Transform":{"position":[0.0,1.0,0.0]},
+                "RigidBody":{"motionType":"dynamic","mass":2.0,"gravityFactor":1.0,"linearDamping":0.05,"collisionLayer":4,"collisionMask":9},
+                "BoxCollider":{"halfExtents":[0.5,0.5,0.5],"friction":0.5,"restitution":0.1}
+            }},
+            {"guid":"entity.body-b","name":"Body B","parent":null,"components":{
+                "Transform":{"position":[1.0,1.0,0.0]},
+                "RigidBody":{"motionType":"dynamic","mass":1.0,"gravityFactor":1.0,"linearDamping":0.05},
+                "SphereCollider":{"radius":0.5,"friction":0.5,"restitution":0.0}
+            }}
+        ],
+        "physicsConstraints":[
+            {"id":"constraint.z-distance","type":"distance","bodyA":"entity.body-a","bodyB":"entity.body-b",
+             "frame":{"anchorA":[0.0,0.0,0.0],"anchorB":[0.0,0.0,0.0],"primaryAxisA":[0.0,1.0,0.0],"secondaryAxisA":[1.0,0.0,0.0],"primaryAxisB":[0.0,1.0,0.0],"secondaryAxisB":[1.0,0.0,0.0]},
+             "lowerLimit":0.25,"upperLimit":2.0,"restLength":1.0,"springFrequencyHz":0.0,"springDampingRatio":1.0,"enabled":true},
+            {"id":"constraint.a-hinge","type":"hinge","bodyA":"entity.body-a","bodyB":"entity.body-b",
+             "frame":{"anchorA":[0.0,0.0,0.0],"anchorB":[0.0,0.0,0.0],"primaryAxisA":[0.0,1.0,0.0],"secondaryAxisA":[1.0,0.0,0.0],"primaryAxisB":[0.0,1.0,0.0],"secondaryAxisB":[1.0,0.0,0.0]},
+             "lowerLimit":-1.0,"upperLimit":1.0,"restLength":1.0,"springFrequencyHz":0.0,"springDampingRatio":1.0,"enabled":false}
+        ]
+    })";
+    const auto constraint_document = noemancer::SceneDocumentCodec::parse_json(
+        constraint_source, "asset://scenes/constraints.scene.json");
+    if (!constraint_document || constraint_document.document->physics_constraints.size() != 2U ||
+        constraint_document.document->entities[0].rigid_body->collision_layer != 4U ||
+        constraint_document.document->entities[0].rigid_body->collision_mask != 9U ||
+        constraint_document.document->physics_constraints[0].id != "constraint.z-distance" ||
+        constraint_document.document->physics_constraints[1].id != "constraint.a-hinge") {
+        std::cerr << "Physics constraint scene did not parse or preserve authored data\n";
+        return 71;
+    }
+    const auto constraint_canonical = noemancer::SceneDocumentCodec::write_canonical_json(*constraint_document.document);
+    const auto canonical_json = nlohmann::json::parse(constraint_canonical, nullptr, false);
+    if (canonical_json.is_discarded() || canonical_json.at("physicsConstraints").at(0).at("id") != "constraint.a-hinge" ||
+        canonical_json.at("physicsConstraints").at(1).at("id") != "constraint.z-distance" ||
+        canonical_json.at("entities").at(0).at("components").at("RigidBody").at("collisionLayer") != 4U ||
+        canonical_json.at("entities").at(0).at("components").at("RigidBody").at("collisionMask") != 9U ||
+        constraint_canonical != noemancer::SceneDocumentCodec::write_canonical_json(
+            *noemancer::SceneDocumentCodec::parse_json(constraint_canonical).document)) {
+        std::cerr << "Physics constraint canonical JSON was not deterministic\n";
+        return 72;
+    }
+
+    auto duplicate_constraint = nlohmann::json::parse(constraint_source);
+    duplicate_constraint["physicsConstraints"][1]["id"] = "constraint.z-distance";
+    const auto duplicate_result = noemancer::SceneDocumentCodec::parse_json(duplicate_constraint.dump());
+    if (duplicate_result || std::ranges::none_of(duplicate_result.errors, [](const noemancer::SceneDocumentError& error) {
+            return error.code == "scene.duplicate-constraint-id";
+        })) {
+        std::cerr << "Duplicate physics constraint IDs were not rejected\n";
+        return 73;
+    }
+    auto missing_constraint_body = nlohmann::json::parse(constraint_source);
+    missing_constraint_body["entities"][1]["components"].erase("SphereCollider");
+    const auto missing_body_result = noemancer::SceneDocumentCodec::parse_json(missing_constraint_body.dump());
+    if (missing_body_result || std::ranges::none_of(missing_body_result.errors, [](const noemancer::SceneDocumentError& error) {
+            return error.code == "scene.invalid-constraint-body";
+        })) {
+        std::cerr << "Constraint body without a collider was not rejected\n";
+        return 74;
+    }
+    auto invalid_constraint_field = nlohmann::json::parse(constraint_source);
+    invalid_constraint_field["physicsConstraints"][0]["unexpected"] = true;
+    const auto invalid_field_result = noemancer::SceneDocumentCodec::parse_json(invalid_constraint_field.dump());
+    if (invalid_field_result || std::ranges::none_of(invalid_field_result.errors, [](const noemancer::SceneDocumentError& error) {
+            return error.code == "scene.unknown-field" && error.path.find("physicsConstraints") != std::string::npos;
+        })) {
+        std::cerr << "Unknown physics constraint fields were not rejected\n";
+        return 75;
+    }
+    auto invalid_collision_layer = nlohmann::json::parse(constraint_source);
+    invalid_collision_layer["entities"][0]["components"]["RigidBody"]["collisionLayer"] = -1;
+    const auto invalid_layer_result = noemancer::SceneDocumentCodec::parse_json(invalid_collision_layer.dump());
+    if (invalid_layer_result || std::ranges::none_of(invalid_layer_result.errors, [](const noemancer::SceneDocumentError& error) {
+            return error.code == "scene.invalid-uint32";
+        })) {
+        std::cerr << "Invalid collision layer type was not rejected\n";
+        return 76;
     }
 
     noemancer::World world;

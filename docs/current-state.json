@@ -2,8 +2,8 @@
   "schemaVersion": "noemancer.project-state/0.2",
   "updated": "2026-08-30",
   "status": "in-development",
-  "currentSlice": "physics.constraints-production-integration",
-  "currentStep": "connect-constraint-registry-to-canonical-world-and-existing-jolt-system",
+  "currentSlice": "physics.common-effects-editor-and-script-acceptance",
+  "currentStep": "add-scene-level-constraint-authoring-csharp-agent-commands-and-debug-visualization",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
@@ -12,7 +12,6 @@
     "historicalResearch": "docs/research/"
   },
   "currentFrontier": [
-    "physics.constraints-world-authoring-and-runtime-integration",
     "physics.common-effects-editor-and-script-acceptance",
     "render.native-rhi-raytracing-foundation",
     "render.rtgi-production-path",
@@ -65,6 +64,7 @@
     "physics.common-effects-showcase",
     "physics.collision-filter-and-volume-queries",
     "physics.constraint-domain-and-jolt-fixture",
+    "physics.constraints-world-authoring-and-runtime-integration",
     "editor.scene-instrument-visual-language"
   ],
   "closedExperiments": [

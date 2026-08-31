@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/physics_constraint_types.hpp"
 #include "engine/gltf_mesh.hpp"
 
 #include <string>
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -131,6 +133,17 @@ public:
     PhysicsRuntime(const PhysicsRuntime&) = delete;
     PhysicsRuntime& operator=(const PhysicsRuntime&) = delete;
     void step(std::vector<PhysicsBodyState>& bodies, float delta_seconds);
+    // The explicit overload applies a complete, stable-ID constraint snapshot
+    // to the same Jolt PhysicsSystem used by the bodies.  The snapshot is
+    // copied into engine-owned state before the simulation step, so callers
+    // may pass a transient span.  Existing callers can keep using the legacy
+    // no-constraint overload unchanged.
+    [[nodiscard]] PhysicsConstraintResult step(std::vector<PhysicsBodyState>& bodies, float delta_seconds,
+                                               std::span<const PhysicsConstraintSpec> constraints);
+    [[nodiscard]] std::optional<PhysicsConstraintObservation> observe_constraint(
+        std::string_view constraint_id) const;
+    [[nodiscard]] std::vector<PhysicsConstraintObservation> observe_constraints() const;
+    [[nodiscard]] std::uint64_t constraint_revision() const noexcept;
     [[nodiscard]] PhysicsRayCastHit ray_cast(float origin_x, float origin_y, float origin_z,
                                              float direction_x, float direction_y, float direction_z) const;
     [[nodiscard]] PhysicsRayCastHit ray_cast(float origin_x, float origin_y, float origin_z,
