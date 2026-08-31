@@ -293,7 +293,10 @@ EditorUi::EditorUi(World& world, AssetRegistry& assets)
 
 void EditorUi::refresh_visible_state() {
     model_.refresh();
-    if(physics_constraint_panel_)physics_constraint_panel_->set_snapshot(model_.physics_constraint_snapshot());
+    const auto physics_snapshot=model_.physics_constraint_snapshot();
+    if(!physics_constraint_panel_)physics_constraint_panel_.emplace(physics_snapshot);
+    else if(physics_constraint_panel_->snapshot().world_revision!=physics_snapshot.world_revision)
+        physics_constraint_panel_->set_snapshot(physics_snapshot);
     scripting_status_cache_=model_.scripting_status_json();
     synchronize_editor_context_revision();
 }
