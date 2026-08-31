@@ -6,6 +6,7 @@
 #include <string_view>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <vector>
@@ -53,6 +54,12 @@ struct PhysicsBodyState final {
     float angular_damping{0.05F};
     bool continuous_collision{};
     bool allow_sleeping{true};
+    // Engine-owned collision category and query mask. The defaults preserve
+    // the historical behavior: every body is in category 1 and can interact
+    // with every category. A zero layer is useful for explicitly non-colliding
+    // sensor-only bodies.
+    std::uint32_t collision_layer{1U};
+    std::uint32_t collision_mask{0xffffffffU};
 };
 
 struct PhysicsContact final {
@@ -87,6 +94,36 @@ struct PhysicsSweepHit final {
     float penetration_depth{};
 };
 
+// Query filters are deliberately plain data so the same contract can be used
+// by native gameplay, the editor and the Agent command layer without leaking
+// Jolt types. ignored_entity_ids is a borrowed view and only needs to remain
+// alive for the duration of the query call.
+struct PhysicsQueryFilter final {
+    std::uint32_t layer{1U};
+    std::uint32_t mask{0xffffffffU};
+    std::string_view ignored_entity_id{};
+    std::span<const std::string_view> ignored_entity_ids{};
+};
+
+struct PhysicsOverlapHit final {
+    std::string entity_id;
+    float position_x{};
+    float position_y{};
+    float position_z{};
+    float normal_x{};
+    float normal_y{1.0F};
+    float normal_z{};
+    float penetration_depth{};
+    bool is_trigger{};
+};
+
+struct PhysicsOverlapResult final {
+    std::vector<PhysicsOverlapHit> hits;
+    bool truncated{};
+};
+
+inline constexpr std::size_t physics_query_maximum_overlap_hits = 128U;
+
 class PhysicsRuntime final {
 public:
     PhysicsRuntime();
@@ -96,9 +133,35 @@ public:
     void step(std::vector<PhysicsBodyState>& bodies, float delta_seconds);
     [[nodiscard]] PhysicsRayCastHit ray_cast(float origin_x, float origin_y, float origin_z,
                                              float direction_x, float direction_y, float direction_z) const;
+    [[nodiscard]] PhysicsRayCastHit ray_cast(float origin_x, float origin_y, float origin_z,
+                                             float direction_x, float direction_y, float direction_z,
+                                             const PhysicsQueryFilter& filter) const;
     [[nodiscard]] PhysicsSweepHit sphere_sweep(float origin_x,float origin_y,float origin_z,
                                                float direction_x,float direction_y,float direction_z,
                                                float radius,std::string_view ignored_entity_id={}) const;
+    [[nodiscard]] PhysicsSweepHit sphere_sweep(float origin_x,float origin_y,float origin_z,
+                                               float direction_x,float direction_y,float direction_z,
+                                               float radius,const PhysicsQueryFilter& filter) const;
+    [[nodiscard]] PhysicsSweepHit box_sweep(float origin_x, float origin_y, float origin_z,
+                                            float direction_x, float direction_y, float direction_z,
+                                            float half_x, float half_y, float half_z,
+                                            const PhysicsQueryFilter& filter = {}) const;
+    [[nodiscard]] PhysicsSweepHit capsule_sweep(float origin_x, float origin_y, float origin_z,
+                                                float direction_x, float direction_y, float direction_z,
+                                                float radius, float half_height,
+                                                const PhysicsQueryFilter& filter = {}) const;
+    [[nodiscard]] PhysicsOverlapResult overlap_box(float center_x, float center_y, float center_z,
+                                                    float half_x, float half_y, float half_z,
+                                                    const PhysicsQueryFilter& filter = {},
+                                                    std::size_t maximum_hits = physics_query_maximum_overlap_hits) const;
+    [[nodiscard]] PhysicsOverlapResult overlap_sphere(float center_x, float center_y, float center_z,
+                                                      float radius,
+                                                      const PhysicsQueryFilter& filter = {},
+                                                      std::size_t maximum_hits = physics_query_maximum_overlap_hits) const;
+    [[nodiscard]] PhysicsOverlapResult overlap_capsule(float center_x, float center_y, float center_z,
+                                                       float radius, float half_height,
+                                                       const PhysicsQueryFilter& filter = {},
+                                                       std::size_t maximum_hits = physics_query_maximum_overlap_hits) const;
     [[nodiscard]] bool apply_force(std::string_view entity_id,
                                    float force_x, float force_y, float force_z);
     [[nodiscard]] bool apply_impulse(std::string_view entity_id,
@@ -109,6 +172,16 @@ public:
     [[nodiscard]] std::string_view backend_id() const noexcept { return "jolt/5.6.0"; }
 
 private:
+    [[nodiscard]] PhysicsSweepHit shape_sweep(PhysicsShapeType shape_type,
+                                              float origin_x, float origin_y, float origin_z,
+                                              float direction_x, float direction_y, float direction_z,
+                                              float size_x, float size_y, float size_z,
+                                              const PhysicsQueryFilter& filter) const;
+    [[nodiscard]] PhysicsOverlapResult overlap_shape(PhysicsShapeType shape_type,
+                                                      float center_x, float center_y, float center_z,
+                                                      float size_x, float size_y, float size_z,
+                                                      const PhysicsQueryFilter& filter,
+                                                      std::size_t maximum_hits) const;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::vector<PhysicsContact> contacts_;

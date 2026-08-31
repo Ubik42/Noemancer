@@ -8,11 +8,13 @@
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
+#include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
@@ -59,7 +61,6 @@ namespace {
 namespace Layers {
 constexpr JPH::ObjectLayer non_moving = 0;
 constexpr JPH::ObjectLayer moving = 1;
-constexpr JPH::ObjectLayer count = 2;
 }
 
 namespace BroadPhaseLayers {
@@ -68,35 +69,188 @@ constexpr JPH::BroadPhaseLayer moving{1};
 constexpr unsigned count = 2;
 }
 
+struct CollisionFilterProfile final {
+    std::uint32_t layer{1U};
+    std::uint32_t mask{0xffffffffU};
+    bool moving{};
+};
+
+struct CollisionProfileKey final {
+    std::uint32_t layer{};
+    std::uint32_t mask{};
+    bool moving{};
+
+    bool operator==(const CollisionProfileKey&) const = default;
+};
+
+struct CollisionProfileKeyHash final {
+    [[nodiscard]] std::size_t operator()(const CollisionProfileKey& key) const noexcept {
+        const auto mixed = (static_cast<std::uint64_t>(key.layer) << 32U) |
+            static_cast<std::uint64_t>(key.mask);
+        const auto folded = mixed ^ (mixed >> 29U) ^ (mixed >> 47U);
+        return static_cast<std::size_t>(folded ^ (key.moving ? 0x9e3779b97f4a7c15ULL : 0ULL));
+    }
+};
+
+// Jolt's object layer is an implementation detail. We allocate one private
+// object layer per authored (category, mask, motion) profile so Jolt's native
+// pair and broadphase filters can evaluate the complete engine-owned mask
+// contract without putting Jolt types in the public header.
+class CollisionFilterTable final {
+public:
+    [[nodiscard]] JPH::ObjectLayer register_profile(const std::uint32_t layer,
+                                                    const std::uint32_t mask,
+                                                    const bool moving) {
+        const CollisionProfileKey key{layer, mask, moving};
+        if (const auto found = profile_to_object_layer_.find(key); found != profile_to_object_layer_.end())
+            return found->second;
+        const auto invalid = static_cast<std::uint64_t>(JPH::cObjectLayerInvalid);
+        if (next_object_layer_ >= invalid) return JPH::cObjectLayerInvalid;
+        const auto object_layer = static_cast<JPH::ObjectLayer>(next_object_layer_++);
+        profile_to_object_layer_.emplace(key, object_layer);
+        profiles_.emplace(object_layer, CollisionFilterProfile{layer, mask, moving});
+        return object_layer;
+    }
+
+    [[nodiscard]] const CollisionFilterProfile* find(const JPH::ObjectLayer object_layer) const noexcept {
+        const auto found = profiles_.find(object_layer);
+        return found == profiles_.end() ? nullptr : &found->second;
+    }
+
+private:
+    std::uint64_t next_object_layer_{};
+    std::unordered_map<CollisionProfileKey, JPH::ObjectLayer, CollisionProfileKeyHash> profile_to_object_layer_;
+    std::unordered_map<JPH::ObjectLayer, CollisionFilterProfile> profiles_;
+};
+
 class BroadPhaseLayerInterface final : public JPH::BroadPhaseLayerInterface {
 public:
+    explicit BroadPhaseLayerInterface(const CollisionFilterTable& table) : table_(table) {}
     [[nodiscard]] JPH::uint GetNumBroadPhaseLayers() const override { return BroadPhaseLayers::count; }
     [[nodiscard]] JPH::BroadPhaseLayer GetBroadPhaseLayer(const JPH::ObjectLayer layer) const override {
-        return layer == Layers::non_moving ? BroadPhaseLayers::non_moving : BroadPhaseLayers::moving;
+        const auto* profile = table_.find(layer);
+        return profile != nullptr && profile->moving ? BroadPhaseLayers::moving : BroadPhaseLayers::non_moving;
     }
+
+private:
+    const CollisionFilterTable& table_;
 };
 
 class ObjectVsBroadPhaseFilter final : public JPH::ObjectVsBroadPhaseLayerFilter {
 public:
+    explicit ObjectVsBroadPhaseFilter(const CollisionFilterTable& table) : table_(table) {}
     [[nodiscard]] bool ShouldCollide(const JPH::ObjectLayer layer, const JPH::BroadPhaseLayer broad_phase) const override {
-        return layer == Layers::moving || broad_phase == BroadPhaseLayers::moving;
+        const auto* profile = table_.find(layer);
+        return profile != nullptr && (profile->moving || broad_phase == BroadPhaseLayers::moving);
     }
+
+private:
+    const CollisionFilterTable& table_;
 };
 
 class ObjectLayerPairFilter final : public JPH::ObjectLayerPairFilter {
 public:
+    explicit ObjectLayerPairFilter(const CollisionFilterTable& table) : table_(table) {}
     [[nodiscard]] bool ShouldCollide(const JPH::ObjectLayer first, const JPH::ObjectLayer second) const override {
-        return first == Layers::moving || second == Layers::moving;
+        const auto* first_profile = table_.find(first);
+        const auto* second_profile = table_.find(second);
+        if (first_profile == nullptr || second_profile == nullptr) return false;
+        return (first_profile->moving || second_profile->moving) &&
+            (first_profile->layer & second_profile->mask) != 0U &&
+            (second_profile->layer & first_profile->mask) != 0U;
     }
+
+    [[nodiscard]] bool ShouldCollideQuery(const std::uint32_t query_layer,
+                                          const std::uint32_t query_mask,
+                                          const JPH::ObjectLayer body_layer) const {
+        const auto* body_profile = table_.find(body_layer);
+        return body_profile != nullptr &&
+            (query_mask & body_profile->layer) != 0U &&
+            (body_profile->mask & query_layer) != 0U;
+    }
+
+private:
+    const CollisionFilterTable& table_;
+};
+
+class QueryObjectLayerFilter final : public JPH::ObjectLayerFilter {
+public:
+    QueryObjectLayerFilter(const ObjectLayerPairFilter& pair_filter,
+                           const std::uint32_t layer, const std::uint32_t mask)
+        : pair_filter_(pair_filter), layer_(layer), mask_(mask) {}
+
+    [[nodiscard]] bool ShouldCollide(const JPH::ObjectLayer body_layer) const override {
+        return pair_filter_.ShouldCollideQuery(layer_, mask_, body_layer);
+    }
+
+private:
+    const ObjectLayerPairFilter& pair_filter_;
+    std::uint32_t layer_{};
+    std::uint32_t mask_{};
+};
+
+class QueryBodyFilter final : public JPH::BodyFilter {
+public:
+    QueryBodyFilter(const ObjectLayerPairFilter& pair_filter,
+                    const std::uint32_t layer, const std::uint32_t mask,
+                    const std::span<const JPH::BodyID> ignored_body_ids)
+        : pair_filter_(pair_filter), layer_(layer), mask_(mask), ignored_body_ids_(ignored_body_ids) {}
+
+    [[nodiscard]] bool ShouldCollide(const JPH::BodyID& body_id) const override {
+        return std::ranges::find(ignored_body_ids_, body_id) == ignored_body_ids_.end();
+    }
+
+    [[nodiscard]] bool ShouldCollideLocked(const JPH::Body& body) const override {
+        return pair_filter_.ShouldCollideQuery(layer_, mask_, body.GetObjectLayer());
+    }
+
+private:
+    const ObjectLayerPairFilter& pair_filter_;
+    std::uint32_t layer_{};
+    std::uint32_t mask_{};
+    std::span<const JPH::BodyID> ignored_body_ids_;
+};
+
+class BoundedOverlapCollector final : public JPH::CollideShapeCollector {
+public:
+    explicit BoundedOverlapCollector(const std::size_t maximum_hits) : maximum_hits_(maximum_hits) {}
+
+    void AddHit(const JPH::CollideShapeResult& hit) override {
+        const auto existing = std::ranges::find_if(hits, [&](const auto& candidate) {
+            return candidate.mBodyID2 == hit.mBodyID2;
+        });
+        if (existing != hits.end()) {
+            if (hit.mPenetrationDepth > existing->mPenetrationDepth) *existing = hit;
+            return;
+        }
+        if (hits.size() >= maximum_hits_) {
+            truncated = true;
+            ForceEarlyOut();
+            return;
+        }
+        hits.push_back(hit);
+    }
+
+    std::vector<JPH::CollideShapeResult> hits;
+    bool truncated{};
+
+private:
+    std::size_t maximum_hits_{};
 };
 
 struct GlobalJolt final {
+    bool owns_factory{};
+
     GlobalJolt() {
         JPH::RegisterDefaultAllocator();
-        JPH::Factory::sInstance = new JPH::Factory();
-        JPH::RegisterTypes();
+        if (JPH::Factory::sInstance == nullptr) {
+            JPH::Factory::sInstance = new JPH::Factory();
+            JPH::RegisterTypes();
+            owns_factory = true;
+        }
     }
     ~GlobalJolt() {
+        if (!owns_factory) return;
         JPH::UnregisterTypes();
         delete JPH::Factory::sInstance;
         JPH::Factory::sInstance = nullptr;
@@ -131,6 +285,8 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
         float gravity_factor{}, linear_damping{}, restitution{}, friction{}, mass{};
         float angular_damping{0.05F};
         bool one_way{},is_trigger{},constrain_to_2d{},continuous_collision{},allow_sleeping{true};
+        std::uint32_t collision_layer{1U};
+        std::uint32_t collision_mask{0xffffffffU};
     };
     struct LastState final {
         float x{}, y{}, z{}, velocity_x{}, velocity_y{}, velocity_z{};
@@ -138,6 +294,7 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
         float rotation_x{},rotation_y{},rotation_z{},rotation_w{1.0F};
     };
 
+    CollisionFilterTable collision_filters;
     BroadPhaseLayerInterface broad_phase_layers;
     ObjectVsBroadPhaseFilter object_vs_broad_phase;
     ObjectLayerPairFilter object_pairs;
@@ -160,7 +317,8 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
     static Definition definition(const PhysicsBodyState& state) {
         return {state.motion_type, state.shape_type, state.half_x, state.half_y, state.half_z, state.radius, state.half_height, state.convex_points, state.gravity_factor,
             state.linear_damping, state.restitution, state.friction, state.mass, state.angular_damping,
-            state.one_way,state.is_trigger,state.constrain_to_2d,state.continuous_collision,state.allow_sleeping};
+            state.one_way,state.is_trigger,state.constrain_to_2d,state.continuous_collision,state.allow_sleeping,
+            state.collision_layer, state.collision_mask};
     }
 
     static bool same_definition(const Definition& left, const Definition& right) {
@@ -171,10 +329,14 @@ struct PhysicsRuntime::Impl final : JPH::ContactListener {
             left.linear_damping == right.linear_damping && left.restitution == right.restitution &&
             left.friction == right.friction && left.mass == right.mass && left.one_way == right.one_way&&left.is_trigger==right.is_trigger &&
             left.constrain_to_2d == right.constrain_to_2d && left.angular_damping == right.angular_damping &&
-            left.continuous_collision == right.continuous_collision && left.allow_sleeping == right.allow_sleeping;
+            left.continuous_collision == right.continuous_collision && left.allow_sleeping == right.allow_sleeping &&
+            left.collision_layer == right.collision_layer && left.collision_mask == right.collision_mask;
     }
 
-    Impl() {
+    Impl()
+        : broad_phase_layers(collision_filters),
+          object_vs_broad_phase(collision_filters),
+          object_pairs(collision_filters) {
         static_cast<void>(global_jolt());
         temp_allocator = std::make_unique<JPH::TempAllocatorImpl>(8 * 1024 * 1024);
         const auto available_workers = std::max(1U, std::thread::hardware_concurrency()) - 1U;
@@ -309,9 +471,12 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
             shape = result.Get();
         } else shape = new JPH::BoxShape(JPH::Vec3(state.half_x, state.half_y, state.half_z));
         const auto motion = jolt_motion_type(state.motion_type);
+        const auto object_layer = impl_->collision_filters.register_profile(
+            state.collision_layer, state.collision_mask, motion != JPH::EMotionType::Static);
+        if (object_layer == JPH::cObjectLayerInvalid) continue;
         const JPH::Quat initial_rotation(state.rotation_x,state.rotation_y,state.rotation_z,state.rotation_w);
         JPH::BodyCreationSettings settings(shape, JPH::RVec3(state.position_x, state.position_y, state.position_z),
-            initial_rotation.Normalized(), motion, motion == JPH::EMotionType::Static ? Layers::non_moving : Layers::moving);
+            initial_rotation.Normalized(), motion, object_layer);
         settings.mFriction = state.friction;
         settings.mRestitution = state.restitution;
         settings.mGravityFactor = state.gravity_factor;
@@ -425,6 +590,8 @@ void PhysicsRuntime::step(std::vector<PhysicsBodyState>& states, const float del
             const auto& first = states[first_index];
             const auto& second = states[second_index];
             if (first.motion_type == PhysicsMotionType::static_body && second.motion_type == PhysicsMotionType::static_body) continue;
+            if ((first.collision_layer & second.collision_mask) == 0U ||
+                (second.collision_layer & first.collision_mask) == 0U) continue;
             constexpr float slop = 0.03F;
             const auto overlap_x = first.half_x + second.half_x - std::abs(first.position_x - second.position_x);
             const auto overlap_y = first.half_y + second.half_y - std::abs(first.position_y - second.position_y);
@@ -450,6 +617,56 @@ bool bounded_physics_vector(const std::string_view entity_id,
         std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
         std::abs(x) <= maximum_component && std::abs(y) <= maximum_component &&
         std::abs(z) <= maximum_component;
+}
+
+constexpr std::size_t maximum_query_ignored_entities = 64U;
+constexpr std::size_t maximum_query_entity_id_bytes = 256U;
+constexpr float maximum_query_component = 1'000'000.0F;
+constexpr float maximum_query_extent = 1'000.0F;
+
+bool bounded_query_vector(const float x, const float y, const float z) noexcept {
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
+        std::abs(x) <= maximum_query_component && std::abs(y) <= maximum_query_component &&
+        std::abs(z) <= maximum_query_component;
+}
+
+bool valid_query_direction(const float x, const float y, const float z) noexcept {
+    return bounded_query_vector(x, y, z) && (x != 0.0F || y != 0.0F || z != 0.0F);
+}
+
+bool valid_query_extent(const float value) noexcept {
+    return std::isfinite(value) && value > 0.0F && value <= maximum_query_extent;
+}
+
+template <typename BodyMap>
+bool collect_ignored_body_ids(const PhysicsQueryFilter& filter, const BodyMap& bodies,
+                              std::vector<JPH::BodyID>& result) {
+    result.clear();
+    if (!filter.ignored_entity_id.empty()) {
+        if (filter.ignored_entity_id.size() > maximum_query_entity_id_bytes) return false;
+        if (const auto found = bodies.find(std::string(filter.ignored_entity_id)); found != bodies.end())
+            result.push_back(found->second);
+    }
+    if (filter.ignored_entity_ids.size() > maximum_query_ignored_entities) return false;
+    result.reserve(std::min(maximum_query_ignored_entities,
+                            filter.ignored_entity_ids.size() + (filter.ignored_entity_id.empty() ? 0U : 1U)));
+    for (const auto entity_id : filter.ignored_entity_ids) {
+        if (entity_id.empty() || entity_id.size() > maximum_query_entity_id_bytes) return false;
+        const auto found = bodies.find(std::string(entity_id));
+        if (found == bodies.end()) continue;
+        if (std::ranges::find(result, found->second) == result.end()) result.push_back(found->second);
+    }
+    return true;
+}
+
+JPH::RefConst<JPH::Shape> make_query_shape(const PhysicsShapeType shape_type,
+                                           const float size_x, const float size_y,
+                                           const float size_z) {
+    if (shape_type == PhysicsShapeType::sphere) return new JPH::SphereShape(size_x);
+    if (shape_type == PhysicsShapeType::capsule) return new JPH::CapsuleShape(size_y, size_x);
+    if (shape_type == PhysicsShapeType::box)
+        return new JPH::BoxShape(JPH::Vec3(size_x, size_y, size_z));
+    return {};
 }
 
 } // namespace
@@ -501,15 +718,27 @@ bool PhysicsRuntime::apply_angular_impulse(const std::string_view entity_id,
 
 PhysicsRayCastHit PhysicsRuntime::ray_cast(const float origin_x, const float origin_y, const float origin_z,
                                            const float direction_x, const float direction_y, const float direction_z) const {
+    return ray_cast(origin_x, origin_y, origin_z, direction_x, direction_y, direction_z, PhysicsQueryFilter{});
+}
+
+PhysicsRayCastHit PhysicsRuntime::ray_cast(const float origin_x, const float origin_y, const float origin_z,
+                                           const float direction_x, const float direction_y, const float direction_z,
+                                           const PhysicsQueryFilter& filter) const {
     PhysicsRayCastHit result;
+    if (!bounded_query_vector(origin_x, origin_y, origin_z) ||
+        !valid_query_direction(direction_x, direction_y, direction_z)) return result;
+    std::vector<JPH::BodyID> ignored_body_ids;
+    if (!collect_ignored_body_ids(filter, impl_->bodies, ignored_body_ids)) return result;
+    const QueryObjectLayerFilter object_layer_filter(impl_->object_pairs, filter.layer, filter.mask);
+    const QueryBodyFilter body_filter(impl_->object_pairs, filter.layer, filter.mask, ignored_body_ids);
     JPH::RRayCast ray(JPH::RVec3(origin_x, origin_y, origin_z), JPH::Vec3(direction_x, direction_y, direction_z));
     JPH::RayCastResult hit;
-    if (!impl_->system->GetNarrowPhaseQuery().CastRay(ray, hit)) return result;
+    if (!impl_->system->GetNarrowPhaseQuery().CastRay(ray, hit, {}, object_layer_filter, body_filter)) return result;
     const auto entity = impl_->entities.find(hit.mBodyID.GetIndexAndSequenceNumber());
     if (entity == impl_->entities.end()) return result;
     result.hit = true;
     result.entity_id = entity->second;
-    result.fraction = hit.mFraction;
+    result.fraction = std::isfinite(hit.mFraction) ? std::clamp(hit.mFraction, 0.0F, 1.0F) : 1.0F;
     result.position_x = origin_x + direction_x * hit.mFraction;
     result.position_y = origin_y + direction_y * hit.mFraction;
     result.position_z = origin_z + direction_z * hit.mFraction;
@@ -519,32 +748,155 @@ PhysicsRayCastHit PhysicsRuntime::ray_cast(const float origin_x, const float ori
 PhysicsSweepHit PhysicsRuntime::sphere_sweep(const float origin_x,const float origin_y,const float origin_z,
                                              const float direction_x,const float direction_y,const float direction_z,
                                              const float radius,const std::string_view ignored_entity_id) const {
+    PhysicsQueryFilter filter;
+    filter.ignored_entity_id = ignored_entity_id;
+    return sphere_sweep(origin_x, origin_y, origin_z, direction_x, direction_y, direction_z, radius, filter);
+}
+
+PhysicsSweepHit PhysicsRuntime::sphere_sweep(const float origin_x,const float origin_y,const float origin_z,
+                                             const float direction_x,const float direction_y,const float direction_z,
+                                             const float radius,const PhysicsQueryFilter& filter) const {
+    return shape_sweep(PhysicsShapeType::sphere, origin_x, origin_y, origin_z,
+                       direction_x, direction_y, direction_z, radius, 0.0F, 0.0F, filter);
+}
+
+PhysicsSweepHit PhysicsRuntime::box_sweep(const float origin_x, const float origin_y, const float origin_z,
+                                          const float direction_x, const float direction_y, const float direction_z,
+                                          const float half_x, const float half_y, const float half_z,
+                                          const PhysicsQueryFilter& filter) const {
+    return shape_sweep(PhysicsShapeType::box, origin_x, origin_y, origin_z,
+                       direction_x, direction_y, direction_z, half_x, half_y, half_z, filter);
+}
+
+PhysicsSweepHit PhysicsRuntime::capsule_sweep(const float origin_x, const float origin_y, const float origin_z,
+                                              const float direction_x, const float direction_y, const float direction_z,
+                                              const float radius, const float half_height,
+                                              const PhysicsQueryFilter& filter) const {
+    return shape_sweep(PhysicsShapeType::capsule, origin_x, origin_y, origin_z,
+                       direction_x, direction_y, direction_z, radius, half_height, 0.0F, filter);
+}
+
+PhysicsSweepHit PhysicsRuntime::shape_sweep(const PhysicsShapeType shape_type,
+                                            const float origin_x, const float origin_y, const float origin_z,
+                                            const float direction_x, const float direction_y, const float direction_z,
+                                            const float size_x, const float size_y, const float size_z,
+                                            const PhysicsQueryFilter& filter) const {
     PhysicsSweepHit result;
-    if (!std::isfinite(radius)||radius<=0.0F||radius>10.0F) return result;
-    JPH::RefConst<JPH::Shape> shape=new JPH::SphereShape(radius);
+    if (!bounded_query_vector(origin_x, origin_y, origin_z) ||
+        !valid_query_direction(direction_x, direction_y, direction_z)) return result;
+    if (shape_type == PhysicsShapeType::box) {
+        if (!valid_query_extent(size_x) || !valid_query_extent(size_y) || !valid_query_extent(size_z)) return result;
+    } else if (shape_type == PhysicsShapeType::sphere) {
+        if (!valid_query_extent(size_x)) return result;
+    } else if (shape_type == PhysicsShapeType::capsule) {
+        if (!valid_query_extent(size_x) || !valid_query_extent(size_y)) return result;
+    } else return result;
+    std::vector<JPH::BodyID> ignored_body_ids;
+    if (!collect_ignored_body_ids(filter, impl_->bodies, ignored_body_ids)) return result;
+    const auto shape = make_query_shape(shape_type, size_x, size_y, size_z);
+    if (!shape) return result;
     const JPH::RShapeCast cast{shape,JPH::Vec3::sOne(),
         JPH::RMat44::sTranslation(JPH::RVec3(origin_x,origin_y,origin_z)),
         JPH::Vec3(direction_x,direction_y,direction_z)};
     JPH::ShapeCastSettings settings;
     settings.mReturnDeepestPoint=true;
     JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
-    JPH::BodyID ignored_body;
-    if (const auto found=impl_->bodies.find(std::string(ignored_entity_id)); found!=impl_->bodies.end()) ignored_body=found->second;
-    const JPH::IgnoreSingleBodyFilter body_filter(ignored_body);
-    impl_->system->GetNarrowPhaseQuery().CastShape(cast,settings,JPH::RVec3::sZero(),collector,{}, {},body_filter);
+    const QueryObjectLayerFilter object_layer_filter(impl_->object_pairs, filter.layer, filter.mask);
+    const QueryBodyFilter body_filter(impl_->object_pairs, filter.layer, filter.mask, ignored_body_ids);
+    impl_->system->GetNarrowPhaseQuery().CastShape(cast,settings,JPH::RVec3::sZero(),collector,{}, object_layer_filter, body_filter);
     if (!collector.HadHit()) return result;
     const auto entity=impl_->entities.find(collector.mHit.mBodyID2.GetIndexAndSequenceNumber());
     if (entity==impl_->entities.end()) return result;
     const auto normal=collector.mHit.mPenetrationAxis.LengthSq()>0.000001F
         ? collector.mHit.mPenetrationAxis.Normalized() : JPH::Vec3::sAxisY();
-    result.hit=true; result.entity_id=entity->second; result.fraction=collector.mHit.mFraction;
+    result.hit=true; result.entity_id=entity->second;
+    result.fraction=std::isfinite(collector.mHit.mFraction)
+        ? std::clamp(collector.mHit.mFraction, 0.0F, 1.0F) : 1.0F;
     result.position_x=collector.mHit.mContactPointOn2.GetX();
     result.position_y=collector.mHit.mContactPointOn2.GetY();
     result.position_z=collector.mHit.mContactPointOn2.GetZ();
     // Jolt reports the shape-cast penetration axis from body 2 toward the swept
     // shape. Public queries expose the contacted surface normal instead.
     result.normal_x=-normal.GetX(); result.normal_y=-normal.GetY(); result.normal_z=-normal.GetZ();
-    result.penetration_depth=collector.mHit.mPenetrationDepth;
+    result.penetration_depth=std::isfinite(collector.mHit.mPenetrationDepth)
+        ? std::max(0.0F, collector.mHit.mPenetrationDepth) : 0.0F;
+    return result;
+}
+
+PhysicsOverlapResult PhysicsRuntime::overlap_box(const float center_x, const float center_y, const float center_z,
+                                                 const float half_x, const float half_y, const float half_z,
+                                                 const PhysicsQueryFilter& filter, const std::size_t maximum_hits) const {
+    return overlap_shape(PhysicsShapeType::box, center_x, center_y, center_z,
+                         half_x, half_y, half_z, filter, maximum_hits);
+}
+
+PhysicsOverlapResult PhysicsRuntime::overlap_sphere(const float center_x, const float center_y, const float center_z,
+                                                    const float radius, const PhysicsQueryFilter& filter,
+                                                    const std::size_t maximum_hits) const {
+    return overlap_shape(PhysicsShapeType::sphere, center_x, center_y, center_z,
+                         radius, 0.0F, 0.0F, filter, maximum_hits);
+}
+
+PhysicsOverlapResult PhysicsRuntime::overlap_capsule(const float center_x, const float center_y, const float center_z,
+                                                     const float radius, const float half_height,
+                                                     const PhysicsQueryFilter& filter, const std::size_t maximum_hits) const {
+    return overlap_shape(PhysicsShapeType::capsule, center_x, center_y, center_z,
+                         radius, half_height, 0.0F, filter, maximum_hits);
+}
+
+PhysicsOverlapResult PhysicsRuntime::overlap_shape(const PhysicsShapeType shape_type,
+                                                   const float center_x, const float center_y, const float center_z,
+                                                   const float size_x, const float size_y, const float size_z,
+                                                   const PhysicsQueryFilter& filter,
+                                                   const std::size_t maximum_hits) const {
+    PhysicsOverlapResult result;
+    if (maximum_hits == 0U || !bounded_query_vector(center_x, center_y, center_z)) return result;
+    const auto bounded_hits = std::min(maximum_hits, physics_query_maximum_overlap_hits);
+    result.truncated = maximum_hits > bounded_hits;
+    if (shape_type == PhysicsShapeType::box) {
+        if (!valid_query_extent(size_x) || !valid_query_extent(size_y) || !valid_query_extent(size_z)) return result;
+    } else if (shape_type == PhysicsShapeType::sphere) {
+        if (!valid_query_extent(size_x)) return result;
+    } else if (shape_type == PhysicsShapeType::capsule) {
+        if (!valid_query_extent(size_x) || !valid_query_extent(size_y)) return result;
+    } else return result;
+    std::vector<JPH::BodyID> ignored_body_ids;
+    if (!collect_ignored_body_ids(filter, impl_->bodies, ignored_body_ids)) return result;
+    const auto shape = make_query_shape(shape_type, size_x, size_y, size_z);
+    if (!shape) return result;
+    JPH::CollideShapeSettings settings;
+    BoundedOverlapCollector collector(bounded_hits);
+    const QueryObjectLayerFilter object_layer_filter(impl_->object_pairs, filter.layer, filter.mask);
+    const QueryBodyFilter body_filter(impl_->object_pairs, filter.layer, filter.mask, ignored_body_ids);
+    impl_->system->GetNarrowPhaseQuery().CollideShape(shape, JPH::Vec3::sOne(),
+        JPH::RMat44::sTranslation(JPH::RVec3(center_x, center_y, center_z)), settings,
+        JPH::RVec3::sZero(), collector, {}, object_layer_filter, body_filter);
+    result.truncated = result.truncated || collector.truncated;
+    result.hits.reserve(collector.hits.size());
+    for (const auto& raw_hit : collector.hits) {
+        const auto entity = impl_->entities.find(raw_hit.mBodyID2.GetIndexAndSequenceNumber());
+        if (entity == impl_->entities.end()) continue;
+        const auto normal = raw_hit.mPenetrationAxis.LengthSq() > 0.000001F
+            ? raw_hit.mPenetrationAxis.Normalized() : JPH::Vec3::sAxisY();
+        PhysicsOverlapHit hit;
+        hit.entity_id = entity->second;
+        hit.position_x = raw_hit.mContactPointOn2.GetX();
+        hit.position_y = raw_hit.mContactPointOn2.GetY();
+        hit.position_z = raw_hit.mContactPointOn2.GetZ();
+        hit.normal_x = -normal.GetX();
+        hit.normal_y = -normal.GetY();
+        hit.normal_z = -normal.GetZ();
+        hit.penetration_depth = std::isfinite(raw_hit.mPenetrationDepth)
+            ? std::max(0.0F, raw_hit.mPenetrationDepth) : 0.0F;
+        if (const auto definition = impl_->definitions.find(entity->second); definition != impl_->definitions.end())
+            hit.is_trigger = definition->second.is_trigger;
+        const auto existing = std::ranges::find_if(result.hits, [&](const auto& candidate) {
+            return candidate.entity_id == hit.entity_id;
+        });
+        if (existing == result.hits.end()) result.hits.push_back(std::move(hit));
+        else if (hit.penetration_depth > existing->penetration_depth) *existing = std::move(hit);
+    }
+    std::ranges::sort(result.hits, {}, &PhysicsOverlapHit::entity_id);
     return result;
 }
 

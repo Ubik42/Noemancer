@@ -67,6 +67,10 @@ add_executable(noemancer_simulation_runtime_tests simulation_runtime_tests.cpp)
 target_link_libraries(noemancer_simulation_runtime_tests PRIVATE noemancer::engine)
 add_test(NAME noemancer.simulation_runtime COMMAND noemancer_simulation_runtime_tests)
 
+add_executable(noemancer_physics_constraints_tests physics_constraints_tests.cpp)
+target_link_libraries(noemancer_physics_constraints_tests PRIVATE noemancer::engine)
+add_test(NAME noemancer.physics_constraints COMMAND noemancer_physics_constraints_tests)
+
 add_executable(noemancer_play_world_apply_tests play_world_apply_tests.cpp)
 target_link_libraries(noemancer_play_world_apply_tests PRIVATE noemancer::engine nlohmann_json::nlohmann_json)
 add_test(NAME noemancer.play_world_apply COMMAND noemancer_play_world_apply_tests)

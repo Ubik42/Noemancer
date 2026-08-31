@@ -167,6 +167,8 @@ Pixels are evidence, not the only interface. User-facing controls and viewport s
 
 The graph is an engine capability consumed by Editor, CLI, MCP, accessibility and tests. It is not an MCP feature and is not serialized in full every frame.
 
+The semantic capability is not the editor's visual theme. Noemancer's product chrome uses a “scene instrument / cartography bench” language: graphite surfaces keep authored content dominant, paper-warm text supports long sessions, and oxidized copper/brass appear only for selection, measurement and state. Coordinate readouts, restrained rulers and index marks reinforce scene work without imitating a sci-fi HUD. Generic blue-purple neon, glass card stacks, chat-first layouts and “AI-powered” badges are explicitly outside the default visual system. Agent access remains discoverable in Runtime Context and tool surfaces, but its identity comes from shared authority and precise receipts rather than decorative AI branding. ImGui shell and retained RmlUi surfaces consume the same design tokens where their rendering models overlap; they are not required to share an implementation.
+
 ### DPI 与本地化验收边界
 
 UI density 和 locale 是显式 Runtime 输入，不是隐藏平台状态。`--ui-scale` 被限制在 `[0.75, 3.0]`；同一值同时缩放 ImGui metrics/font 与 RmlUi density-independent units，而请求的窗口尺寸仍是字面输出像素。生成的 Retained 样式统一使用 `dp`，嵌入面板宽度从物理 Dock 像素换算回逻辑单位。Retained Observation 同时保留原始 overflow 与 `actionableOverflowCount`；只排除显式声明的滚动容器行为和 RmlUi padding/border 几何，不能借此隐藏任意被裁内容。

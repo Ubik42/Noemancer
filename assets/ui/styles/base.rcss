@@ -1,5 +1,205 @@
-.surface { overflow-y: auto; }
-.group { border-radius: 6px; }
-.property-row { gap: 8px; }
+/*
+ * Noemancer editor / game UI foundation: "场景测绘台".
+ *
+ * This is intentionally a small RML-compatible vocabulary.  It keeps the
+ * editor legible at a glance while giving panels the visual language of a
+ * precision instrument: graphite surfaces, paper-warm text, ruled borders,
+ * and restrained brass/oxide accents.  Do not add browser-only CSS here;
+ * this file is appended to the retained RML stylesheet at runtime.
+ */
+body {
+  color: #eee7d8;
+  font-family: LatoLatin;
+}
+
+.surface {
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: 14dp 12dp 12dp 12dp;
+  background: #171614f7;
+  border-width: 1dp;
+  border-color: #3c3a31;
+}
+
+.surface-header {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 100%;
+  min-height: 38dp;
+  margin-bottom: 10dp;
+  padding: 5dp 8dp 7dp 8dp;
+  background: #2a2822;
+  border-width: 1dp;
+  border-color: #4b4638;
+  border-left-width: 3dp;
+  border-left-color: #c6a15b;
+}
+
+.surface-subtitle {
+  width: 100%;
+  margin-top: 2dp;
+  color: #a39b8b;
+  font-size: 11dp;
+  letter-spacing: 0.3dp;
+}
+
+.group {
+  box-sizing: border-box;
+  border-radius: 3dp;
+  background: #22201cf5;
+  border-width: 1dp;
+  border-color: #4b4638;
+}
+
+.group-header {
+  height: 32dp;
+  padding: 0 9dp;
+  background: #2a2822;
+  border-bottom-width: 1dp;
+  border-bottom-color: #4b4638;
+}
+
+.group-header:hover { background: #343027; }
+.group-header:focus { background: #3a3325; border-color: #d7b66b; }
+.group-chevron { color: #c6a15b; }
+.group-title { margin-left: 5dp; color: #eee7d8; font-size: 13dp; letter-spacing: 0.7dp; }
+.group-content { padding: 7dp 4dp 8dp 4dp; }
+
+.property-row {
+  gap: 8dp;
+  min-height: 29dp;
+  padding: 4dp 8dp;
+  border-bottom-width: 1dp;
+  border-bottom-color: #34322a;
+}
+
+.property-row:hover { background: #2a2821; }
+.property-row:focus { background: #312c22; }
+.property-row.disabled { opacity: 0.48; }
+.property-row.error { background: #3b2420; border-left-width: 2dp; border-left-color: #c86a5a; }
+
 .label, .value { min-width: 0; word-break: break-word; }
-.ability-slot { padding: 8px; }
+.label { color: #b8b09f; }
+.value { color: #e4c986; }
+
+.selectable-row { min-height: 29dp; padding: 4dp 8dp; }
+.selectable-row:hover { background: #2a2821; }
+.selectable-row:focus { background: #312c22; }
+.selectable-row.selected { background: #5b4b2c; color: #fff3d4; border-left-width: 2dp; border-left-color: #d7b66b; }
+.selectable-row.disabled { opacity: 0.48; }
+
+.selectable-card {
+  min-height: 92dp;
+  padding: 7dp;
+  background: #1a1a17;
+  border-width: 1dp;
+  border-color: #34322a;
+  border-radius: 2dp;
+}
+.selectable-card:hover { background: #2a2821; border-color: #6b5835; }
+.selectable-card:focus { background: #312c22; border-color: #d7b66b; }
+.selectable-card.selected { background: #5b4b2c; border-color: #d7b66b; color: #fff3d4; }
+.collection-card-image { background: #101110; border-color: #4b4638; }
+.collection-card-metadata { color: #a39b8b; }
+
+.toolbar {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  flex-shrink: 0;
+  align-items: center;
+  width: 100%;
+  min-height: 30dp;
+  margin-bottom: 8dp;
+  padding: 3dp 4dp;
+  background: #1f1e1a;
+  border-width: 1dp;
+  border-color: #4b4638;
+}
+
+.toolbar-item {
+  min-height: 24dp;
+  margin-right: 4dp;
+  padding: 3dp 7dp;
+  color: #b8b09f;
+  border-width: 1dp;
+  border-color: transparent;
+}
+.toolbar-item:hover { background: #2a2821; border-color: #6b5835; color: #eee7d8; }
+.toolbar-item:focus, .toolbar-item.active { background: #5b4b2c; border-color: #d7b66b; color: #fff3d4; }
+
+.inline-action {
+  min-height: 24dp;
+  padding: 3dp 8dp;
+  background: #2d2a21;
+  color: #eee7d8;
+  border-color: #6b5835;
+}
+.inline-action:hover { background: #4b3e27; border-color: #d7b66b; }
+.inline-action:focus { background: #5b4b2c; border-color: #d7b66b; }
+.inline-action:disabled { background: #1a1a17; color: #6d685d; border-color: #34322a; }
+.inline-action-input, .value-editor, .axis-field { background: #131411; border-color: #4b4638; }
+.inline-action-input:focus, .value-editor:focus, .axis-field:focus { border-color: #d7b66b; }
+.axis-label { color: #c6a15b; }
+.axis-input { color: #e4c986; }
+.axis-input:focus { background: #22201c; color: #fff3d4; }
+
+.value-editor.checkbox { background: #131411; border-color: #6b5835; }
+.value-editor.checkbox:checked { background: #c6a15b; border-color: #d7b66b; }
+input.range slidertrack { background: #34322a; }
+input.range sliderprogress { background: #c6a15b; }
+input.range sliderbar { background: #d7b66b; }
+input.range sliderbar:hover { background: #fff3d4; }
+
+.meter { margin: 5dp 0; }
+.meter-track { background: #131411; border-width: 1dp; border-color: #34322a; }
+.meter-fill { background: #93b7a0; }
+.meter-number { color: #eee7d8; }
+.ability-slot { padding: 8dp; background: #22201c; border-left-width: 3dp; border-left-color: #c6a15b; }
+.action-button { background: #2d2a21; color: #eee7d8; border-color: #6b5835; }
+.action-button:hover { background: #4b3e27; border-color: #d7b66b; }
+.action-button:focus { background: #5b4b2c; border-color: #d7b66b; }
+
+.status-line {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  min-height: 24dp;
+  margin-top: 6dp;
+  padding: 3dp 7dp;
+  background: #1f1e1a;
+  border-width: 1dp;
+  border-color: #34322a;
+  color: #b8b09f;
+}
+.status-ok { color: #89aa8f; border-left-width: 2dp; border-left-color: #89aa8f; }
+.status-warning { color: #d19f5b; border-left-width: 2dp; border-left-color: #d19f5b; }
+.status-error { color: #c86a5a; border-left-width: 2dp; border-left-color: #c86a5a; }
+
+.measurement-label, .index-label {
+  color: #c6a15b;
+  font-size: 11dp;
+  letter-spacing: 0.6dp;
+}
+.coordinate-readout {
+  color: #93b7a0;
+  font-size: 11dp;
+  letter-spacing: 0.4dp;
+}
+.panel-divider { width: 100%; height: 1dp; margin: 5dp 0; background: #4b4638; }
+.selection-marker { border-left-width: 3dp; border-left-color: #d7b66b; }
+.ruler { height: 4dp; background: #34322a; border-bottom-width: 1dp; border-bottom-color: #6b5835; }
+.ruler-tick { width: 1dp; height: 4dp; margin-right: 7dp; background: #c6a15b; }
+
+.tree-row>.label { min-height: 29dp; padding: 5dp 8dp; }
+.tree-row:hover>.label { background: #2a2821; }
+.tree-row:focus>.label { background: #312c22; }
+.tree-row.selected>.label { background: #5b4b2c; color: #fff3d4; border-left-width: 2dp; border-left-color: #d7b66b; }
+
+scrollbarvertical { width: 9dp; background: #171614; }
+scrollbarvertical slidertrack { background: #171614; }
+scrollbarvertical sliderbar { min-height: 28dp; background: #4b4638; border-radius: 3dp; }
+scrollbarvertical sliderbar:hover { background: #8a7042; }

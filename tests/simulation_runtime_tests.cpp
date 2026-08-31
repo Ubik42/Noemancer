@@ -227,6 +227,78 @@ int main() {
         return 26;
     }
 
+    // Collision categories are evaluated by the Jolt pair/broadphase filters,
+    // while query filters apply the same symmetric layer/mask rule to native
+    // ray, shape-cast and overlap queries. The default filter remains category
+    // 1 against all categories for backwards-compatible scenes.
+    PhysicsRuntime query_physics;
+    std::vector<PhysicsBodyState> query_bodies{
+        {.entity_id="layer-two", .motion_type=PhysicsMotionType::static_body,
+         .position_x=0.0F, .half_x=0.5F, .half_y=0.5F, .half_z=0.5F, .gravity_factor=0.0F},
+        {.entity_id="sweep-box", .motion_type=PhysicsMotionType::static_body,
+         .position_x=3.0F, .half_x=0.5F, .half_y=0.5F, .half_z=0.5F, .gravity_factor=0.0F},
+        {.entity_id="sweep-capsule", .motion_type=PhysicsMotionType::static_body,
+         .shape_type=PhysicsShapeType::capsule, .position_x=6.0F, .radius=0.35F,
+         .half_height=0.65F, .gravity_factor=0.0F},
+        {.entity_id="overlap-sphere", .motion_type=PhysicsMotionType::static_body,
+         .shape_type=PhysicsShapeType::sphere, .position_y=3.0F, .radius=0.75F, .gravity_factor=0.0F},
+        {.entity_id="overlap-capsule", .motion_type=PhysicsMotionType::static_body,
+         .shape_type=PhysicsShapeType::capsule, .position_y=-3.0F, .radius=0.4F,
+         .half_height=0.6F, .gravity_factor=0.0F},
+    };
+    query_bodies[0].collision_layer = 2U;
+    query_bodies[0].collision_mask = 2U;
+    query_physics.step(query_bodies, 0.0F);
+    if (query_physics.ray_cast(-2.0F, 0.0F, 0.0F, 1.5F, 0.0F, 0.0F).hit) {
+        std::cerr << "Default query filter unexpectedly hit a category-2-only body\n";
+        return 27;
+    }
+    const PhysicsQueryFilter layer_two_filter{.layer=2U, .mask=2U};
+    const auto filtered_ray = query_physics.ray_cast(-2.0F, 0.0F, 0.0F,
+        5.0F, 0.0F, 0.0F, layer_two_filter);
+    if (!filtered_ray.hit || filtered_ray.entity_id != "layer-two") {
+        std::cerr << "Layer/mask query filter did not expose the matching body\n";
+        return 28;
+    }
+    const auto box_hit = query_physics.box_sweep(-1.0F, 0.0F, 0.0F,
+        6.0F, 0.0F, 0.0F, 0.25F, 0.25F, 0.25F);
+    if (!box_hit.hit || box_hit.entity_id != "sweep-box" ||
+        box_hit.fraction <= 0.0F || box_hit.fraction >= 1.0F ||
+        !std::isfinite(box_hit.normal_x) || !std::isfinite(box_hit.penetration_depth)) {
+        std::cerr << "Jolt box sweep did not return a stable hit payload\n";
+        return 29;
+    }
+    const auto capsule_sweep_hit = query_physics.capsule_sweep(4.0F, 0.0F, 0.0F,
+        4.0F, 0.0F, 0.0F, 0.2F, 0.4F);
+    if (!capsule_sweep_hit.hit || capsule_sweep_hit.entity_id != "sweep-capsule" ||
+        capsule_sweep_hit.fraction <= 0.0F || capsule_sweep_hit.fraction >= 1.0F ||
+        !std::isfinite(capsule_sweep_hit.normal_x)) {
+        std::cerr << "Jolt capsule sweep did not return the stable entity id\n";
+        return 30;
+    }
+    const auto sphere_overlaps = query_physics.overlap_sphere(0.0F, 3.0F, 0.0F, 1.0F);
+    if (sphere_overlaps.hits.empty() || sphere_overlaps.hits.front().entity_id != "overlap-sphere" ||
+        sphere_overlaps.hits.size() > physics_query_maximum_overlap_hits ||
+        !std::isfinite(sphere_overlaps.hits.front().penetration_depth)) {
+        std::cerr << "Sphere overlap did not return a bounded stable hit\n";
+        return 31;
+    }
+    const auto capsule_overlaps = query_physics.overlap_capsule(0.0F, -3.0F, 0.0F, 0.5F, 0.5F);
+    if (capsule_overlaps.hits.empty() || capsule_overlaps.hits.front().entity_id != "overlap-capsule") {
+        std::cerr << "Capsule overlap did not resolve its target\n";
+        return 32;
+    }
+    std::array<std::string_view, 1> ignored_overlap{"overlap-sphere"};
+    const PhysicsQueryFilter ignored_filter{.ignored_entity_ids=ignored_overlap};
+    const auto box_overlaps = query_physics.overlap_box(0.0F, 0.0F, 0.0F,
+        1.0F, 1.0F, 1.0F, ignored_filter, 1U);
+    if (std::ranges::any_of(box_overlaps.hits, [](const PhysicsOverlapHit& hit) {
+            return hit.entity_id == "overlap-sphere";
+        }) || box_overlaps.hits.size() > 1U) {
+        std::cerr << "Box overlap did not honor ignored ids or the result bound\n";
+        return 33;
+    }
+
     AnimationRuntime animation;
     auto time = animation.advance_time(0.0F, 0.5F, 1.0F, true, true, "asset.animation.test-bob");
     if (std::abs(time - 0.5F) > 0.0001F || std::abs(animation.sample_translation_y("asset.animation.test-bob", time) - 0.22F) > 0.0001F) {

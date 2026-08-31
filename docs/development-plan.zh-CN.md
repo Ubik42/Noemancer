@@ -1,6 +1,6 @@
 # Noemancer 当前开发计划
 
-> 状态：Current；更新日期：2026-08-29
+> 状态：Current；更新日期：2026-08-30
 > 权威范围：当前目标、执行顺序、退出条件和验证层级。
 > 历史进展不保存在本页；旧版长日志可从 Git revision `3e15f66^` 查阅。
 ## 产品目标
@@ -18,7 +18,7 @@ Noemancer 的差异化集中在：
 
 ### 当前主线：常用物理生产能力；渲染停在稳定光追基底
 
-第一阶段通用生产闭环、编辑器基础、Cook/Package/Player、Agent Authority 和 Hybrid Pixel 纵切已经成立，但这不等于引擎只剩边角料。商业 Raster 已经有可见项目路径和双后端证据，Native Ray Tracing 也完成了双后端最小 Trace；在进入昂贵的持久 Native RHI 与 RTGI 之前，当前按产品优先级先补齐更容易直接服务游戏开发的常用物理能力。渲染没有取消：`render.native-rhi-raytracing-foundation` 和 `render.rtgi-production-path` 保留在物理两批之后，高 DPI、可再分发多语字体和 cluster-aware 编辑继续排队。物理不自写通用 Solver：Jolt 继续拥有积分、碰撞检测、约束求解、休眠与 CCD 等数值内核；Noemancer 负责稳定 Scene/World 数据、声明式 Inspector、C# Command Buffer、Agent 观察与事务、运行时私有适配和可复现验收场景。当前首批已贯通线/角速度、线/角阻尼、质量、重力系数、运动类型、CCD、休眠以及力/线性冲量/角冲量，并建立包含摩擦坡道、堆叠、多米诺、弹性球、高速 CCD、运动平台和 Trigger 的普通 43 实体场景。下一批依次补齐 Fixed/Distance/Hinge/Slider/Spring 约束，碰撞 Layer/Mask，Box/Capsule/Overlap 查询，激活/休眠与调试可视化，再用固定负载决定是否需要更深的 Jolt Job/宽相位优化。
+第一阶段通用生产闭环、编辑器基础、Cook/Package/Player、Agent Authority 和 Hybrid Pixel 纵切已经成立，但这不等于引擎只剩边角料。商业 Raster 已经有可见项目路径和双后端证据，Native Ray Tracing 也完成了双后端最小 Trace；在进入昂贵的持久 Native RHI 与 RTGI 之前，当前按产品优先级先补齐更容易直接服务游戏开发的常用物理能力。渲染没有取消：`render.native-rhi-raytracing-foundation` 和 `render.rtgi-production-path` 保留在物理两批之后，高 DPI、可再分发多语字体和 cluster-aware 编辑继续排队。物理不自写通用 Solver：Jolt 继续拥有积分、碰撞检测、约束求解、休眠与 CCD 等数值内核；Noemancer 负责稳定 Scene/World 数据、声明式 Inspector、C# Command Buffer、Agent 观察与事务、运行时私有适配和可复现验收场景。刚体首批已贯通线/角速度、阻尼、质量、重力、运动类型、CCD、休眠以及力/线性冲量/角冲量，并建立 43 实体常用效果场景。本轮又在现有 Jolt System 上补齐双向 Collision Layer/Mask、带过滤/忽略实体的 Ray/Sphere/Box/Capsule Sweep 和 Box/Sphere/Capsule Overlap，有界结果按稳定实体 ID 排序；约束侧建立了 Fixed/Distance/Hinge/Slider/Spring 的 plain-data 合同、严格校验、稳定 ID Registry 与真实 Jolt fixture，但尚未把 fixture 当成第二个生产 World。下一批只做正确集成：把 Registry 接入 canonical Scene/World 和现有 Jolt System，贯通 Inspector/C#/Agent 与调试绘制，再以普通场景和固定负载验收后回到持久 Native RHI。
 
 独立验收工程 `D:\3D\NoemancerProjects\NoemancerRenderLab` 是渲染真实性客户，不属于引擎源码，也不建立第二套 Scene/Asset Schema。它由正式 Project Workspace Authority 创建，当前包含：
 
@@ -53,11 +53,11 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、libjpe
 
 当前 `/goal` 使用稳定目标，不在 Prompt 内复制会迅速过期的切片名或性能数字；瞬时队列只由 `docs/current-state.json.currentFrontier` 表达。可直接使用的目标文本如下：
 
-> 持续把 `D:\3D\_tools\Noemancer` 推进为可由人类与 AI Agent 共同创建、编辑、调试、运行、打包和发布真实游戏的高性能通用引擎，并以 `D:\3D` 下的独立项目，尤其 `D:\3D\NoemancerProjects\NoemancerRenderLab`，作为公开产品路径的真实性客户。每次恢复必须先完整读取仓库 `AGENTS.md`、`docs/current-state.json`、`docs/architecture.md`、`docs/development-plan.zh-CN.md` 与 `docs/first-acceptance-status.zh-CN.md`，检查工作树并优先收口已经开始的连贯批次；不得把继承的修改丢下后另开同领域实现。瞬时队列只认 `currentFrontier`，旧对话、历史研究、已完成切片和旧暂停文字都不是当前指令。
+> 持续把 `D:\3D\_tools\Noemancer` 推进为可由人类与 AI Agent 共同创建、编辑、调试、运行、打包和发布真实游戏的高性能通用引擎，并以 `D:\3D` 下的独立项目，尤其 `D:\3D\NoemancerProjects\NoemancerRenderLab`，作为公开产品路径的真实性客户。每次恢复先读取仓库 `AGENTS.md`、完整 `docs/current-state.json` 和工作树；只读取当前切片对应的 `docs/architecture.md`、`docs/development-plan.zh-CN.md`、能力矩阵与直接引用 ADR 段落，不重复通读历史证据。优先收口已经开始的连贯批次，不得把继承的修改丢下后另开同领域实现。瞬时队列只认 `currentFrontier`，旧对话、历史研究、已完成切片和旧暂停文字都不是当前指令。
 >
 > 从 `currentFrontier` 首个未阻塞项选择最大连贯、可审查的通用引擎批次。若队列为空，不得把 Goal 当作完成：依据本计划与能力状态复审真实产品缺口，按“当前用户产品优先级 → 通用生产闭环 → 核心渲染/物理/动画 → 编辑器作者体验 → Gameplay/VFX/音频/网络 → Agent 深度接入 → HD2D 专项”的依赖关系，把下一组有明确退出条件的切片写回 `currentFrontier`。游戏与 Demo 只是通用能力的客户，不得把项目专用规则写进引擎，也不得长期只盯一个领域而遗忘其余模块。各领域默认先做 build-vs-buy 与参考实现检索：优先 Adopt 成熟中间件；Port 许可兼容且可隔离的算法、Shader 和数据布局；Adapt 深度耦合实现的 pass 分解、资源策略、质量档和 failure mode；不能满足许可证、维护或目标 workload 时 Reject。每次高级实现前记录精确上游提交/文件、许可证、修改和验证。Wicked/Godot 可合规移植并进入许可证台账；Unreal Engine 只研究生产约束，禁止复制其受 EULA 管辖的实现。第三方类型封闭在 plain-data Adapter 后，不得进入 Scene、Prefab、项目 C#、Semantic State Plane 或公共 RPC。
 >
-> Sol 主代理负责架构、共享接口、集成、权威文档、最终验证和 Git 边界；存在互不重叠且并行收益高的工作时，主动启用最多三个 `luna_worker` 实际开发 lane。优先多个 Writer 加至多一个解除关键不确定性的 Research lane，不用三个只读审计填满并发，不让主线程空等。共享 CMake、公共 Schema、World、Renderer/Render Graph/Editor 集中点和权威状态默认由 Sol 串行集成。
+> Sol 主代理负责架构、共享接口、集成、权威文档、最终验证和 Git 边界；存在互不重叠且并行收益高的工作时，主动启用最多三个 `luna_worker` 实际开发 lane。优先多个 Writer 加至多一个解除关键不确定性的 Research lane，不用三个只读审计填满并发，不让主线程空等。共享 CMake、公共 Schema、World、Renderer/Render Graph/Editor 集中点和权威状态默认由 Sol 串行集成。编辑器与游戏 UI 以真实创作工作流为先，不把 “AI” 当视觉主题：禁止泛蓝紫霓虹、聊天面板、玻璃卡片堆叠和口号式智能标签；Noemancer 编辑器采用“场景测绘台 / 精密仪器工作台”的产品语言，以石墨中性色、纸白文字、氧化铜与黄铜点色、坐标/刻度/状态读数形成辨识度。Agent 能力安静地存在于共享 Authority、运行上下文和工具接口中。
 >
 > 保持 `noemancer_engine <- noemancer_editor <- runtime`。GUI、CLI、Agent、脚本与测试共用领域 Authority；公共写操作逐步具备 Plan/Apply/Receipt、revision、dry-run、事务与 undo。游戏规则留在项目 C#。每项渲染能力必须进入真实 Render Graph 和公开项目路径，并提供稳定身份、参数/质量档、history reset、debug view、unsupported/fallback、固定机位 A/B、D3D12/Vulkan 证据、CPU 成本、可用时逐 Pass GPU 时间和显存语义。只有 Shader、结构体、测试桩或未启用分支不算完成；没有 GPU Timestamp 不得宣称 GPU 改善；不得缩减 workload 伪造优化。
 >
@@ -65,15 +65,7 @@ miniaudio Resource Manager/Streaming、fastgltf/ufbx 离线语义适配、libjpe
 >
 > 保持 dirty worktree 安全，不覆盖、不 reset、不 checkout 用户或并行 Agent 修改。持续推进，仅在用户明确停止、形成值得用户实际打开编辑器/游戏验收的重大里程碑、确需新产品/架构授权，或同一外部阻塞连续重复且不存在安全替代路径时停止；单个子系统完成、普通实现选择、旧任务残留、暂时无 GPU telemetry、单个测试失败或子 Agent 等待都不是自动暂停理由。每次恢复都继续同一个 Goal，不创建第二个 Goal，不输出“保持暂停”式空转信息。
 
-当前长期开发由 Codex `/goal` 持续恢复，并采用批量 Ralph Loop，而不是每改一个文件就停下来测试或汇报：
-
-1. 从 `current-state.json.currentFrontier` 的首个未阻塞项开始，读取真实代码路径和相关 ADR，不重新翻阅全部历史研究。
-2. 用户已对本仓库授予主动委派子 Agent 的持续明确授权。主代理划定一个可审阅的子系统批次并负责架构决策、跨模块接口、合并与状态写回；子 Agent 调度属于主代理的默认调度职责，不设置“等待用户逐轮明确授权”的门禁，也不要求用户在每轮重复授权。只要存在互不重叠、边界明确且并行收益高于协调成本的任务，就主动启用最多三个 `luna_worker`；不可拆分的关键路径仍由主代理直接实现。并行的目标是缩短墙上时间而非节省团队总 Token；worker 未在合理 checkpoint 内落盘时中断接管，不让主线程空等。
-3. 同批次允许累计多个相关改动。只有 API/依赖不确定会让后续工作建立在猜测上时才提前编译；否则在集成边界统一编译受影响目标、运行最小相关测试集和一个必要探针。
-4. 主代理审阅真实 diff，解决跨 Lane 接口问题；Worker 的完成报告不直接等于工程完成态。
-5. 满足本项退出条件后，原地更新本页、`current-state.json` 与能力状态中的旧描述，并立即推进下一个未阻塞批次。Git 保存流水历史，权威文档只保存现在时。
-
-互不依赖的后台资产 Job、Play World 差异、调试 Transport 和打包清单可以在写集隔离时并行；共享 CMake、公共 Schema、编辑器状态汇合点和最终 Runtime 接口由主代理串行集成。开发期 Sol/Luna 角色不属于引擎内 Runtime Agent、Semantic State Plane 或 MCP 公共 ABI。
+上面的引用块是唯一可复制的长期 Goal 文本；后续不再在本页维护第二份调度规则。开发期 Sol/Luna 角色不属于引擎内 Runtime Agent、Semantic State Plane 或 MCP 公共 ABI。
 
 ### P1：已完成——引擎生产闭环收口
 

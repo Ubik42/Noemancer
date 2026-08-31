@@ -24,14 +24,18 @@
 namespace noemancer {
 namespace {
 
-constexpr ImU32 panel_background = IM_COL32(19, 24, 33, 255);
-constexpr ImU32 grid_minor = IM_COL32(49, 59, 73, 85);
-constexpr ImU32 grid_major = IM_COL32(74, 89, 108, 130);
-constexpr ImU32 accent = IM_COL32(84, 178, 255, 255);
-constexpr ImVec4 color_accent{0.31F,0.66F,0.98F,1.0F};
-constexpr ImVec4 color_success{0.30F,0.78F,0.55F,1.0F};
-constexpr ImVec4 color_warning{0.96F,0.67F,0.28F,1.0F};
-constexpr ImVec4 color_danger{0.95F,0.35F,0.35F,1.0F};
+// Noemancer's editor is treated as a scene instrument, not an AI dashboard.
+// Graphite surfaces keep the viewport dominant; oxidized copper and brass are
+// reserved for active tools, measured state and destructive attention.
+constexpr ImU32 panel_background = IM_COL32(25, 26, 25, 255);
+constexpr ImU32 grid_minor = IM_COL32(64, 66, 62, 78);
+constexpr ImU32 grid_major = IM_COL32(105, 103, 91, 118);
+constexpr ImU32 accent = IM_COL32(83, 151, 137, 255);
+constexpr ImU32 brass = IM_COL32(190, 145, 78, 255);
+constexpr ImVec4 color_accent{0.33F,0.59F,0.54F,1.0F};
+constexpr ImVec4 color_success{0.38F,0.68F,0.50F,1.0F};
+constexpr ImVec4 color_warning{0.79F,0.58F,0.28F,1.0F};
+constexpr ImVec4 color_danger{0.78F,0.31F,0.27F,1.0F};
 
 enum class EditorIcon : std::uint8_t { select,move,rotate,scale,frame,play,stop,pause,resume,save,add,more,tile };
 
@@ -126,13 +130,13 @@ std::array<float,16> orthographic_matrix(const float half_height,const float asp
 void apply_editor_style() {
     ImGui::StyleColorsDark();
     auto& style = ImGui::GetStyle();
-    style.WindowRounding = 5.0F;
-    style.ChildRounding = 5.0F;
-    style.FrameRounding = 5.0F;
-    style.PopupRounding = 7.0F;
-    style.TabRounding = 5.0F;
-    style.GrabRounding = 4.0F;
-    style.ScrollbarRounding = 8.0F;
+    style.WindowRounding = 2.0F;
+    style.ChildRounding = 2.0F;
+    style.FrameRounding = 2.0F;
+    style.PopupRounding = 3.0F;
+    style.TabRounding = 1.0F;
+    style.GrabRounding = 2.0F;
+    style.ScrollbarRounding = 2.0F;
     style.WindowBorderSize = 1.0F;
     style.FrameBorderSize = 0.0F;
     style.WindowPadding = ImVec2(10.0F, 9.0F);
@@ -142,38 +146,38 @@ void apply_editor_style() {
     style.IndentSpacing = 18.0F;
     style.ScrollbarSize = 11.0F;
     auto& colors=style.Colors;
-    colors[ImGuiCol_Text] = ImVec4(0.88F,0.91F,0.95F,1.0F);
-    colors[ImGuiCol_TextDisabled] = ImVec4(0.46F,0.52F,0.61F,1.0F);
-    colors[ImGuiCol_WindowBg] = ImVec4(0.043F,0.051F,0.070F,1.0F);
-    colors[ImGuiCol_ChildBg] = ImVec4(0.052F,0.062F,0.083F,1.0F);
-    colors[ImGuiCol_PopupBg] = ImVec4(0.065F,0.076F,0.100F,0.98F);
-    colors[ImGuiCol_Border] = ImVec4(0.15F,0.18F,0.23F,1.0F);
+    colors[ImGuiCol_Text] = ImVec4(0.89F,0.87F,0.81F,1.0F);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.50F,0.50F,0.46F,1.0F);
+    colors[ImGuiCol_WindowBg] = ImVec4(0.075F,0.078F,0.075F,1.0F);
+    colors[ImGuiCol_ChildBg] = ImVec4(0.090F,0.094F,0.090F,1.0F);
+    colors[ImGuiCol_PopupBg] = ImVec4(0.105F,0.106F,0.100F,0.98F);
+    colors[ImGuiCol_Border] = ImVec4(0.24F,0.24F,0.22F,1.0F);
     colors[ImGuiCol_BorderShadow] = ImVec4(0,0,0,0);
-    colors[ImGuiCol_FrameBg] = ImVec4(0.080F,0.096F,0.126F,1.0F);
-    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.105F,0.130F,0.170F,1.0F);
-    colors[ImGuiCol_FrameBgActive] = ImVec4(0.125F,0.160F,0.210F,1.0F);
-    colors[ImGuiCol_TitleBg] = ImVec4(0.045F,0.053F,0.071F,1.0F);
-    colors[ImGuiCol_TitleBgActive] = ImVec4(0.062F,0.075F,0.100F,1.0F);
-    colors[ImGuiCol_MenuBarBg] = ImVec4(0.035F,0.042F,0.058F,1.0F);
-    colors[ImGuiCol_Tab] = ImVec4(0.055F,0.066F,0.088F,1.0F);
-    colors[ImGuiCol_TabHovered] = ImVec4(0.105F,0.155F,0.215F,1.0F);
-    colors[ImGuiCol_TabSelected] = ImVec4(0.095F,0.125F,0.165F,1.0F);
-    colors[ImGuiCol_TabDimmedSelected] = ImVec4(0.068F,0.083F,0.108F,1.0F);
-    colors[ImGuiCol_Header] = ImVec4(0.095F,0.125F,0.165F,1.0F);
-    colors[ImGuiCol_HeaderHovered] = ImVec4(0.125F,0.180F,0.245F,1.0F);
-    colors[ImGuiCol_HeaderActive] = ImVec4(0.145F,0.220F,0.305F,1.0F);
-    colors[ImGuiCol_Button] = ImVec4(0.082F,0.102F,0.136F,1.0F);
-    colors[ImGuiCol_ButtonHovered] = ImVec4(0.120F,0.175F,0.235F,1.0F);
-    colors[ImGuiCol_ButtonActive] = ImVec4(0.145F,0.225F,0.315F,1.0F);
+    colors[ImGuiCol_FrameBg] = ImVec4(0.120F,0.124F,0.116F,1.0F);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.155F,0.164F,0.149F,1.0F);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(0.180F,0.196F,0.174F,1.0F);
+    colors[ImGuiCol_TitleBg] = ImVec4(0.070F,0.073F,0.070F,1.0F);
+    colors[ImGuiCol_TitleBgActive] = ImVec4(0.100F,0.103F,0.096F,1.0F);
+    colors[ImGuiCol_MenuBarBg] = ImVec4(0.060F,0.062F,0.059F,1.0F);
+    colors[ImGuiCol_Tab] = ImVec4(0.085F,0.087F,0.082F,1.0F);
+    colors[ImGuiCol_TabHovered] = ImVec4(0.145F,0.178F,0.160F,1.0F);
+    colors[ImGuiCol_TabSelected] = ImVec4(0.125F,0.155F,0.139F,1.0F);
+    colors[ImGuiCol_TabDimmedSelected] = ImVec4(0.103F,0.108F,0.100F,1.0F);
+    colors[ImGuiCol_Header] = ImVec4(0.120F,0.148F,0.134F,1.0F);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(0.155F,0.207F,0.184F,1.0F);
+    colors[ImGuiCol_HeaderActive] = ImVec4(0.175F,0.240F,0.210F,1.0F);
+    colors[ImGuiCol_Button] = ImVec4(0.115F,0.120F,0.112F,1.0F);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(0.155F,0.188F,0.169F,1.0F);
+    colors[ImGuiCol_ButtonActive] = ImVec4(0.175F,0.228F,0.199F,1.0F);
     colors[ImGuiCol_CheckMark] = color_accent;
-    colors[ImGuiCol_SliderGrab] = ImVec4(0.28F,0.57F,0.86F,1.0F);
+    colors[ImGuiCol_SliderGrab] = ImVec4(0.38F,0.61F,0.55F,1.0F);
     colors[ImGuiCol_SliderGrabActive] = color_accent;
-    colors[ImGuiCol_Separator] = ImVec4(0.14F,0.17F,0.22F,1.0F);
-    colors[ImGuiCol_SeparatorHovered] = ImVec4(0.28F,0.55F,0.82F,1.0F);
+    colors[ImGuiCol_Separator] = ImVec4(0.21F,0.21F,0.19F,1.0F);
+    colors[ImGuiCol_SeparatorHovered] = ImVec4(0.42F,0.55F,0.49F,1.0F);
     colors[ImGuiCol_SeparatorActive] = color_accent;
-    colors[ImGuiCol_ResizeGrip] = ImVec4(0.18F,0.24F,0.32F,0.35F);
-    colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.28F,0.55F,0.82F,0.65F);
-    colors[ImGuiCol_DockingPreview] = ImVec4(0.31F,0.66F,0.98F,0.38F);
+    colors[ImGuiCol_ResizeGrip] = ImVec4(0.28F,0.30F,0.27F,0.35F);
+    colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.40F,0.58F,0.51F,0.65F);
+    colors[ImGuiCol_DockingPreview] = ImVec4(0.33F,0.59F,0.54F,0.38F);
     colors[ImGuiCol_NavCursor] = color_accent;
 }
 
@@ -768,15 +772,16 @@ void EditorUi::draw_startup_hub() {
 
     const auto extent=ImGui::GetContentRegionAvail();
     const auto left_width=std::clamp(extent.x*0.37F,340.0F,560.0F);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.075F,0.133F,0.184F,1.0F});
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.090F,0.094F,0.086F,1.0F});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{48.0F,44.0F});
     if(ImGui::BeginChild("##startup-brand",{left_width,extent.y},ImGuiChildFlags_None,
         ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse)) {
         const auto origin=ImGui::GetCursorScreenPos();
         constexpr float mark=92.0F;
         auto* draw=ImGui::GetWindowDrawList();
-        draw->AddRectFilled(origin,{origin.x+mark,origin.y+mark},IM_COL32(20,36,51,255),14.0F);
-        const auto gold=IM_COL32(212,161,93,255),green=IM_COL32(110,154,139,255);
+        draw->AddRectFilled(origin,{origin.x+mark,origin.y+mark},IM_COL32(28,29,27,255),3.0F);
+        draw->AddRect(origin,{origin.x+mark,origin.y+mark},IM_COL32(100,101,92,255),3.0F,0,1.0F);
+        const auto gold=IM_COL32(190,145,78,255),green=IM_COL32(83,151,137,255);
         const auto x=origin.x,y=origin.y;
         draw->AddLine({x+24,y+69},{x+24,y+23},gold,9.0F);
         draw->AddLine({x+24,y+23},{x+68,y+69},gold,9.0F);
@@ -787,19 +792,18 @@ void EditorUi::draw_startup_hub() {
         ImGui::TextColored({0.83F,0.63F,0.36F,1.0F},"%s",localized("ENGINE / EDITOR","引擎 / 编辑器"));
         ImGui::Dummy({1.0F,22.0F});
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+std::max(220.0F,left_width-96.0F));
-        ImGui::TextColored({0.77F,0.83F,0.86F,1.0F},
-            "%s",localized("Build worlds with one readable state shared by the editor, runtime, and coding agents.",
-                "用一份可读状态连接编辑器、运行时与编程智能体，共同构建世界。"));
+        ImGui::TextColored({0.78F,0.77F,0.71F,1.0F},
+            "%s",localized("A precise workspace for composing, measuring, and shipping interactive worlds.",
+                "用于搭建、测量并交付交互世界的精密创作台。"));
         ImGui::PopTextWrapPos();
         ImGui::Dummy({1.0F,std::max(20.0F,extent.y-390.0F)});
         ImGui::TextDisabled("PRE-ALPHA  |  WINDOWS x64");
-        ImGui::TextDisabled("%s",localized("Source-first. Agent-readable. Runtime-verifiable.",
-            "源码优先 · 智能体可读 · 运行时可验证"));
+        ImGui::TextDisabled("%s",localized("SCENE  /  SYSTEM  /  RUNTIME", "场景  /  系统  /  运行时"));
     }
     ImGui::EndChild();ImGui::PopStyleVar();ImGui::PopStyleColor();
 
     ImGui::SameLine(0.0F,0.0F);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.043F,0.051F,0.070F,1.0F});
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4{0.070F,0.073F,0.070F,1.0F});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{44.0F,40.0F});
     if(ImGui::BeginChild("##startup-projects",{0,extent.y},ImGuiChildFlags_None)) {
         ImGui::SetWindowFontScale(1.45F);ImGui::TextUnformatted(localized("Start a project","开始一个项目"));ImGui::SetWindowFontScale(1.0F);
@@ -1891,12 +1895,14 @@ void EditorUi::draw_root_dockspace() {
         ImGui::EndMenuBar();
     }
 
-    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(0.048F,0.058F,0.078F,1.0F));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(0.083F,0.086F,0.080F,1.0F));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{12.0F,7.0F});
     if(ImGui::BeginChild("##editor-command-bar",{0,45.0F},ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar)) {
         const auto marker_position=ImGui::GetCursorScreenPos();
-        ImGui::GetWindowDrawList()->AddRectFilled(marker_position,{marker_position.x+18.0F,marker_position.y+18.0F},accent,5.0F);
-        ImGui::GetWindowDrawList()->AddCircleFilled({marker_position.x+9.0F,marker_position.y+9.0F},3.0F,IM_COL32(225,245,255,255));
+        ImGui::GetWindowDrawList()->AddRectFilled(marker_position,{marker_position.x+18.0F,marker_position.y+18.0F},accent,2.0F);
+        ImGui::GetWindowDrawList()->AddLine({marker_position.x+4.0F,marker_position.y+13.0F},
+            {marker_position.x+14.0F,marker_position.y+5.0F},IM_COL32(230,224,207,255),1.5F);
+        ImGui::GetWindowDrawList()->AddCircleFilled({marker_position.x+4.0F,marker_position.y+13.0F},1.5F,brass);
         ImGui::Dummy({24.0F,18.0F});ImGui::SameLine();
         ImGui::TextUnformatted(project_context_.name.empty()?"Noemancer":project_context_.name.c_str());
         ImGui::SameLine();ImGui::TextDisabled("/");ImGui::SameLine();
@@ -1907,8 +1913,8 @@ void EditorUi::draw_root_dockspace() {
         ImGui::SameLine(0,20.0F);
         if(simulation_state_==EditorSimulationState::edit) {
             ImGui::BeginDisabled(script_compile_busy_);
-            ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.11F,0.34F,0.25F,1.0F));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(0.14F,0.44F,0.32F,1.0F));
+            ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.15F,0.29F,0.24F,1.0F));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(0.19F,0.38F,0.31F,1.0F));
             if(draw_icon_button("##play",EditorIcon::play,localized("PLAY","运行"),false,localized("Enter Play World","进入运行世界")))simulation_command_=EditorSimulationCommand::play;
             ImGui::PopStyleColor(2);ImGui::EndDisabled();
         } else {
@@ -1934,6 +1940,14 @@ void EditorUi::draw_root_dockspace() {
         if(draw_icon_button("##save",EditorIcon::save,localized("SAVE","保存"),false,localized("Save Scene (Ctrl+S)","保存场景 (Ctrl+S)"))) {const auto action=model_.save_scene();last_action_status_=action.detail;}
         ImGui::EndDisabled();ImGui::SameLine();
         ImGui::TextDisabled("%.0f FPS",ImGui::GetIO().Framerate);
+
+        // A restrained scale line makes the chrome read like a scene instrument
+        // while keeping the central viewport visually dominant.
+        const auto bar_min=ImGui::GetWindowPos();const auto bar_size=ImGui::GetWindowSize();
+        const auto scale_y=bar_min.y+bar_size.y-3.0F;auto* bar_draw=ImGui::GetWindowDrawList();
+        bar_draw->AddLine({bar_min.x,scale_y},{bar_min.x+bar_size.x,scale_y},IM_COL32(76,78,72,255));
+        for(float x=bar_min.x+24.0F;x<bar_min.x+bar_size.x;x+=48.0F)
+            bar_draw->AddLine({x,scale_y-3.0F},{x,scale_y},IM_COL32(132,128,111,180));
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();ImGui::PopStyleColor();
@@ -2100,13 +2114,14 @@ void EditorUi::draw_root_dockspace() {
         ImGui::DockBuilderDockWindow("Scene View", center);
         ImGui::DockBuilderFinish(dockspace_id);
     }
-    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(0.035F,0.042F,0.057F,1.0F));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(0.060F,0.062F,0.059F,1.0F));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{10.0F,4.0F});
     if(ImGui::BeginChild("##editor-status-bar",{0,0},ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar)) {
         const auto status_color=last_action_status_.find("fail")!=std::string::npos||last_action_status_.find("error")!=std::string::npos?
             color_danger:ImVec4{0.55F,0.62F,0.72F,1.0F};
         ImGui::TextColored(status_color,"%s",last_action_status_.c_str());
-        const auto right_text=script_compile_busy_?"C# build in progress":"Ready";
+        const auto right_text=script_compile_busy_?localized("C# build in progress","正在编译 C#"):
+            localized("Workspace ready","工作台就绪");
         const auto right_width=ImGui::CalcTextSize(right_text).x;
         if(ImGui::GetCursorPosX()<ImGui::GetWindowWidth()-right_width-12.0F) {
             ImGui::SameLine(ImGui::GetWindowWidth()-right_width-12.0F);ImGui::TextDisabled("%s",right_text);
@@ -3521,15 +3536,17 @@ void EditorUi::draw_console() {
 
 void EditorUi::draw_agent_context() {
     prepare_panel_window("editor.panel.agent-context");
-    ImGui::Begin(localized("Agent Context###Agent Context","智能体上下文###Agent Context"));
+    ImGui::Begin(localized("Runtime Context###Agent Context","运行上下文###Agent Context"));
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))set_focused_panel("editor.panel.agent-context");
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(accent), "Semantic Observation Preview");
-    ImGui::TextWrapped(
-        "Panels and the live ECS World now share stable identities, revisions and source anchors with Agent tools.");
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(accent), "%s",
+        localized("LIVE OBSERVATION","实时观测"));
+    ImGui::TextWrapped("%s",localized(
+        "Stable panel and world identities, revisions, source anchors, and transaction receipts.",
+        "面板与世界共用稳定身份、修订号、源码锚点和事务回执。"));
     ImGui::Separator();
     const auto focused_panel=model_.focused_panel();
-    ImGui::Text("Focused panel: %s",focused_panel=="editor.panel.animation-graph"?"Animation Graph":"Scene View");
-    ImGui::Text("Selected object: %s", model_.selected_object().name.c_str());
+    ImGui::Text(localized("Focused panel: %s","当前面板：%s"),focused_panel=="editor.panel.animation-graph"?"Animation Graph":"Scene View");
+    ImGui::Text(localized("Selected object: %s","选中对象：%s"), model_.selected_object().name.c_str());
     ImGui::TextDisabled("%s", model_.selected_object().id.c_str());
     ImGui::TextDisabled("World revision: %llu", static_cast<unsigned long long>(model_.world_revision()));
     ImGui::TextWrapped("Last transaction: %s", last_action_status_.c_str());
