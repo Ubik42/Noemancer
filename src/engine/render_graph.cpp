@@ -95,7 +95,8 @@ CompiledRenderGraph RenderGraphCompiler::compile(
     return graph;
 }
 
-CompiledRenderGraph make_forward_render_graph() {
+CompiledRenderGraph make_forward_render_graph(
+    const bool include_native_rt_debug_composite) {
     // v17 keeps every existing resource/pass identity intact while making the
     // previous-frame occlusion input explicit.  The depth pyramid is one logical
     // RG32_FLOAT mip-chain resource: seed writes mip 0 and reduce fills the
@@ -222,7 +223,26 @@ CompiledRenderGraph make_forward_render_graph() {
           {"render.pass.bloom-upsample-quarter", "render.pass.bloom-downsample-half"}},
          {"render.pass.tone-map", "render.pipeline.aces-tone-map", {"render.resource.scene-resolved", "render.resource.bloom-half", "render.resource.exposure-history"},
           {"render.resource.scene-color"}, {"render.pass.bloom-upsample-half"}}});
-    return graph;
+    if (!include_native_rt_debug_composite) return graph;
+
+    // The first native RT presentation path is deliberately a diagnostic
+    // overlay, not RTGI. Its output is a distinct logical resource that may
+    // alias the physical presentation texture after the regular tone-map
+    // lifetime ends. This keeps the external native surface explicit without
+    // pretending that the fixed-camera probe participates in scene lighting.
+    auto resources = graph.resources;
+    resources.push_back({"render.resource.native-rt-debug-output",
+        "R32G32B32A32_UINT", false, "2d", 1, true, "output"});
+    resources.push_back({"render.resource.scene-color-native-rt-debug",
+        "RGBA8_UNORM", true, "2d", 1, false, "output"});
+    auto passes = graph.passes;
+    passes.push_back({"render.pass.native-rt-debug-composite",
+        "render.pipeline.native-rt-debug-composite",
+        {"render.resource.native-rt-debug-output"},
+        {"render.resource.scene-color-native-rt-debug"},
+        {"render.pass.tone-map"}});
+    return RenderGraphCompiler::compile("render.graph.forward.native-rt-debug.v18",
+        std::move(resources), std::move(passes));
 }
 
 std::string render_graph_json(const CompiledRenderGraph& graph) {

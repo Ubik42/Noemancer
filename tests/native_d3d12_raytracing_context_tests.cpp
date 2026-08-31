@@ -324,6 +324,51 @@ int main() {
         return fail("post-shutdown scene attachment was not rejected safely", 18);
     }
 
+    // The default context above remains synchronous for deterministic
+    // diagnostics.  Exercise the explicit submit-only policy separately so
+    // the render-loop path can overlap CPU work with the GPU and use
+    // synchronize(false/true) as its poll/wait boundary.
+    NativeD3D12RayTracingContextOptions async_options;
+    async_options.synchronization_policy =
+        NativeD3D12RayTracingSynchronizationPolicy::submit_only;
+    NativeD3D12RayTracingContext async_context(async_options);
+    const auto async_initialized = async_context.initialize();
+    if (!bounded_receipt(async_initialized) ||
+        async_initialized.synchronization_policy != "submit-only") {
+        return fail("submit-only synchronization policy was not exposed in the receipt", 19);
+    }
+    const bool async_native = async_initialized.state == NativeD3D12RayTracingContextState::ready &&
+        async_initialized.device_ready && async_initialized.command_queue_ready &&
+        async_initialized.fence_ready;
+    const auto async_attached = async_context.ensure_scene(triangle_scene());
+    const auto async_build = async_context.build_or_update();
+    const auto async_trace = async_context.trace();
+    if (async_native) {
+        if (!async_attached.scene_received || !async_build.build_completed ||
+            !async_trace.trace_submitted || async_trace.submitted_fence_value == 0U ||
+            async_trace.synchronization_policy != "submit-only") {
+            return fail("submit-only trace did not publish a submitted fence", 19);
+        }
+        auto async_progress = async_context.synchronize(false);
+        if (async_progress.completion_pending) {
+            async_progress = async_context.synchronize(true);
+        }
+        if (!bounded_receipt(async_progress) ||
+            async_progress.state != NativeD3D12RayTracingContextState::ready ||
+            async_progress.completion_pending || !async_progress.trace_completed ||
+            !async_progress.synchronization_completed ||
+            async_progress.completed_fence_value < async_progress.submitted_fence_value ||
+            !async_progress.output_surface.valid) {
+            return fail("submit-only trace did not complete through the explicit synchronization boundary", 19);
+        }
+        const auto async_idle = async_context.synchronize(false);
+        if (!bounded_receipt(async_idle) || async_idle.completion_pending ||
+            async_idle.code != "native-d3d12.context.synchronization-idle") {
+            return fail("completed submit-only context did not return to an idle synchronization state", 19);
+        }
+    }
+    static_cast<void>(async_context.shutdown());
+
 #if defined(_WIN32)
     if (native_available) {
         std::ifstream shader_input(NOEMANCER_NATIVE_RT_TEST_DXIL,

@@ -43,12 +43,13 @@ constexpr std::uint64_t kFnvOffsetBasis = 1469598103934665603ULL;
 constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
 
 #if NOEMANCER_HAS_VULKAN_HEADERS
-// Reused verbatim from the short-lived Vulkan RT executor.  The module has
-// RayGen, Miss and ClosestHit entry points and writes a four-byte marker via
-// set 0 binding 1.  Keeping this bounded fixture embedded makes the context
-// independent from a build-directory shader path.
-constexpr std::array<std::uint32_t, 349U> native_raytracing_probe_spirv{
-    0x07230203U, 0x00010400U, 0x000E0000U, 0x0000002FU, 0x00000000U, 0x00020011U, 0x00001178U, 0x00020011U,
+// Reused from the short-lived Vulkan RT executor and extended with the
+// versioned output-image ABI.  RayGen writes a four-byte marker via set 0
+// bindings 1 (storage buffer) and 2 (storage image).  Keeping this bounded
+// fixture embedded makes the context independent from a build-directory
+// shader path.
+constexpr std::array<std::uint32_t, 391U> native_raytracing_probe_spirv{
+    0x07230203U, 0x00010400U, 0x000E0000U, 0x00000035U, 0x00000000U, 0x00020011U, 0x00001178U, 0x00020011U,
     0x0000117FU, 0x0006000AU, 0x5F565053U, 0x5F52484BU, 0x5F796172U, 0x72657571U, 0x00000079U, 0x0006000AU,
     0x5F565053U, 0x5F52484BU, 0x5F796172U, 0x63617274U, 0x00676E69U, 0x0003000EU, 0x00000000U, 0x00000001U,
     0x0008000FU, 0x000014C1U, 0x00000001U, 0x47796152U, 0x00006E65U, 0x00000002U, 0x00000003U, 0x00000004U,
@@ -64,6 +65,7 @@ constexpr std::array<std::uint32_t, 349U> native_raytracing_probe_spirv{
     0x00000007U, 0x736F6C43U, 0x48747365U, 0x00007469U, 0x00040047U, 0x00000004U, 0x0000001EU, 0x00000000U,
     0x00040047U, 0x00000002U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000002U, 0x00000021U, 0x00000000U,
     0x00040047U, 0x00000003U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000003U, 0x00000021U, 0x00000001U,
+    0x00040047U, 0x00000031U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000031U, 0x00000021U, 0x00000002U,
     0x00040047U, 0x0000000CU, 0x00000006U, 0x00000004U, 0x00050048U, 0x0000000AU, 0x00000000U, 0x00000023U,
     0x00000000U, 0x00030047U, 0x0000000AU, 0x00000002U, 0x00040015U, 0x0000000DU, 0x00000020U, 0x00000000U,
     0x0004002BU, 0x0000000DU, 0x0000000EU, 0x00000000U, 0x00040015U, 0x0000000FU, 0x00000020U, 0x00000001U,
@@ -77,23 +79,70 @@ constexpr std::array<std::uint32_t, 349U> native_raytracing_probe_spirv{
     0x00000009U, 0x00040020U, 0x0000001DU, 0x00000000U, 0x00000009U, 0x0003001DU, 0x0000000CU, 0x0000000DU,
     0x0003001EU, 0x0000000AU, 0x0000000CU, 0x00040020U, 0x0000001EU, 0x0000000CU, 0x0000000AU, 0x0003001EU,
     0x0000000BU, 0x0000000DU, 0x00040020U, 0x0000001FU, 0x000014DAU, 0x0000000BU, 0x00040020U, 0x00000020U,
-    0x000014DEU, 0x0000000BU, 0x00020013U, 0x00000021U, 0x00030021U, 0x00000022U, 0x00000021U, 0x00040020U,
+    0x000014DEU, 0x0000000BU, 0x00040017U, 0x00000032U, 0x0000000DU, 0x00000002U, 0x00090019U, 0x0000002FU,
+    0x0000000DU, 0x00000001U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000002U, 0x00000021U, 0x00040020U,
+    0x00000030U, 0x00000000U, 0x0000002FU, 0x00020013U, 0x00000021U, 0x00030021U, 0x00000022U, 0x00000021U, 0x00040020U,
     0x00000023U, 0x0000000CU, 0x0000000DU, 0x0004003BU, 0x0000001DU, 0x00000002U, 0x00000000U, 0x0004003BU,
     0x0000001EU, 0x00000003U, 0x0000000CU, 0x0004003BU, 0x0000001FU, 0x00000004U, 0x000014DAU, 0x0004003BU,
     0x00000020U,
-    0x00000006U, 0x000014DEU, 0x0004003BU, 0x00000020U, 0x00000008U, 0x000014DEU, 0x0004002CU, 0x0000000BU,
+    0x00000006U, 0x000014DEU, 0x0004003BU, 0x00000020U, 0x00000008U, 0x000014DEU,
+    0x0004003BU, 0x00000030U, 0x00000031U, 0x00000000U, 0x0004002CU, 0x0000000BU,
     0x00000024U, 0x0000000EU, 0x0004002CU, 0x0000000BU, 0x00000025U, 0x0000001BU, 0x0004002CU, 0x0000000BU,
-    0x00000026U, 0x0000001CU, 0x00040020U, 0x00000027U, 0x000014DAU, 0x0000000DU, 0x00050036U, 0x00000021U,
+    0x00000026U, 0x0000001CU, 0x00040020U, 0x00000027U, 0x000014DAU, 0x0000000DU, 0x0005002CU, 0x00000032U,
+    0x00000033U, 0x0000000EU, 0x0000000EU, 0x00050036U, 0x00000021U,
     0x00000001U, 0x00000000U, 0x00000022U, 0x000200F8U, 0x00000028U, 0x0003003EU, 0x00000004U, 0x00000024U,
     0x0004003DU, 0x00000009U, 0x00000029U, 0x00000002U, 0x000C115DU, 0x00000029U, 0x0000000EU, 0x00000019U,
     0x0000000EU, 0x0000001AU, 0x0000000EU, 0x00000015U, 0x00000012U, 0x00000017U, 0x00000018U, 0x00000004U,
     0x00050041U, 0x00000027U, 0x0000002AU, 0x00000004U, 0x0000000EU, 0x0004003DU, 0x0000000DU, 0x0000002BU,
     0x0000002AU, 0x00060041U, 0x00000023U, 0x0000002CU, 0x00000003U, 0x00000010U, 0x0000000EU, 0x0003003EU,
-    0x0000002CU, 0x0000002BU, 0x000100FDU, 0x00010038U, 0x00050036U, 0x00000021U, 0x00000005U, 0x00000000U,
+    0x0000002CU, 0x0000002BU, 0x0004003DU, 0x0000002FU, 0x00000034U, 0x00000031U, 0x00040063U,
+    0x00000034U, 0x00000033U, 0x0000002BU, 0x000100FDU, 0x00010038U, 0x00050036U, 0x00000021U,
+    0x00000005U, 0x00000000U,
     0x00000022U, 0x000200F8U, 0x0000002DU, 0x0003003EU, 0x00000006U, 0x00000025U, 0x000100FDU, 0x00010038U,
     0x00050036U, 0x00000021U, 0x00000007U, 0x00000000U, 0x00000022U, 0x000200F8U, 0x0000002EU, 0x0003003EU,
     0x00000008U, 0x00000026U, 0x000100FDU, 0x00010038U,
 };
+
+// This is deliberately a compile-time gate rather than a best-effort shader
+// guess.  Any future replacement must bump the public contract and update
+// both the descriptor ABI and the trace path together.
+constexpr bool native_probe_shader_abi_is_supported() noexcept {
+    bool has_storage_image_type = false;
+    bool has_storage_image_set = false;
+    bool has_storage_image_binding = false;
+    bool has_image_write = false;
+    for (std::size_t index = 0U; index + 8U < native_raytracing_probe_spirv.size(); ++index) {
+        if (native_raytracing_probe_spirv[index] == 0x00090019U &&
+            native_raytracing_probe_spirv[index + 1U] == 0x0000002FU &&
+            native_raytracing_probe_spirv[index + 2U] == 0x0000000DU &&
+            native_raytracing_probe_spirv[index + 3U] == 0x00000001U &&
+            native_raytracing_probe_spirv[index + 7U] == 0x00000002U &&
+            native_raytracing_probe_spirv[index + 8U] == 0x00000021U)
+            has_storage_image_type = true;
+        if (native_raytracing_probe_spirv[index] == 0x00040047U &&
+            native_raytracing_probe_spirv[index + 1U] == 0x00000031U &&
+            native_raytracing_probe_spirv[index + 2U] == 0x00000022U &&
+            native_raytracing_probe_spirv[index + 3U] == 0x00000000U)
+            has_storage_image_set = true;
+        if (native_raytracing_probe_spirv[index] == 0x00040047U &&
+            native_raytracing_probe_spirv[index + 1U] == 0x00000031U &&
+            native_raytracing_probe_spirv[index + 2U] == 0x00000021U &&
+            native_raytracing_probe_spirv[index + 3U] == 0x00000002U)
+            has_storage_image_binding = true;
+        if (index + 3U < native_raytracing_probe_spirv.size() &&
+            native_raytracing_probe_spirv[index] == 0x00040063U &&
+            native_raytracing_probe_spirv[index + 1U] == 0x00000034U &&
+            native_raytracing_probe_spirv[index + 2U] == 0x00000033U &&
+            native_raytracing_probe_spirv[index + 3U] == 0x0000002BU)
+            has_image_write = true;
+    }
+    return native_raytracing_probe_spirv[0U] == 0x07230203U &&
+           native_raytracing_probe_spirv[1U] == 0x00010400U &&
+           native_raytracing_probe_spirv[3U] > 0x00000034U &&
+           has_storage_image_type && has_storage_image_set && has_storage_image_binding && has_image_write;
+}
+static_assert(native_probe_shader_abi_is_supported(),
+              "The embedded Vulkan full-frame shader ABI must be versioned before use.");
 #endif
 
 std::string bounded_text(const std::string_view value) {
@@ -700,6 +749,10 @@ struct NativeVulkanRayTracingContext::Impl final {
     bool borrowed_device{};
     bool output_image_sync_complete{};
     bool output_image_trace_written{};
+    // Kept separate from the public receipt bit: a scene update invalidates
+    // the previous frame's output, but the next trace still needs a memory
+    // dependency from the previous GPU image write.
+    bool output_image_gpu_write_complete{};
     std::uint64_t output_image_generation{};
     std::uint64_t output_image_generation_serial{};
     std::uint64_t output_image_sync_value{};
@@ -834,6 +887,7 @@ struct NativeVulkanRayTracingContext::Impl final {
         output_image_sync_value = 0U;
         output_image_sync_complete = false;
         output_image_trace_written = false;
+        output_image_gpu_write_complete = false;
     }
 
     void destroy_trace_objects() noexcept {
@@ -921,6 +975,20 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.trace_submitted = trace_submitted;
         result.trace_completed = trace_completed;
         result.readback_completed = readback_completed;
+        // The embedded module is intentionally the only accepted full-frame
+        // shader ABI in this context.  Its storage-image binding is versioned
+        // by the public contract and only becomes ready after pipeline
+        // creation succeeds.
+        // The pinned probe dispatches one launch and writes texel (0, 0).  It
+        // is a valid full-frame ABI only for the bounded 1x1x1 diagnostic
+        // surface; larger surfaces stay explicitly non-full-frame until a
+        // LaunchId-based shader is supplied.
+        result.full_frame_shader_ready = trace_pipeline_ready && output_image.view != VK_NULL_HANDLE &&
+                                         options.output_width == 1U && options.output_height == 1U &&
+                                         options.output_depth == 1U;
+        result.shader_contract = result.full_frame_shader_ready
+                                    ? std::string(native_vulkan_raytracing_full_frame_shader_contract)
+                                    : std::string{};
         result.output_image_live = output_image.image != VK_NULL_HANDLE;
         result.output_image_view_live = output_image.view != VK_NULL_HANDLE;
         result.output_image_runtime_private = result.output_image_live;
@@ -960,7 +1028,9 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.output_image_access = result.output_image_live ? "storage-read-write" : "none";
         result.output_image_sync_kind = result.output_image_live ? "fence" : "none";
         result.output_image_interop_boundary = result.output_image_live
-                                                   ? "runtime-private; same-device adapter only; no handle export"
+                                                   ? (result.full_frame_shader_ready
+                                                          ? "runtime-private; same-device adapter only; no handle export"
+                                                          : "runtime-private; pinned probe writes one texel; no handle export")
                                                    : "unavailable";
         return result;
     }
@@ -1376,7 +1446,7 @@ struct NativeVulkanRayTracingContext::Impl final {
                                  output_image, error_code, error_detail))
             return false;
         if (!transition_output_image_to_general(error_code, error_detail)) return false;
-        const std::array<VkDescriptorSetLayoutBinding, 2U> descriptor_bindings{
+        const std::array<VkDescriptorSetLayoutBinding, 3U> descriptor_bindings{
             VkDescriptorSetLayoutBinding{
                 0U, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U,
                 VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
@@ -1386,6 +1456,10 @@ struct NativeVulkanRayTracingContext::Impl final {
                 1U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U,
                 VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
                     VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                nullptr},
+            VkDescriptorSetLayoutBinding{
+                2U, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR,
                 nullptr}};
         VkDescriptorSetLayoutCreateInfo descriptor_layout_info{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -1406,9 +1480,10 @@ struct NativeVulkanRayTracingContext::Impl final {
             error_detail = "vkCreatePipelineLayout failed for the persistent RT pipeline.";
             return false;
         }
-        const std::array<VkDescriptorPoolSize, 2U> descriptor_pool_sizes{
+        const std::array<VkDescriptorPoolSize, 3U> descriptor_pool_sizes{
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U}};
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U}};
         VkDescriptorPoolCreateInfo descriptor_pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         descriptor_pool_info.maxSets = 1U;
         descriptor_pool_info.poolSizeCount = static_cast<std::uint32_t>(descriptor_pool_sizes.size());
@@ -1427,6 +1502,11 @@ struct NativeVulkanRayTracingContext::Impl final {
                 device, &descriptor_allocate_info, &descriptor_set) != VK_SUCCESS) {
             error_code = "native-vulkan-rt.allocate-descriptor-set-failed";
             error_detail = "vkAllocateDescriptorSets failed for the persistent RT resources.";
+            return false;
+        }
+        if (!native_probe_shader_abi_is_supported()) {
+            error_code = "native-vulkan-rt.full-frame-shader-contract-unsupported";
+            error_detail = "The embedded SPIR-V does not match the pinned full-frame storage-image ABI.";
             return false;
         }
         VkShaderModuleCreateInfo shader_module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -1515,9 +1595,10 @@ struct NativeVulkanRayTracingContext::Impl final {
 
     bool update_descriptor_bindings(std::string& error_code, std::string& error_detail) {
         if (descriptor_set == VK_NULL_HANDLE || tlas.acceleration_structure == VK_NULL_HANDLE ||
-            output_buffer.buffer == VK_NULL_HANDLE) {
+            output_buffer.buffer == VK_NULL_HANDLE || output_image.view == VK_NULL_HANDLE ||
+            output_image_layout != VK_IMAGE_LAYOUT_GENERAL) {
             error_code = "native-vulkan-rt.descriptor-resources-missing";
-            error_detail = "The persistent descriptor set has no current TLAS or output buffer.";
+            error_detail = "The persistent descriptor set has no current TLAS, output buffer, or general-layout output image.";
             return false;
         }
         VkWriteDescriptorSetAccelerationStructureKHR acceleration_write{
@@ -1525,7 +1606,9 @@ struct NativeVulkanRayTracingContext::Impl final {
         acceleration_write.accelerationStructureCount = 1U;
         acceleration_write.pAccelerationStructures = &tlas.acceleration_structure;
         VkDescriptorBufferInfo output_info{output_buffer.buffer, 0U, sizeof(std::uint32_t)};
-        std::array<VkWriteDescriptorSet, 2U> writes{
+        VkDescriptorImageInfo output_image_info{VK_NULL_HANDLE, output_image.view, VK_IMAGE_LAYOUT_GENERAL};
+        std::array<VkWriteDescriptorSet, 3U> writes{
+            VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
             VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
             VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
         writes[0].pNext = &acceleration_write;
@@ -1538,20 +1621,35 @@ struct NativeVulkanRayTracingContext::Impl final {
         writes[1].descriptorCount = 1U;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[1].pBufferInfo = &output_info;
+        writes[2].dstSet = descriptor_set;
+        writes[2].dstBinding = 2U;
+        writes[2].descriptorCount = 1U;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[2].pImageInfo = &output_image_info;
         device_functions.update_descriptor_sets(device, static_cast<std::uint32_t>(writes.size()),
                                                 writes.data(), 0U, nullptr);
         return true;
     }
 
     bool record_and_submit_native_trace(std::string& error_code, std::string& error_detail) {
-        if (!trace_pipeline_ready || pipeline == VK_NULL_HANDLE || sbt_buffer.buffer == VK_NULL_HANDLE) {
+        if (!trace_pipeline_ready || pipeline == VK_NULL_HANDLE || sbt_buffer.buffer == VK_NULL_HANDLE ||
+            output_image.image == VK_NULL_HANDLE || output_image.view == VK_NULL_HANDLE ||
+            output_image_layout != VK_IMAGE_LAYOUT_GENERAL) {
             error_code = "native-vulkan-rt.trace-pipeline-unavailable";
-            error_detail = "The persistent Vulkan trace pipeline or SBT is unavailable.";
+            error_detail = "The persistent Vulkan trace pipeline, SBT, or general-layout output image is unavailable.";
             return false;
         }
         trace_submitted = false;
         trace_completed = false;
         output_readback_available = false;
+        const bool output_image_was_written = output_image_gpu_write_complete;
+        output_image_sync_complete = false;
+        output_image_trace_written = false;
+        if (output_image_sync_value == std::numeric_limits<std::uint64_t>::max()) {
+            error_code = "native-vulkan-rt.output-image-sync-overflow";
+            error_detail = "The output image synchronization value cannot be incremented safely.";
+            return false;
+        }
         const std::uint32_t sentinel = 0x4E4F5254U;
         if (!write_buffer(device_functions, device, output_buffer, &sentinel, sizeof(sentinel),
                           error_code, error_detail)) return false;
@@ -1575,6 +1673,25 @@ struct NativeVulkanRayTracingContext::Impl final {
             command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0U, 1U, &host_to_trace,
             0U, nullptr, 0U, nullptr);
+        VkImageMemoryBarrier image_to_trace{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        image_to_trace.srcAccessMask = output_image_was_written ? VK_ACCESS_SHADER_WRITE_BIT : 0U;
+        image_to_trace.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        image_to_trace.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        image_to_trace.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        image_to_trace.srcQueueFamilyIndex = queue_family_index;
+        image_to_trace.dstQueueFamilyIndex = queue_family_index;
+        image_to_trace.image = output_image.image;
+        image_to_trace.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        image_to_trace.subresourceRange.baseMipLevel = 0U;
+        image_to_trace.subresourceRange.levelCount = 1U;
+        image_to_trace.subresourceRange.baseArrayLayer = 0U;
+        image_to_trace.subresourceRange.layerCount = 1U;
+        device_functions.cmd_pipeline_barrier(
+            command_buffer,
+            output_image_was_written ? VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
+                                     : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0U, 0U, nullptr, 0U, nullptr, 1U,
+            &image_to_trace);
         const VkStridedDeviceAddressRegionKHR raygen_region{
             sbt_buffer.device_address, sbt_stride, sbt_stride};
         const VkStridedDeviceAddressRegionKHR miss_region{
@@ -1621,6 +1738,10 @@ struct NativeVulkanRayTracingContext::Impl final {
         }
         trace_completed = true;
         output_readback_available = true;
+        output_image_sync_complete = true;
+        output_image_trace_written = true;
+        output_image_gpu_write_complete = true;
+        ++output_image_sync_value;
         return true;
     }
 
@@ -1990,6 +2111,8 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.trace_submitted = trace_submitted;
         result.trace_completed = trace_completed;
         result.readback_completed = readback_completed;
+        result.full_frame_shader_ready = false;
+        result.shader_contract.clear();
         result.output_image_live = false;
         result.output_image_view_live = false;
         result.output_image_runtime_private = false;
@@ -2092,7 +2215,7 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::initialize()
         impl_->state = NativeVulkanRayTracingContextState::ready;
         return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::none,
                               "native-vulkan-rt.context-ready",
-                              "Persistent Vulkan instance, device, queue, command pool, fence and output buffer are live.");
+                              "Persistent Vulkan instance, device, queue, command pool, fence, output image and versioned RT shader are live.");
     }
     const auto stage = unsupported ? NativeVulkanRayTracingContextFailureStage::physical_device
                                    : NativeVulkanRayTracingContextFailureStage::device;
@@ -2168,6 +2291,11 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::ensure_scene
         impl_->readback_completed = false;
         impl_->output_value = 0U;
         impl_->output_hash = 0U;
+        // The image allocation remains resident across scene updates, but its
+        // previous pixels no longer describe the current scene.
+#if NOEMANCER_HAS_VULKAN_HEADERS
+        impl_->output_image_trace_written = false;
+#endif
 #if NOEMANCER_HAS_VULKAN_HEADERS
         impl_->output_readback_available = false;
 #endif

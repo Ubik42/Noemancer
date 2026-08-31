@@ -24,6 +24,19 @@ inline constexpr std::uint64_t native_d3d12_raytracing_context_max_resource_byte
 inline constexpr std::string_view native_d3d12_raytracing_output_surface_schema =
     "noemancer.native-d3d12-raytracing-output-surface/0.1";
 
+// The default policy keeps the historical deterministic contract: trace() and
+// output-copy return only after their queue submission has completed.  The
+// submit_only policy is an explicit opt-in for a render loop that wants to
+// overlap CPU work with the GPU.  Callers then use synchronize(false) to poll
+// or synchronize(true) to wait before consuming the private output view.
+enum class NativeD3D12RayTracingSynchronizationPolicy : std::uint8_t {
+    wait_for_completion = 0U,
+    submit_only = 1U,
+};
+
+[[nodiscard]] std::string_view native_d3d12_raytracing_synchronization_policy_name(
+    NativeD3D12RayTracingSynchronizationPolicy policy) noexcept;
+
 enum class NativeD3D12RayTracingContextState : std::uint8_t {
     uninitialized,
     ready,
@@ -156,6 +169,8 @@ struct NativeD3D12RayTracingContextOptions final {
     std::uint32_t output_height{1U};
     std::size_t max_geometry_count{native_d3d12_raytracing_context_max_geometry_count};
     std::uint64_t max_resource_bytes{native_d3d12_raytracing_context_max_resource_bytes};
+    NativeD3D12RayTracingSynchronizationPolicy synchronization_policy{
+        NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion};
     NativeD3D12RayTracingContextShaderSet shaders;
     // Optional borrowed interfaces published by the Runtime-private SDL_GPU
     // D3D12 device bridge.  They are non-owning inputs: initialize() performs
@@ -223,6 +238,10 @@ struct NativeD3D12RayTracingContextReceipt final {
     bool shared_command_queue{};
     bool output_copy_submitted{};
     bool output_copy_completed{};
+    std::string synchronization_policy{"wait-for-completion"};
+    bool completion_pending{};
+    std::uint64_t submitted_fence_value{};
+    std::uint64_t completed_fence_value{};
     bool full_frame_shader_ready{};
     std::string shader_contract;
     std::uint64_t generation{};
@@ -266,6 +285,11 @@ public:
         const NativeD3D12RayTracingScene& scene);
     [[nodiscard]] NativeD3D12RayTracingContextReceipt build_or_update();
     [[nodiscard]] NativeD3D12RayTracingContextReceipt trace();
+    // Poll or explicitly wait for the last asynchronous trace/copy submission.
+    // The default is non-blocking; pass true at a hand-off boundary where the
+    // output resource must be complete before the caller consumes it.
+    [[nodiscard]] NativeD3D12RayTracingContextReceipt synchronize(
+        bool wait_for_completion = false);
     [[nodiscard]] NativeD3D12RayTracingContextReceipt readback();
     [[nodiscard]] NativeD3D12RayTracingContextReceipt shutdown();
 

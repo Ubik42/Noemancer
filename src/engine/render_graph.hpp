@@ -53,7 +53,8 @@ public:
         std::vector<RenderPassDefinition> passes);
 };
 
-[[nodiscard]] CompiledRenderGraph make_forward_render_graph();
+[[nodiscard]] CompiledRenderGraph make_forward_render_graph(
+    bool include_native_rt_debug_composite = false);
 [[nodiscard]] std::string render_graph_json(const CompiledRenderGraph& graph);
 
 } // namespace noemancer

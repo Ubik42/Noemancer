@@ -46,6 +46,10 @@ bool test_vocabulary_and_contract_bounds() {
                    "noemancer.native-vulkan-raytracing-output-image/0.1",
                "output image contract drifted"))
         return false;
+    if (!check(native_vulkan_raytracing_full_frame_shader_contract ==
+                   "noemancer.native-rt-full-frame/0.1",
+               "full-frame Vulkan shader contract drifted"))
+        return false;
     if (!check(native_vulkan_raytracing_context_state_name(
                    NativeVulkanRayTracingContextState::uninitialized) == "uninitialized" &&
                    native_vulkan_raytracing_context_state_name(
@@ -109,7 +113,9 @@ bool test_lifecycle_and_stable_scene_cache() {
                "initialization did not expose the output image contract identity"))
         return false;
     if (native) {
-        if (!check(initialized.output_image_live && initialized.output_image_view_live &&
+        if (!check(initialized.full_frame_shader_ready &&
+                       initialized.shader_contract == "noemancer.native-rt-full-frame/0.1" &&
+                       initialized.output_image_live && initialized.output_image_view_live &&
                        initialized.output_image_runtime_private && !initialized.output_image_interop_ready &&
                        !initialized.output_image_external_import_supported &&
                        initialized.output_image_same_device_required && initialized.output_image_layout_ready &&
@@ -125,6 +131,7 @@ bool test_lifecycle_and_stable_scene_cache() {
                    "native initialization did not expose a safe runtime-private output image contract"))
             return false;
     } else if (!check(!initialized.output_image_live && !initialized.output_image_view_live &&
+                          !initialized.full_frame_shader_ready && initialized.shader_contract.empty() &&
                           !initialized.output_image_runtime_private && !initialized.output_image_interop_ready &&
                           !initialized.output_image_layout_ready && !initialized.output_image_sync_complete &&
                           initialized.output_image_format == "none" && initialized.output_image_layout == "none" &&
@@ -189,6 +196,8 @@ bool test_lifecycle_and_stable_scene_cache() {
     if (!check(traced.state == (native ? NativeVulkanRayTracingContextState::ready
                                        : NativeVulkanRayTracingContextState::fallback) &&
                    traced.trace_completed && traced.trace_submitted == native &&
+                   traced.full_frame_shader_ready == native &&
+                   traced.output_image_trace_written == native &&
                    traced.persistent_backend == native && traced.output_bytes == sizeof(std::uint32_t),
                native ? "native trace did not complete through the persistent pipeline"
                       : "fallback trace did not complete with an honest receipt"))
@@ -203,7 +212,10 @@ bool test_lifecycle_and_stable_scene_cache() {
                       : "fallback readback receipt was incomplete or overclaimed native work"))
         return false;
     if (!check(readback.output_image_generation == output_image_generation &&
-                   readback.output_image_live == native && !readback.output_image_trace_written,
+                   readback.output_image_live == native &&
+                   readback.output_image_trace_written == native &&
+                   readback.full_frame_shader_ready == native &&
+                   (!native || readback.shader_contract == "noemancer.native-rt-full-frame/0.1"),
                "trace/readback did not preserve the runtime-private output image boundary"))
         return false;
 

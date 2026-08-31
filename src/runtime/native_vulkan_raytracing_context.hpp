@@ -14,6 +14,8 @@ inline constexpr std::string_view native_vulkan_raytracing_context_schema =
     "noemancer.native-vulkan-raytracing-context/0.1";
 inline constexpr std::string_view native_vulkan_raytracing_output_image_contract =
     "noemancer.native-vulkan-raytracing-output-image/0.1";
+inline constexpr std::string_view native_vulkan_raytracing_full_frame_shader_contract =
+    "noemancer.native-rt-full-frame/0.1";
 inline constexpr std::size_t native_vulkan_raytracing_context_max_text_bytes = 256U;
 inline constexpr std::size_t native_vulkan_raytracing_context_hard_max_triangles = 65536U;
 
@@ -113,6 +115,10 @@ struct NativeVulkanRayTracingContextReceipt final {
     bool trace_submitted{};
     bool trace_completed{};
     bool readback_completed{};
+    // The embedded SPIR-V probe is the pinned full-frame shader ABI.  A
+    // caller must never infer this from a generic Vulkan pipeline alone;
+    // the explicit contract string is the version gate.
+    bool full_frame_shader_ready{};
     // The output image is runtime-private.  These fields describe a bounded
     // access contract only; no VkImage/VkImageView/native synchronization
     // handle crosses this plain-data receipt.
@@ -146,6 +152,7 @@ struct NativeVulkanRayTracingContextReceipt final {
     std::uint64_t output_image_generation{};
     std::uint64_t output_image_bytes{};
     std::uint64_t output_image_sync_value{};
+    std::string shader_contract;
     std::string output_image_contract{std::string(native_vulkan_raytracing_output_image_contract)};
     std::string output_image_format;
     std::string output_image_layout;

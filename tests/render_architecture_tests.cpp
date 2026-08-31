@@ -43,6 +43,28 @@ int main() {
         std::cerr << "Forward graph did not produce the required deterministic pass order\n";
         return 1;
     }
+    const auto native_debug_graph = noemancer::make_forward_render_graph(true);
+    if (!native_debug_graph.valid ||
+        native_debug_graph.graph_id != "render.graph.forward.native-rt-debug.v18" ||
+        native_debug_graph.execution_order.size() != graph.execution_order.size() + 1U ||
+        native_debug_graph.execution_order.back() != "render.pass.native-rt-debug-composite") {
+        std::cerr << "Native RT diagnostic graph did not append its explicit presentation pass\n";
+        return 23;
+    }
+    const auto native_output = std::ranges::find_if(native_debug_graph.resources,
+        [](const noemancer::RenderResourceDefinition& resource) {
+            return resource.id == "render.resource.native-rt-debug-output";
+        });
+    const auto native_colour = std::ranges::find_if(native_debug_graph.resources,
+        [](const noemancer::RenderResourceDefinition& resource) {
+            return resource.id == "render.resource.scene-color-native-rt-debug";
+        });
+    if (native_output == native_debug_graph.resources.end() ||
+        native_output->format != "R32G32B32A32_UINT" || !native_output->external ||
+        native_colour == native_debug_graph.resources.end() || native_colour->external) {
+        std::cerr << "Native RT diagnostic resources lost their external/output lifetime contract\n";
+        return 24;
+    }
     const auto graph_json = noemancer::render_graph_json(graph);
     if (graph_json.find("render.resource.object-id") == std::string::npos ||
         graph_json.find("render.resource.scene-hdr") == std::string::npos ||

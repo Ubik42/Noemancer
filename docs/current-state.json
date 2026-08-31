@@ -3,7 +3,7 @@
   "updated": "2026-08-30",
   "status": "in-development",
   "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "compose-the-versioned-d3d12-full-frame-output-and-port-the-same-abi-to-vulkan",
+  "currentStep": "bind-project-camera-material-radiance-and-complete-vulkan-sdl-image-interop",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",

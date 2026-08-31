@@ -20,6 +20,7 @@
 #include "runtime/runtime_texture_upload.hpp"
 #include "runtime/asset_vfs_catalog.hpp"
 #include "runtime/gpu_pass_timestamp_adapter.hpp"
+#include "runtime/native_raytracing_composite_plan.hpp"
 #include "runtime/scene_raytracing_geometry_cache.hpp"
 #include "runtime/scene_raytracing_geometry_source_adapter.hpp"
 #include "runtime/sdl_gpu_native_device_bridge.hpp"
@@ -71,9 +72,7 @@ public:
         const std::string& debug_mode);
     void set_gpu_driven_enabled(bool enabled);
     void set_gpu_occlusion_enabled(bool enabled) noexcept { gpu_occlusion_enabled_ = enabled; }
-    void set_native_raytracing_session_enabled(bool enabled) noexcept {
-        native_raytracing_session_enabled_ = enabled;
-    }
+    void set_native_raytracing_session_enabled(bool enabled);
     void set_gpu_pass_timing_enabled(bool enabled) noexcept { gpu_pass_timestamps_.set_enabled(enabled); }
     [[nodiscard]] bool gpu_pass_timing_submission_pending() const noexcept {
         return gpu_pass_timestamps_.submission_requires_fence();
@@ -243,6 +242,7 @@ private:
     SDL_GPUGraphicsPipeline* ssgi_composite_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* auto_exposure_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* tone_map_pipeline_{nullptr};
+    SDL_GPUGraphicsPipeline* native_rt_composite_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* sky_atmosphere_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* sky_atmosphere_analytic_pipeline_{nullptr};
     SDL_GPUGraphicsPipeline* aerial_perspective_pipeline_{nullptr};
@@ -632,6 +632,8 @@ private:
     std::unordered_map<std::string,SceneRayTracingGeometryInput> raytracing_geometries_;
     SceneRayTracingGeometryCache raytracing_geometry_cache_;
     std::unique_ptr<SceneRayTracingBridge> scene_raytracing_bridge_;
+    NativeRayTracingCompositePlan native_rt_composite_plan_;
+    bool native_rt_composite_recorded_{};
     std::string native_raytracing_status_json_;
     std::unordered_map<std::string,TextureResourceHandle> sprite_textures_;
     std::unordered_map<std::string,TextureResourceHandle> sprite_linear_textures_;

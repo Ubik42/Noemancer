@@ -362,6 +362,14 @@ target_link_libraries(noemancer_raytracing_context_session_tests PRIVATE
 add_test(NAME noemancer.raytracing_context_session
     COMMAND noemancer_raytracing_context_session_tests)
 
+add_executable(noemancer_native_raytracing_composite_plan_tests
+    native_raytracing_composite_plan_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/native_raytracing_composite_plan.cpp)
+target_include_directories(noemancer_native_raytracing_composite_plan_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME noemancer.native_raytracing_composite_plan
+    COMMAND noemancer_native_raytracing_composite_plan_tests)
+
 add_executable(noemancer_scene_raytracing_geometry_cache_tests
     scene_raytracing_geometry_cache_tests.cpp
     ${PROJECT_SOURCE_DIR}/src/runtime/scene_raytracing_geometry_cache.cpp)

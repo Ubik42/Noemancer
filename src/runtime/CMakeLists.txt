@@ -16,6 +16,7 @@ add_executable(noemancer
     native_d3d12_raytracing_context.cpp
     native_vulkan_raytracing_executor.cpp
     native_vulkan_raytracing_context.cpp
+    native_raytracing_composite_plan.cpp
     raytracing_context_session.cpp
     scene_raytracing_bridge.cpp
     scene_raytracing_geometry_cache.cpp
@@ -77,7 +78,7 @@ if(WIN32)
         DEPENDS "${PROJECT_SOURCE_DIR}/assets/native-raytracing/native_rt_full_frame.lib.hlsl"
         VERBATIM)
     list(APPEND NOEMANCER_SHADER_OUTPUTS "${NOEMANCER_NATIVE_RT_DXIL}")
-    foreach(shader IN ITEMS scene_lit.vert scene_gpu_driven.vert scene_lit.frag sprite.vert sprite.frag sprite_shadow.vert shadow_depth.vert shadow_depth.frag tone_map.vert tone_map.frag gtao.frag ao_denoise.frag ao_composite.frag aerial_perspective.frag sky_atmosphere_analytic.frag auto_exposure.frag bloom_downsample.frag bloom_upsample.frag fxaa.vert fxaa.frag taa.vert taa.frag temporal_denoise.frag ssr_hiz_trace.frag ssr_temporal_resolve.frag ssr_composite.frag ssgi_hiz_gather.frag ssgi_spatial_resolve.frag ssgi_temporal_resolve.frag ssgi_composite.frag retained_ui.vert retained_ui.frag gpu_visibility.comp gpu_occlusion.comp depth_pyramid_seed.comp depth_pyramid_reduce.comp vfx_sim.comp vfx_spawn.comp vfx_group.comp vfx_sort_alpha.comp vfx_billboard.vert vfx_billboard.frag sky_atmosphere.vert sky_atmosphere.frag sky_atmosphere_transmittance.comp sky_atmosphere_multi_scattering.comp sky_atmosphere_sky_view.comp sky_atmosphere_camera_volume.comp)
+    foreach(shader IN ITEMS scene_lit.vert scene_gpu_driven.vert scene_lit.frag sprite.vert sprite.frag sprite_shadow.vert shadow_depth.vert shadow_depth.frag tone_map.vert tone_map.frag native_rt_composite.vert native_rt_composite.frag gtao.frag ao_denoise.frag ao_composite.frag aerial_perspective.frag sky_atmosphere_analytic.frag auto_exposure.frag bloom_downsample.frag bloom_upsample.frag fxaa.vert fxaa.frag taa.vert taa.frag temporal_denoise.frag ssr_hiz_trace.frag ssr_temporal_resolve.frag ssr_composite.frag ssgi_hiz_gather.frag ssgi_spatial_resolve.frag ssgi_temporal_resolve.frag ssgi_composite.frag retained_ui.vert retained_ui.frag gpu_visibility.comp gpu_occlusion.comp depth_pyramid_seed.comp depth_pyramid_reduce.comp vfx_sim.comp vfx_spawn.comp vfx_group.comp vfx_sort_alpha.comp vfx_billboard.vert vfx_billboard.frag sky_atmosphere.vert sky_atmosphere.frag sky_atmosphere_transmittance.comp sky_atmosphere_multi_scattering.comp sky_atmosphere_sky_view.comp sky_atmosphere_camera_volume.comp)
         if(shader MATCHES "\\.vert$")
             set(profile vs_6_0)
         elseif(shader MATCHES "\\.comp$")

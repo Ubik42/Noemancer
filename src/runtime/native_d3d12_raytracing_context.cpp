@@ -393,6 +393,12 @@ bool fill_upload_buffer(ID3D12Resource* resource, const void* data,
 } // namespace
 
 struct NativeD3D12RayTracingContext::Impl final {
+    enum class PendingGpuOperation : std::uint8_t {
+        none = 0U,
+        trace = 1U,
+        output_copy = 2U,
+    };
+
     NativeD3D12RayTracingContextOptions options;
     NativeD3D12RayTracingContextState state{
         NativeD3D12RayTracingContextState::uninitialized};
@@ -429,6 +435,8 @@ struct NativeD3D12RayTracingContext::Impl final {
     bool output_surface_trace_completed{};
     bool last_output_copy_submitted{};
     bool last_output_copy_completed{};
+    PendingGpuOperation pending_gpu_operation{PendingGpuOperation::none};
+    std::uint64_t pending_fence_value{};
 
 #if defined(_WIN32)
     struct GeometryResources final {
@@ -507,6 +515,13 @@ struct NativeD3D12RayTracingContext::Impl final {
             options.max_resource_bytes = native_d3d12_raytracing_context_max_resource_bytes;
         options.max_resource_bytes = std::min(
             options.max_resource_bytes, native_d3d12_raytracing_context_max_resource_bytes);
+        if (options.synchronization_policy !=
+                NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion &&
+            options.synchronization_policy !=
+                NativeD3D12RayTracingSynchronizationPolicy::submit_only) {
+            options.synchronization_policy =
+                NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion;
+        }
     }
 };
 
@@ -550,6 +565,12 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.shared_command_queue = impl.shared_command_queue;
     result.output_copy_submitted = impl.last_output_copy_submitted;
     result.output_copy_completed = impl.last_output_copy_completed;
+    result.synchronization_policy = std::string(
+        native_d3d12_raytracing_synchronization_policy_name(
+            impl.options.synchronization_policy));
+    result.completion_pending = impl.pending_fence_value != 0U;
+    result.submitted_fence_value = impl.last_submitted_fence_value;
+    result.completed_fence_value = impl.last_completed_fence_value;
     result.full_frame_shader_ready =
         impl.options.shaders.full_frame_contract == "noemancer.native-rt-full-frame/0.1" &&
         !impl.options.shaders.full_frame_library_dxil.empty();
@@ -954,7 +975,8 @@ HRESULT submit_and_wait(ID3D12CommandQueue* queue,
                         HANDLE& fence_event,
                         std::uint64_t& next_fence_value,
                         std::uint64_t* submitted_fence_value = nullptr,
-                        std::uint64_t* completed_fence_value = nullptr) {
+                        std::uint64_t* completed_fence_value = nullptr,
+                        const bool wait_for_completion = true) {
     if (submitted_fence_value != nullptr) *submitted_fence_value = 0U;
     if (completed_fence_value != nullptr) *completed_fence_value = 0U;
     if (queue == nullptr || fence == nullptr || command_list == nullptr ||
@@ -966,9 +988,18 @@ HRESULT submit_and_wait(ID3D12CommandQueue* queue,
     HRESULT hr = queue->Signal(fence, fence_value);
     if (FAILED(hr)) return hr;
     if (submitted_fence_value != nullptr) *submitted_fence_value = fence_value;
-    if (fence->GetCompletedValue() >= fence_value) {
+    const auto completed_value = fence->GetCompletedValue();
+    if (completed_value >= fence_value) {
         if (completed_fence_value != nullptr)
-            *completed_fence_value = fence->GetCompletedValue();
+            *completed_fence_value = completed_value;
+        return S_OK;
+    }
+    // An asynchronous submission deliberately stops after Signal.  The
+    // caller owns the later poll/wait through synchronize(); no event or CPU
+    // wait is introduced on the render-loop path.
+    if (!wait_for_completion) {
+        if (completed_fence_value != nullptr)
+            *completed_fence_value = completed_value;
         return S_OK;
     }
     if (fence_event == nullptr) {
@@ -1059,6 +1090,17 @@ std::string_view native_d3d12_raytracing_output_surface_state_name(
     case NativeD3D12RayTracingOutputSurfaceState::released: return "released";
     }
     return "unavailable";
+}
+
+std::string_view native_d3d12_raytracing_synchronization_policy_name(
+    const NativeD3D12RayTracingSynchronizationPolicy policy) noexcept {
+    switch (policy) {
+    case NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion:
+        return "wait-for-completion";
+    case NativeD3D12RayTracingSynchronizationPolicy::submit_only:
+        return "submit-only";
+    }
+    return "wait-for-completion";
 }
 
 NativeD3D12RayTracingContext::NativeD3D12RayTracingContext(
@@ -1342,6 +1384,21 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::ensure_scene(
         result.state = NativeD3D12RayTracingContextState::shutdown;
         return result;
     }
+#if defined(_WIN32)
+    // Scene replacement can invalidate every resource referenced by an
+    // in-flight trace.  A structural hand-off is therefore an explicit wait
+    // boundary, while the steady-state trace path remains submit-only when
+    // requested by the caller.
+    if (impl_->pending_fence_value != 0U) {
+        const auto synchronized = synchronize(true);
+        if (impl_->pending_fence_value != 0U ||
+            synchronized.state == NativeD3D12RayTracingContextState::failed) {
+            auto result = receipt_from(*impl_, "ensure-scene");
+            result.state = NativeD3D12RayTracingContextState::failed;
+            return result;
+        }
+    }
+#endif
 
     const auto signature = scene_signature(canonical_scene);
     const bool changed = !impl_->scene || impl_->scene_hash != signature;
@@ -1408,6 +1465,22 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::build_or_updat
         }
         return result;
     }
+#if defined(_WIN32)
+    // The single persistent allocator/list cannot be reset while a previous
+    // asynchronous trace or output copy still references it.  Building a new
+    // AS is a deliberate synchronization boundary, unlike the normal trace
+    // submission path.
+    if (impl_->pending_fence_value != 0U) {
+        const auto synchronized = synchronize(true);
+        if (impl_->pending_fence_value != 0U ||
+            synchronized.state == NativeD3D12RayTracingContextState::failed) {
+            auto result = receipt_from(*impl_, "build-or-update");
+            result.state = NativeD3D12RayTracingContextState::failed;
+            result.scene_received = true;
+            return result;
+        }
+    }
+#endif
 
 #if !defined(_WIN32)
     auto result = receipt_from(*impl_, "build-or-update");
@@ -1850,10 +1923,26 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     if (impl_->state == NativeD3D12RayTracingContextState::uninitialized)
         static_cast<void>(initialize());
 #if defined(_WIN32)
+    // The context intentionally owns one command allocator/list and one
+    // output allocation.  Do not reset either while an async submission is
+    // still in flight; poll without introducing a CPU wait and ask the
+    // caller to synchronize at its chosen frame boundary instead.
+    if (impl_->pending_fence_value != 0U) {
+        const auto progress = synchronize(false);
+        if (impl_->pending_fence_value != 0U) {
+            auto pending = receipt_from(*impl_, "trace");
+            pending.state = progress.state == NativeD3D12RayTracingContextState::failed
+                ? NativeD3D12RayTracingContextState::failed
+                : NativeD3D12RayTracingContextState::ready;
+            pending.fallback_active = false;
+            return pending;
+        }
+    }
     impl_->last_trace_submitted = false;
     impl_->last_trace_completed = false;
     impl_->last_readback_completed = false;
     impl_->output_surface_trace_completed = false;
+    impl_->output_access_token = 0U;
     impl_->last_output_copy_submitted = false;
     impl_->last_output_copy_completed = false;
     impl_->last_synchronization_completed = false;
@@ -1973,7 +2062,9 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     hr = submit_and_wait(impl_->command_queue.Get(), impl_->fence.Get(),
                          impl_->command_list.Get(), impl_->fence_event,
                          impl_->next_fence_value,
-                         &submitted_fence_value, &completed_fence_value);
+                         &submitted_fence_value, &completed_fence_value,
+                         impl_->options.synchronization_policy ==
+                             NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion);
     if (FAILED(hr)) {
         impl_->state = NativeD3D12RayTracingContextState::failed;
         save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
@@ -1987,6 +2078,24 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     impl_->last_completed_fence_value = completed_fence_value;
     impl_->output_fence_value = submitted_fence_value;
     impl_->output_in_copy_source = true;
+    if (completed_fence_value < submitted_fence_value) {
+        // The transition to COPY_SOURCE and the optional readback copy are
+        // already recorded in the command list, but the GPU has not proven
+        // completion yet.  Keep the public surface unavailable until the
+        // caller polls/waits through synchronize().
+        impl_->pending_gpu_operation = Impl::PendingGpuOperation::trace;
+        impl_->pending_fence_value = submitted_fence_value;
+        impl_->output_surface_state = NativeD3D12RayTracingOutputSurfaceState::unordered_access;
+        impl_->output_surface_trace_completed = false;
+        impl_->last_trace_completed = false;
+        impl_->last_synchronization_completed = false;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                    "native-d3d12.context.trace-submitted",
+                    "TraceRays was submitted without a CPU wait; poll or wait with synchronize() before consuming the output view.");
+        result = receipt_from(*impl_, "trace");
+        result.state = NativeD3D12RayTracingContextState::ready;
+        return result;
+    }
     impl_->output_surface_state = NativeD3D12RayTracingOutputSurfaceState::copy_source;
     impl_->output_surface_trace_completed = true;
     if (impl_->next_output_access_token == 0U ||
@@ -2004,10 +2113,142 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
 #endif
 }
 
+NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::synchronize(
+    const bool wait_for_completion) {
+    if (impl_->state == NativeD3D12RayTracingContextState::uninitialized)
+        static_cast<void>(initialize());
+
+    auto result = receipt_from(*impl_, "synchronize");
+    if (impl_->state == NativeD3D12RayTracingContextState::unsupported) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                    "native-d3d12.context.synchronization-unavailable",
+                    "The native D3D12 queue is unavailable; no asynchronous completion can be polled.");
+        result = receipt_from(*impl_, "synchronize");
+        result.state = NativeD3D12RayTracingContextState::unsupported;
+        result.fallback_active = true;
+        return result;
+    }
+    if (impl_->state != NativeD3D12RayTracingContextState::ready) {
+        result = receipt_from(*impl_, "synchronize");
+        result.state = impl_->state;
+        result.fallback_active = false;
+        return result;
+    }
+#if !defined(_WIN32)
+    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::platform,
+                "native-d3d12.context.platform-unavailable",
+                "Asynchronous D3D12 synchronization is unavailable on this platform.");
+    result = receipt_from(*impl_, "synchronize");
+    result.state = NativeD3D12RayTracingContextState::unsupported;
+    result.fallback_active = true;
+    return result;
+#else
+    if (impl_->pending_fence_value == 0U ||
+        impl_->pending_gpu_operation == Impl::PendingGpuOperation::none) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                    "native-d3d12.context.synchronization-idle",
+                    "No asynchronous D3D12 submission is waiting for completion.");
+        result = receipt_from(*impl_, "synchronize");
+        result.state = impl_->state;
+        result.fallback_active = impl_->state == NativeD3D12RayTracingContextState::unsupported;
+        return result;
+    }
+    if (impl_->fence == nullptr) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                    "native-d3d12.context.synchronization-fence-unavailable",
+                    "An asynchronous submission exists but its retained fence is unavailable.");
+        result = receipt_from(*impl_, "synchronize");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+
+    const auto pending_fence_value = impl_->pending_fence_value;
+    auto completed_fence_value = impl_->fence->GetCompletedValue();
+    if (completed_fence_value < pending_fence_value && wait_for_completion) {
+        if (impl_->fence_event == nullptr) {
+            impl_->fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (impl_->fence_event == nullptr) {
+                impl_->state = NativeD3D12RayTracingContextState::failed;
+                save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                            "native-d3d12.context.synchronization-event-create-failed",
+                            "Creating the asynchronous D3D12 fence event failed with " +
+                                hresult_hex(HRESULT_FROM_WIN32(GetLastError())) + ".");
+                result = receipt_from(*impl_, "synchronize");
+                result.state = NativeD3D12RayTracingContextState::failed;
+                return result;
+            }
+        }
+        const auto hr = impl_->fence->SetEventOnCompletion(
+            pending_fence_value, impl_->fence_event);
+        if (FAILED(hr) ||
+            WaitForSingleObject(impl_->fence_event, INFINITE) != WAIT_OBJECT_0) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                        "native-d3d12.context.synchronization-wait-failed",
+                        "Waiting for asynchronous D3D12 completion failed with " +
+                            hresult_hex(FAILED(hr) ? hr : HRESULT_FROM_WIN32(GetLastError())) + ".");
+            result = receipt_from(*impl_, "synchronize");
+            result.state = NativeD3D12RayTracingContextState::failed;
+            return result;
+        }
+        completed_fence_value = impl_->fence->GetCompletedValue();
+    }
+    if (completed_fence_value < pending_fence_value) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                    "native-d3d12.context.synchronization-pending",
+                    "The asynchronous D3D12 submission is still in flight; no output view is published yet.");
+        result = receipt_from(*impl_, "synchronize");
+        result.state = NativeD3D12RayTracingContextState::ready;
+        return result;
+    }
+
+    const auto completed_operation = impl_->pending_gpu_operation;
+    impl_->pending_gpu_operation = Impl::PendingGpuOperation::none;
+    impl_->pending_fence_value = 0U;
+    impl_->last_completed_fence_value = completed_fence_value;
+    if (completed_operation == Impl::PendingGpuOperation::trace) {
+        impl_->output_in_copy_source = true;
+        impl_->output_surface_state = NativeD3D12RayTracingOutputSurfaceState::copy_source;
+        impl_->output_surface_trace_completed = true;
+        if (impl_->next_output_access_token == 0U ||
+            impl_->next_output_access_token == std::numeric_limits<std::uint64_t>::max())
+            impl_->next_output_access_token = 1U;
+        impl_->output_access_token = impl_->next_output_access_token++;
+        impl_->last_trace_completed = true;
+        impl_->last_synchronization_completed = true;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                    "native-d3d12.context.trace-complete",
+                    "The asynchronous TraceRays submission reached its fence; the output view is now current.");
+    } else if (completed_operation == Impl::PendingGpuOperation::output_copy) {
+        impl_->last_output_copy_completed = true;
+        impl_->last_synchronization_completed = true;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                    "native-d3d12.context.output-copy-complete",
+                    "The asynchronous GPU-only output copy reached its fence.");
+    }
+    result = receipt_from(*impl_, "synchronize");
+    result.state = NativeD3D12RayTracingContextState::ready;
+    return result;
+#endif
+}
+
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::readback() {
     if (impl_->state == NativeD3D12RayTracingContextState::uninitialized)
         static_cast<void>(initialize());
 #if defined(_WIN32)
+    // Readback is already an explicit diagnostic/CPU boundary, so complete a
+    // pending submit before mapping the staging resource.  The normal render
+    // loop can use synchronize(false) and never enters this path.
+    if (impl_->pending_fence_value != 0U) {
+        const auto synchronized = synchronize(true);
+        if (impl_->pending_fence_value != 0U ||
+            synchronized.state == NativeD3D12RayTracingContextState::failed) {
+            auto pending = receipt_from(*impl_, "readback");
+            pending.state = NativeD3D12RayTracingContextState::failed;
+            return pending;
+        }
+    }
     impl_->last_readback_completed = false;
 #endif
     auto result = receipt_from(*impl_, "readback");
@@ -2092,13 +2333,16 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
         return result;
     }
 #if defined(_WIN32)
-    // Every build/update is synchronously fenced before returning.  Keep the
-    // same invariant here so resource destruction remains safe if a future
-    // operation adds another submission path.
+    // Resource destruction must wait for the last submitted fence even when
+    // the caller selected submit_only and no event was needed on the hot
+    // path.  Create the event lazily here so borrowed SDL queues and native
+    // resources are never released while the GPU still references them.
     if (impl_->fence != nullptr && impl_->next_fence_value > 1U &&
-        impl_->fence->GetCompletedValue() < impl_->next_fence_value - 1U &&
-        impl_->fence_event != nullptr) {
-        if (SUCCEEDED(impl_->fence->SetEventOnCompletion(
+        impl_->fence->GetCompletedValue() < impl_->next_fence_value - 1U) {
+        if (impl_->fence_event == nullptr)
+            impl_->fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (impl_->fence_event != nullptr &&
+            SUCCEEDED(impl_->fence->SetEventOnCompletion(
                 impl_->next_fence_value - 1U, impl_->fence_event)))
             static_cast<void>(WaitForSingleObject(impl_->fence_event, INFINITE));
     }
@@ -2138,6 +2382,8 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     impl_->last_completed_fence_value = 0U;
     impl_->last_output_copy_submitted = false;
     impl_->last_output_copy_completed = false;
+    impl_->pending_gpu_operation = Impl::PendingGpuOperation::none;
+    impl_->pending_fence_value = 0U;
     impl_->last_trace_submitted = false;
     impl_->last_trace_completed = false;
     impl_->last_readback_completed = false;
@@ -2168,6 +2414,8 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     impl_->last_completed_fence_value = 0U;
     impl_->last_output_copy_submitted = false;
     impl_->last_output_copy_completed = false;
+    impl_->pending_gpu_operation = Impl::PendingGpuOperation::none;
+    impl_->pending_fence_value = 0U;
     impl_->state = NativeD3D12RayTracingContextState::shutdown;
     impl_->scene.reset();
     impl_->scene_dirty = false;
@@ -2236,6 +2484,7 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::copy_output_to
     void* destination_resource) {
     impl_->last_output_copy_submitted = false;
     impl_->last_output_copy_completed = false;
+    impl_->last_synchronization_completed = false;
     const auto fail = [&](const std::string_view code, const std::string_view detail) {
         save_result(*impl_, NativeD3D12RayTracingContextFailureStage::output,
                     code, detail);
@@ -2244,6 +2493,22 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::copy_output_to
         result.fallback_active = false;
         return result;
     };
+#if defined(_WIN32)
+    if (impl_->pending_fence_value != 0U) {
+        const auto progress = synchronize(false);
+        if (impl_->pending_fence_value != 0U) {
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                        "native-d3d12.context.output-copy-pending",
+                        "An earlier asynchronous trace or output copy is still in flight; poll or wait with synchronize() before issuing another copy.");
+            auto pending = receipt_from(*impl_, "copy-output");
+            pending.state = progress.state == NativeD3D12RayTracingContextState::failed
+                ? NativeD3D12RayTracingContextState::failed
+                : NativeD3D12RayTracingContextState::ready;
+            pending.fallback_active = false;
+            return pending;
+        }
+    }
+#endif
     if (!is_private_output_surface_view_current(view)) {
         return fail("native-d3d12.context.output-view-stale",
                     "The output view token, generation, resource state or fence proof is no longer current.");
@@ -2370,16 +2635,28 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::copy_output_to
     hr = submit_and_wait(impl_->command_queue.Get(), impl_->fence.Get(),
                          impl_->command_list.Get(), impl_->fence_event,
                          impl_->next_fence_value,
-                         &submitted_fence_value, &completed_fence_value);
+                         &submitted_fence_value, &completed_fence_value,
+                         impl_->options.synchronization_policy ==
+                             NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion);
     if (FAILED(hr)) {
         return fail("native-d3d12.context.output-copy-wait-failed",
                     "Waiting for the GPU-only output copy failed with " + hresult_hex(hr) + ".");
     }
     impl_->last_submitted_fence_value = submitted_fence_value;
     impl_->last_completed_fence_value = completed_fence_value;
-    impl_->output_fence_value = submitted_fence_value;
     impl_->last_output_copy_submitted = true;
+    if (completed_fence_value < submitted_fence_value) {
+        impl_->pending_gpu_operation = Impl::PendingGpuOperation::output_copy;
+        impl_->pending_fence_value = submitted_fence_value;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::synchronization,
+                    "native-d3d12.context.output-copy-submitted",
+                    "The GPU-only output copy was submitted without a CPU wait; poll or wait with synchronize() before reusing the command list.");
+        auto result = receipt_from(*impl_, "copy-output");
+        result.state = NativeD3D12RayTracingContextState::ready;
+        return result;
+    }
     impl_->last_output_copy_completed = true;
+    impl_->last_synchronization_completed = true;
     save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
                 "native-d3d12.context.output-copy-complete",
                 destination_is_texture

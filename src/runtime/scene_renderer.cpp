@@ -333,6 +333,13 @@ struct alignas(16) ToneMapSettings {
 };
 static_assert(sizeof(ToneMapSettings)==80, "ToneMapSettings must match tone_map.frag.hlsl b0");
 
+struct alignas(16) NativeRtCompositeSettings final {
+    std::array<std::uint32_t,4> extent_mode{};
+    std::array<float,4> clear_color_linear{};
+};
+static_assert(sizeof(NativeRtCompositeSettings)==32,
+    "NativeRtCompositeSettings must match native_rt_composite.frag.hlsl b0");
+
 struct alignas(16) GtaoSettings {
     std::array<float,2> inverse_resolution{};
     float near_clip{0.1F};
@@ -710,6 +717,12 @@ SceneRenderer::SceneRenderer(SDL_GPUDevice* device, const AssetRegistry& asset_r
     for (int index=0;index<driver_count;++index) available_gpu_backends_.emplace_back(SDL_GetGPUDriver(index));
 }
 SceneRenderer::~SceneRenderer() { release(); }
+
+void SceneRenderer::set_native_raytracing_session_enabled(const bool enabled) {
+    if (native_raytracing_session_enabled_ == enabled) return;
+    native_raytracing_session_enabled_ = enabled;
+    render_graph_ = make_forward_render_graph(enabled);
+}
 
 void SceneRenderer::set_sky_atmosphere(SkyAtmosphereSettings settings) {
     sky_atmosphere_=std::move(settings);
@@ -2083,6 +2096,10 @@ bool SceneRenderer::create_pipelines() {
     SDL_GPUShader* shadow_fragment = load_shader(device_, "shadow_depth.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
     SDL_GPUShader* tone_vertex = load_shader(device_, "tone_map.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* tone_fragment = load_shader(device_, "tone_map.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 3, 1);
+    SDL_GPUShader* native_rt_composite_vertex=load_shader(
+        device_,"native_rt_composite.vert",SDL_GPU_SHADERSTAGE_VERTEX,0,0);
+    SDL_GPUShader* native_rt_composite_fragment=load_shader(
+        device_,"native_rt_composite.frag",SDL_GPU_SHADERSTAGE_FRAGMENT,1,1);
     SDL_GPUShader* sky_vertex = load_shader(device_, "sky_atmosphere.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader* sky_fragment = load_shader(device_, "sky_atmosphere.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     SDL_GPUShader* sky_analytic_fragment=load_shader(device_,"sky_atmosphere_analytic.frag",SDL_GPU_SHADERSTAGE_FRAGMENT,0,1);
@@ -2106,7 +2123,7 @@ bool SceneRenderer::create_pipelines() {
     SDL_GPUShader* ssgi_composite_fragment=load_shader(device_,"ssgi_composite.frag",SDL_GPU_SHADERSTAGE_FRAGMENT,6,1);
     SDL_GPUShader* vfx_vertex = load_shader(device_, "vfx_billboard.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, 2);
     SDL_GPUShader* vfx_fragment = load_shader(device_, "vfx_billboard.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
-    if (!lit_vertex || !lit_fragment || !sprite_vertex || !sprite_fragment || !sprite_shadow_vertex || !shadow_vertex || !shadow_fragment || !tone_vertex || !tone_fragment || !sky_vertex || !sky_fragment || !sky_analytic_fragment || !aerial_fragment || !gtao_fragment || !ao_denoise_fragment || !ao_composite_fragment || !auto_exposure_fragment || !bloom_downsample_fragment || !bloom_upsample_fragment || !fxaa_vertex || !fxaa_fragment || !taa_vertex || !taa_fragment || !ssr_trace_fragment || !ssr_temporal_fragment || !ssr_composite_fragment || !ssgi_gather_fragment || !ssgi_spatial_fragment || !ssgi_temporal_fragment || !ssgi_composite_fragment || !vfx_vertex || !vfx_fragment) {
+    if (!lit_vertex || !lit_fragment || !sprite_vertex || !sprite_fragment || !sprite_shadow_vertex || !shadow_vertex || !shadow_fragment || !tone_vertex || !tone_fragment || !native_rt_composite_vertex || !native_rt_composite_fragment || !sky_vertex || !sky_fragment || !sky_analytic_fragment || !aerial_fragment || !gtao_fragment || !ao_denoise_fragment || !ao_composite_fragment || !auto_exposure_fragment || !bloom_downsample_fragment || !bloom_upsample_fragment || !fxaa_vertex || !fxaa_fragment || !taa_vertex || !taa_fragment || !ssr_trace_fragment || !ssr_temporal_fragment || !ssr_composite_fragment || !ssgi_gather_fragment || !ssgi_spatial_fragment || !ssgi_temporal_fragment || !ssgi_composite_fragment || !vfx_vertex || !vfx_fragment) {
         last_error_ = "Unable to load compiled shaders for GPU backend " + gpu_backend_ + " using " + shader_artifact_format_;
         if(!shader_artifact_failure.empty())last_error_+="; "+shader_artifact_failure;
         if (lit_vertex) SDL_ReleaseGPUShader(device_, lit_vertex);
@@ -2119,6 +2136,8 @@ bool SceneRenderer::create_pipelines() {
         if (shadow_fragment) SDL_ReleaseGPUShader(device_, shadow_fragment);
         if (tone_vertex) SDL_ReleaseGPUShader(device_, tone_vertex);
         if (tone_fragment) SDL_ReleaseGPUShader(device_, tone_fragment);
+        if(native_rt_composite_vertex)SDL_ReleaseGPUShader(device_,native_rt_composite_vertex);
+        if(native_rt_composite_fragment)SDL_ReleaseGPUShader(device_,native_rt_composite_fragment);
         if (sky_vertex) SDL_ReleaseGPUShader(device_, sky_vertex);
         if (sky_fragment) SDL_ReleaseGPUShader(device_, sky_fragment);
         if(sky_analytic_fragment)SDL_ReleaseGPUShader(device_,sky_analytic_fragment);
@@ -2271,6 +2290,9 @@ bool SceneRenderer::create_pipelines() {
     tone_info.rasterizer_state.cull_mode=SDL_GPU_CULLMODE_NONE;
     tone_info.target_info={&tone_target,1,SDL_GPU_TEXTUREFORMAT_INVALID,false,0,0,0};
     tone_map_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
+    tone_info.vertex_shader=native_rt_composite_vertex;
+    tone_info.fragment_shader=native_rt_composite_fragment;
+    native_rt_composite_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
     tone_target.format=normal_format;
     tone_info.vertex_shader=sky_vertex;tone_info.fragment_shader=sky_fragment;
     sky_atmosphere_pipeline_=SDL_CreateGPUGraphicsPipeline(device_,&tone_info);
@@ -2335,6 +2357,8 @@ bool SceneRenderer::create_pipelines() {
     SDL_ReleaseGPUShader(device_,sprite_vertex);SDL_ReleaseGPUShader(device_,sprite_fragment);SDL_ReleaseGPUShader(device_,sprite_shadow_vertex);
     SDL_ReleaseGPUShader(device_, shadow_vertex); SDL_ReleaseGPUShader(device_, shadow_fragment);
     SDL_ReleaseGPUShader(device_, tone_vertex); SDL_ReleaseGPUShader(device_, tone_fragment);
+    SDL_ReleaseGPUShader(device_,native_rt_composite_vertex);
+    SDL_ReleaseGPUShader(device_,native_rt_composite_fragment);
     SDL_ReleaseGPUShader(device_,sky_vertex);SDL_ReleaseGPUShader(device_,sky_fragment);
     SDL_ReleaseGPUShader(device_,sky_analytic_fragment);SDL_ReleaseGPUShader(device_,aerial_fragment);
     SDL_ReleaseGPUShader(device_,gtao_fragment);SDL_ReleaseGPUShader(device_,ao_denoise_fragment);SDL_ReleaseGPUShader(device_,ao_composite_fragment);SDL_ReleaseGPUShader(device_,auto_exposure_fragment);
@@ -2349,7 +2373,7 @@ bool SceneRenderer::create_pipelines() {
     return lit_pipeline_ && lit_double_sided_pipeline_ && transparent_pipeline_ && transparent_double_sided_pipeline_ &&
         sprite_cutout_pipeline_ && sprite_alpha_pipeline_ && sprite_shadow_pipeline_ &&
         shadow_pipeline_ && shadow_double_sided_pipeline_ && bloom_downsample_pipeline_ && bloom_upsample_pipeline_ && gtao_pipeline_ && ao_denoise_pipeline_ && ao_composite_pipeline_ &&
-        auto_exposure_pipeline_ && tone_map_pipeline_ && sky_atmosphere_pipeline_ && sky_atmosphere_analytic_pipeline_ && aerial_perspective_pipeline_ && fxaa_pipeline_ && taa_pipeline_ &&
+        auto_exposure_pipeline_ && tone_map_pipeline_ && native_rt_composite_pipeline_ && sky_atmosphere_pipeline_ && sky_atmosphere_analytic_pipeline_ && aerial_perspective_pipeline_ && fxaa_pipeline_ && taa_pipeline_ &&
         ssr_trace_pipeline_ && ssr_temporal_pipeline_ && ssr_composite_pipeline_ &&
         ssgi_gather_pipeline_ && ssgi_spatial_pipeline_ && ssgi_temporal_pipeline_ && ssgi_composite_pipeline_ &&
         vfx_alpha_draw_pipeline_ && vfx_additive_draw_pipeline_;
@@ -2847,6 +2871,7 @@ void SceneRenderer::set_capture_contract_json(std::string contract_json) {
 void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& render_world) {
     const auto backend=gpu_backend_=="direct3d12"?std::string{"d3d12"}:gpu_backend_;
     if(!native_raytracing_session_enabled_) {
+        native_rt_composite_plan_={};
         native_raytracing_status_json_=nlohmann::json{
             {"schema",std::string(scene_raytracing_bridge_schema)},
             {"requested",false},{"enabled",false},{"backend",backend},
@@ -2889,6 +2914,7 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
 
     const auto cache_update=raytracing_geometry_cache_.update(input);
     if(!cache_update.accepted) {
+        native_rt_composite_plan_={};
         native_raytracing_status_json_=nlohmann::json{
             {"schema",std::string(scene_raytracing_bridge_schema)},
             {"requested",true},{"enabled",true},{"backend",backend},
@@ -2942,14 +2968,22 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
         transfer.code="renderer.native-output-transfer-not-candidate";
         transfer.detail="The current backend, dimensions or exported texture did not satisfy the bounded same-device transfer contract.";
     }
+    native_rt_composite_plan_=build_native_raytracing_composite_plan({
+        .resource_id="render.resource.native-rt-debug-output",
+        .resource_kind="texture2d",
+        .format=native_rt_texture_export_.format,
+        .width=native_rt_texture_export_.width,
+        .height=native_rt_texture_export_.height,
+        .resource_generation=native_rt_texture_export_.generation,
+        .producer_complete=transfer.completed&&receipt.output_trace_written,
+        .shader_readable=transfer.completed});
     native_raytracing_status_json_=nlohmann::json{
         {"schema",receipt.schema},{"requested",receipt.requested},{"enabled",receipt.enabled},
         {"backend",receipt.backend},{"sceneAccepted",receipt.scene_accepted},{"cacheState",receipt.cache_state},
         {"nativeAsReady",receipt.native_as_ready},{"nativeTraceReady",receipt.native_trace_ready},
-        {"visualPath",receipt.visual_path},
-        {"fallbackCode",transfer.completed?"render-graph-composite-pending":receipt.fallback_code},
-        {"fallbackDetail",transfer.completed?
-            "The versioned full-frame native output reached the SDL texture; project-visible composition and RTGI remain pending.":
+        {"visualPath",native_rt_composite_plan_.valid?native_rt_composite_plan_.visual_path:receipt.visual_path},
+        {"fallbackCode",native_rt_composite_plan_.valid?native_rt_composite_plan_.code:receipt.fallback_code},
+        {"fallbackDetail",native_rt_composite_plan_.valid?native_rt_composite_plan_.detail:
             receipt.fallback_detail},{"planFingerprint",receipt.plan_fingerprint},
         {"planValid",receipt.plan_valid},{"planSupported",receipt.plan_supported},
         {"sessionExecuted",receipt.session_executed},{"failed",receipt.failed},
@@ -2969,6 +3003,13 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
         {"frameGeneration",receipt.frame_generation},{"graphGeneration",receipt.graph_generation},
         {"topologyRevision",receipt.topology_revision},{"contentRevision",receipt.content_revision},
         {"triangleCount",receipt.triangle_count},{"rtgiReady",false},
+        {"composite",{{"schema",native_rt_composite_plan_.schema},
+            {"valid",native_rt_composite_plan_.valid},{"supported",native_rt_composite_plan_.supported},
+            {"code",native_rt_composite_plan_.code},{"visualPath",native_rt_composite_plan_.visual_path},
+            {"shaderContract",native_rt_composite_plan_.shader_contract},
+            {"claimsRtgi",native_rt_composite_plan_.claims_rtgi},
+            {"inputFormat",native_rt_composite_plan_.input_format},
+            {"outputFormat",native_rt_composite_plan_.output_format}}},
         {"resourceInterop",transfer.completed?"native-output-copied-to-sdl-texture":
             (sdl_native_device_bridge_.observation.same_device_candidate?
                 "sdl-native-device-ready-output-not-consumed":"native-context-output-not-shared-with-sdl-gpu")},
@@ -2984,8 +3025,10 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
 void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnapshot& render_world) {
     last_error_.clear();
     gpu_occlusion_used_this_frame_=false;
+    native_rt_composite_recorded_=false;
     if (!color_texture_ || !shadow_texture_) return;
-    if (render_graph_.graph_id.empty()) render_graph_ = make_forward_render_graph();
+    if (render_graph_.graph_id.empty())
+        render_graph_ = make_forward_render_graph(native_raytracing_session_enabled_);
     if (!render_graph_.valid) { last_error_ = "Render graph is invalid"; return; }
     extraction_id_ = render_world.extraction_id;
     world_revision_ = render_world.world_revision;
@@ -4927,6 +4970,25 @@ void SceneRenderer::render(SDL_GPUCommandBuffer* command, const RenderWorldSnaps
             .cycle = false};
         SDL_BlitGPUTexture(command, &blit);
     }
+    } else if(pass_id=="render.pass.native-rt-debug-composite") {
+    if(native_rt_composite_plan_.valid&&native_rt_texture_export_.texture&&
+       native_rt_composite_pipeline_) {
+        SDL_GPUColorTargetInfo target{};target.texture=color_texture_;
+        target.clear_color={0.0F,0.0F,0.0F,1.0F};
+        target.load_op=SDL_GPU_LOADOP_CLEAR;target.store_op=SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* pass=SDL_BeginGPURenderPass(command,&target,1,nullptr);
+        SDL_BindGPUGraphicsPipeline(pass,native_rt_composite_pipeline_);
+        const SDL_GPUTextureSamplerBinding binding{
+            native_rt_texture_export_.texture,tone_map_sampler_};
+        SDL_BindGPUFragmentSamplers(pass,0,&binding,1);
+        const NativeRtCompositeSettings settings{{
+            native_rt_composite_plan_.width,native_rt_composite_plan_.height,
+            native_rt_composite_plan_.debug_mode,0U},{0.02F,0.025F,0.03F,1.0F}};
+        SDL_PushGPUFragmentUniformData(command,0,&settings,sizeof(settings));
+        SDL_DrawGPUPrimitives(pass,3,1,0,0);
+        SDL_EndGPURenderPass(pass);
+        native_rt_composite_recorded_=true;
+    }
     } else if (pass_id == "render.pass.fxaa") {
     SDL_GPUColorTargetInfo color_target{}; color_target.texture=color_texture_;
     color_target.clear_color={0,0,0,1}; color_target.load_op=SDL_GPU_LOADOP_CLEAR; color_target.store_op=SDL_GPU_STOREOP_STORE;
@@ -5510,6 +5572,8 @@ std::string SceneRenderer::status_json() const {
             {"visualPath","ssgi-raster-fallback"},{"fallbackCode","bridge.not-observed"},
             {"rtgiReady",false}};
     }
+    native_raytracing_evidence["composite"]["recordedThisFrame"]=
+        native_rt_composite_recorded_;
     nlohmann::json stream_states=nlohmann::json::array();
     std::size_t authored_mip_levels_total{};
     for(std::size_t index=0;index<texture_streams_.size();++index) {
@@ -6094,6 +6158,7 @@ void SceneRenderer::release() {
     if (ao_composite_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,ao_composite_pipeline_);
     if (auto_exposure_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,auto_exposure_pipeline_);
     if (tone_map_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,tone_map_pipeline_);
+    if(native_rt_composite_pipeline_)SDL_ReleaseGPUGraphicsPipeline(device_,native_rt_composite_pipeline_);
     if (sky_atmosphere_pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_,sky_atmosphere_pipeline_);
     if(sky_atmosphere_analytic_pipeline_)SDL_ReleaseGPUGraphicsPipeline(device_,sky_atmosphere_analytic_pipeline_);
     if(aerial_perspective_pipeline_)SDL_ReleaseGPUGraphicsPipeline(device_,aerial_perspective_pipeline_);
@@ -6161,7 +6226,7 @@ void SceneRenderer::release() {
     local_light_upload_=nullptr;light_cluster_upload_=nullptr;light_cluster_index_upload_=nullptr;
     bloom_downsample_pipeline_=nullptr;bloom_upsample_pipeline_=nullptr;gtao_pipeline_=nullptr;ao_denoise_pipeline_=nullptr;
     ao_composite_pipeline_=nullptr;auto_exposure_pipeline_=nullptr;
-    tone_map_pipeline_=nullptr;sky_atmosphere_pipeline_=nullptr;sky_atmosphere_analytic_pipeline_=nullptr;aerial_perspective_pipeline_=nullptr;fxaa_pipeline_=nullptr;taa_pipeline_=nullptr;
+    tone_map_pipeline_=nullptr;native_rt_composite_pipeline_=nullptr;sky_atmosphere_pipeline_=nullptr;sky_atmosphere_analytic_pipeline_=nullptr;aerial_perspective_pipeline_=nullptr;fxaa_pipeline_=nullptr;taa_pipeline_=nullptr;
     ssr_trace_pipeline_=nullptr;ssr_temporal_pipeline_=nullptr;ssr_composite_pipeline_=nullptr;
     ssgi_gather_pipeline_=nullptr;ssgi_spatial_pipeline_=nullptr;ssgi_temporal_pipeline_=nullptr;ssgi_composite_pipeline_=nullptr;
     depth_pyramid_seed_pipeline_=nullptr;depth_pyramid_reduce_pipeline_=nullptr;vfx_alpha_draw_pipeline_=nullptr;
