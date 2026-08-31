@@ -46,102 +46,191 @@ constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
 
 #if NOEMANCER_HAS_VULKAN_HEADERS
 // Reused from the short-lived Vulkan RT executor and extended with the
-// versioned output-image ABI.  RayGen writes a four-byte marker via set 0
-// bindings 1 (storage buffer) and 2 (storage image).  Keeping this bounded
+// versioned output-image and camera ABI. RayGen builds a primary ray from the
+// camera basis/lens at each dispatch launch, then writes a marker via set 0
+// bindings 1 (storage buffer) and 2 (storage image). Keeping this bounded
 // fixture embedded makes the context independent from a build-directory
 // shader path.
-constexpr std::array<std::uint32_t, 391U> native_raytracing_probe_spirv{
-    0x07230203U, 0x00010400U, 0x000E0000U, 0x00000035U, 0x00000000U, 0x00020011U, 0x00001178U, 0x00020011U,
-    0x0000117FU, 0x0006000AU, 0x5F565053U, 0x5F52484BU, 0x5F796172U, 0x72657571U, 0x00000079U, 0x0006000AU,
-    0x5F565053U, 0x5F52484BU, 0x5F796172U, 0x63617274U, 0x00676E69U, 0x0003000EU, 0x00000000U, 0x00000001U,
-    0x0008000FU, 0x000014C1U, 0x00000001U, 0x47796152U, 0x00006E65U, 0x00000002U, 0x00000003U, 0x00000004U,
-    0x0008000FU, 0x000014C5U, 0x00000005U, 0x7373694DU, 0x00000000U, 0x00000002U, 0x00000003U, 0x00000006U,
-    0x0009000FU, 0x000014C4U, 0x00000007U, 0x736F6C43U, 0x48747365U, 0x00007469U, 0x00000002U, 0x00000003U,
-    0x00000008U, 0x00030003U, 0x00000005U, 0x00000276U, 0x00080005U, 0x00000009U, 0x65636361U, 0x6172656CU,
-    0x6E6F6974U, 0x75727453U, 0x72757463U, 0x00564E65U, 0x00040005U, 0x00000002U, 0x6E656353U, 0x00000065U,
-    0x000A0005U, 0x0000000AU, 0x65707974U, 0x5357522EU, 0x63757274U, 0x65727574U, 0x66754264U, 0x2E726566U,
-    0x746E6975U, 0x00000000U, 0x00040005U, 0x00000003U, 0x7074754FU, 0x00007475U, 0x00040005U, 0x0000000BU,
-    0x6C796150U, 0x0064616FU, 0x00040006U, 0x0000000BU, 0x00000000U, 0x00746968U, 0x00030005U, 0x00000004U,
-    0x00000070U, 0x00030005U, 0x00000006U, 0x00000070U, 0x00030005U, 0x00000008U, 0x00000070U, 0x00040005U,
-    0x00000001U, 0x47796152U, 0x00006E65U, 0x00040005U, 0x00000005U, 0x7373694DU, 0x00000000U, 0x00050005U,
-    0x00000007U, 0x736F6C43U, 0x48747365U, 0x00007469U, 0x00040047U, 0x00000004U, 0x0000001EU, 0x00000000U,
-    0x00040047U, 0x00000002U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000002U, 0x00000021U, 0x00000000U,
-    0x00040047U, 0x00000003U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000003U, 0x00000021U, 0x00000001U,
-    0x00040047U, 0x00000031U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000031U, 0x00000021U, 0x00000002U,
-    0x00040047U, 0x0000000CU, 0x00000006U, 0x00000004U, 0x00050048U, 0x0000000AU, 0x00000000U, 0x00000023U,
-    0x00000000U, 0x00030047U, 0x0000000AU, 0x00000002U, 0x00040015U, 0x0000000DU, 0x00000020U, 0x00000000U,
-    0x0004002BU, 0x0000000DU, 0x0000000EU, 0x00000000U, 0x00040015U, 0x0000000FU, 0x00000020U, 0x00000001U,
-    0x0004002BU, 0x0000000FU, 0x00000010U, 0x00000000U, 0x00030016U, 0x00000011U, 0x00000020U, 0x0004002BU,
-    0x00000011U, 0x00000012U, 0x00000000U, 0x0004002BU, 0x00000011U, 0x00000013U, 0xC0000000U, 0x00040017U,
-    0x00000014U, 0x00000011U, 0x00000003U, 0x0006002CU, 0x00000014U, 0x00000015U, 0x00000012U, 0x00000012U,
-    0x00000013U, 0x0004002BU, 0x00000011U, 0x00000016U, 0x3F800000U, 0x0006002CU, 0x00000014U, 0x00000017U,
-    0x00000012U, 0x00000012U, 0x00000016U, 0x0004002BU, 0x00000011U, 0x00000018U, 0x41200000U, 0x0004002BU,
-    0x0000000DU, 0x00000019U, 0x000000FFU, 0x0004002BU, 0x0000000DU, 0x0000001AU, 0x00000001U, 0x0004002BU,
-    0x0000000DU, 0x0000001BU, 0x4D495353U, 0x0004002BU, 0x0000000DU, 0x0000001CU, 0x48495421U, 0x000214DDU,
-    0x00000009U, 0x00040020U, 0x0000001DU, 0x00000000U, 0x00000009U, 0x0003001DU, 0x0000000CU, 0x0000000DU,
-    0x0003001EU, 0x0000000AU, 0x0000000CU, 0x00040020U, 0x0000001EU, 0x0000000CU, 0x0000000AU, 0x0003001EU,
-    0x0000000BU, 0x0000000DU, 0x00040020U, 0x0000001FU, 0x000014DAU, 0x0000000BU, 0x00040020U, 0x00000020U,
-    0x000014DEU, 0x0000000BU, 0x00040017U, 0x00000032U, 0x0000000DU, 0x00000002U, 0x00090019U, 0x0000002FU,
-    0x0000000DU, 0x00000001U, 0x00000000U, 0x00000000U, 0x00000000U, 0x00000002U, 0x00000021U, 0x00040020U,
-    0x00000030U, 0x00000000U, 0x0000002FU, 0x00020013U, 0x00000021U, 0x00030021U, 0x00000022U, 0x00000021U, 0x00040020U,
-    0x00000023U, 0x0000000CU, 0x0000000DU, 0x0004003BU, 0x0000001DU, 0x00000002U, 0x00000000U, 0x0004003BU,
-    0x0000001EU, 0x00000003U, 0x0000000CU, 0x0004003BU, 0x0000001FU, 0x00000004U, 0x000014DAU, 0x0004003BU,
-    0x00000020U,
-    0x00000006U, 0x000014DEU, 0x0004003BU, 0x00000020U, 0x00000008U, 0x000014DEU,
-    0x0004003BU, 0x00000030U, 0x00000031U, 0x00000000U, 0x0004002CU, 0x0000000BU,
-    0x00000024U, 0x0000000EU, 0x0004002CU, 0x0000000BU, 0x00000025U, 0x0000001BU, 0x0004002CU, 0x0000000BU,
-    0x00000026U, 0x0000001CU, 0x00040020U, 0x00000027U, 0x000014DAU, 0x0000000DU, 0x0005002CU, 0x00000032U,
-    0x00000033U, 0x0000000EU, 0x0000000EU, 0x00050036U, 0x00000021U,
-    0x00000001U, 0x00000000U, 0x00000022U, 0x000200F8U, 0x00000028U, 0x0003003EU, 0x00000004U, 0x00000024U,
-    0x0004003DU, 0x00000009U, 0x00000029U, 0x00000002U, 0x000C115DU, 0x00000029U, 0x0000000EU, 0x00000019U,
-    0x0000000EU, 0x0000001AU, 0x0000000EU, 0x00000015U, 0x00000012U, 0x00000017U, 0x00000018U, 0x00000004U,
-    0x00050041U, 0x00000027U, 0x0000002AU, 0x00000004U, 0x0000000EU, 0x0004003DU, 0x0000000DU, 0x0000002BU,
-    0x0000002AU, 0x00060041U, 0x00000023U, 0x0000002CU, 0x00000003U, 0x00000010U, 0x0000000EU, 0x0003003EU,
-    0x0000002CU, 0x0000002BU, 0x0004003DU, 0x0000002FU, 0x00000034U, 0x00000031U, 0x00040063U,
-    0x00000034U, 0x00000033U, 0x0000002BU, 0x000100FDU, 0x00010038U, 0x00050036U, 0x00000021U,
-    0x00000005U, 0x00000000U,
-    0x00000022U, 0x000200F8U, 0x0000002DU, 0x0003003EU, 0x00000006U, 0x00000025U, 0x000100FDU, 0x00010038U,
-    0x00050036U, 0x00000021U, 0x00000007U, 0x00000000U, 0x00000022U, 0x000200F8U, 0x0000002EU, 0x0003003EU,
-    0x00000008U, 0x00000026U, 0x000100FDU, 0x00010038U,
+constexpr std::array<std::uint32_t, 943U> native_raytracing_probe_spirv{
+    0x07230203U, 0x00010400U, 0x000E0000U, 0x0000008EU, 0x00000000U, 0x00020011U, 0x00001178U, 0x00020011U, 0x0000117FU, 0x0006000AU, 0x5F565053U, 0x5F52484BU,
+    0x5F796172U, 0x72657571U, 0x00000079U, 0x0006000AU, 0x5F565053U, 0x5F52484BU, 0x5F796172U, 0x63617274U, 0x00676E69U, 0x0006000BU, 0x00000001U, 0x4C534C47U,
+    0x6474732EU, 0x3035342EU, 0x00000000U, 0x0003000EU, 0x00000000U, 0x00000001U, 0x000C000FU, 0x000014C1U, 0x00000002U, 0x47796152U, 0x00006E65U, 0x00000003U,
+    0x00000004U, 0x00000005U, 0x00000006U, 0x00000007U, 0x00000008U, 0x00000009U, 0x0006000FU, 0x000014C5U, 0x0000000AU, 0x7373694DU, 0x00000000U, 0x0000000BU,
+    0x0007000FU, 0x000014C4U, 0x0000000CU, 0x736F6C43U, 0x48747365U, 0x00007469U, 0x0000000DU, 0x00030003U, 0x00000005U, 0x00000276U, 0x00080005U, 0x0000000EU,
+    0x65636361U, 0x6172656CU, 0x6E6F6974U, 0x75727453U, 0x72757463U, 0x00564E65U, 0x00090005U, 0x00000007U, 0x6E656373U, 0x63634165U, 0x72656C65U, 0x6F697461U,
+    0x7274536EU, 0x75746375U, 0x00006572U, 0x000A0005U, 0x0000000FU, 0x65707974U, 0x5357522EU, 0x63757274U, 0x65727574U, 0x66754264U, 0x2E726566U, 0x746E6975U,
+    0x00000000U, 0x00060005U, 0x00000008U, 0x7074756FU, 0x75427475U, 0x72656666U, 0x00000000U, 0x00060005U, 0x00000010U, 0x65707974U, 0x2E64322EU, 0x67616D69U,
+    0x00000065U, 0x00050005U, 0x00000009U, 0x7074756FU, 0x6D497475U, 0x00656761U, 0x00080005U, 0x00000011U, 0x65707974U, 0x6D61432EU, 0x43617265U, 0x74736E6FU,
+    0x73746E61U, 0x00000000U, 0x00070006U, 0x00000011U, 0x00000000U, 0x656D6163U, 0x6F506172U, 0x69746973U, 0x00006E6FU, 0x00060006U, 0x00000011U, 0x00000001U,
+    0x656D6163U, 0x69526172U, 0x00746867U, 0x00060006U, 0x00000011U, 0x00000002U, 0x656D6163U, 0x70556172U, 0x00000000U, 0x00070006U, 0x00000011U, 0x00000003U,
+    0x656D6163U, 0x6F466172U, 0x72617772U, 0x00000064U, 0x00060006U, 0x00000011U, 0x00000004U, 0x656D6163U, 0x654C6172U, 0x0000736EU, 0x00060005U, 0x00000005U,
+    0x656D6143U, 0x6F436172U, 0x6174736EU, 0x0073746EU, 0x00050005U, 0x00000012U, 0x50796152U, 0x6F6C7961U, 0x00006461U, 0x00040006U, 0x00000012U, 0x00000000U,
+    0x00746968U, 0x00040005U, 0x00000006U, 0x6C796170U, 0x0064616FU, 0x00040005U, 0x0000000BU, 0x6C796170U, 0x0064616FU, 0x00040005U, 0x0000000DU, 0x6C796170U,
+    0x0064616FU, 0x00040005U, 0x00000002U, 0x47796152U, 0x00006E65U, 0x00040005U, 0x0000000AU, 0x7373694DU, 0x00000000U, 0x00050005U, 0x0000000CU, 0x736F6C43U,
+    0x48747365U, 0x00007469U, 0x00040047U, 0x00000003U, 0x0000000BU, 0x000014C7U, 0x00040047U, 0x00000004U, 0x0000000BU, 0x000014C8U, 0x00040047U, 0x00000006U,
+    0x0000001EU, 0x00000000U, 0x00040047U, 0x00000007U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000007U, 0x00000021U, 0x00000000U, 0x00040047U, 0x00000008U,
+    0x00000022U, 0x00000000U, 0x00040047U, 0x00000008U, 0x00000021U, 0x00000001U, 0x00040047U, 0x00000009U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000009U,
+    0x00000021U, 0x00000002U, 0x00040047U, 0x00000005U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000005U, 0x00000021U, 0x00000003U, 0x00040047U, 0x00000013U,
+    0x00000006U, 0x00000004U, 0x00050048U, 0x0000000FU, 0x00000000U, 0x00000023U, 0x00000000U, 0x00030047U, 0x0000000FU, 0x00000002U, 0x00050048U, 0x00000011U,
+    0x00000000U, 0x00000023U, 0x00000000U, 0x00050048U, 0x00000011U, 0x00000001U, 0x00000023U, 0x00000010U, 0x00050048U, 0x00000011U, 0x00000002U, 0x00000023U,
+    0x00000020U, 0x00050048U, 0x00000011U, 0x00000003U, 0x00000023U, 0x00000030U, 0x00050048U, 0x00000011U, 0x00000004U, 0x00000023U, 0x00000040U, 0x00030047U,
+    0x00000011U, 0x00000002U, 0x00030016U, 0x00000014U, 0x00000020U, 0x0004002BU, 0x00000014U, 0x00000015U, 0x3F000000U, 0x00040017U, 0x00000016U, 0x00000014U,
+    0x00000002U, 0x0005002CU, 0x00000016U, 0x00000017U, 0x00000015U, 0x00000015U, 0x0004002BU, 0x00000014U, 0x00000018U, 0x40000000U, 0x0004002BU, 0x00000014U,
+    0x00000019U, 0x3F800000U, 0x0005002CU, 0x00000016U, 0x0000001AU, 0x00000019U, 0x00000019U, 0x00040015U, 0x0000001BU, 0x00000020U, 0x00000001U, 0x0004002BU,
+    0x0000001BU, 0x0000001CU, 0x00000000U, 0x0004002BU, 0x0000001BU, 0x0000001DU, 0x00000003U, 0x0004002BU, 0x0000001BU, 0x0000001EU, 0x00000001U, 0x0004002BU,
+    0x0000001BU, 0x0000001FU, 0x00000004U, 0x0004002BU, 0x0000001BU, 0x00000020U, 0x00000002U, 0x00040015U, 0x00000021U, 0x00000020U, 0x00000000U, 0x0004002BU,
+    0x00000021U, 0x00000022U, 0x00000000U, 0x0004002BU, 0x00000021U, 0x00000023U, 0x000000FFU, 0x0004002BU, 0x00000021U, 0x00000024U, 0x00000001U, 0x0004002BU,
+    0x00000021U, 0x00000025U, 0x48495421U, 0x0004002BU, 0x00000021U, 0x00000026U, 0x4D495353U, 0x0004002BU, 0x00000021U, 0x00000027U, 0x00BE774AU, 0x0004002BU,
+    0x00000021U, 0x00000028U, 0x0014191DU, 0x000214DDU, 0x0000000EU, 0x00040020U, 0x00000029U, 0x00000000U, 0x0000000EU, 0x0003001DU, 0x00000013U, 0x00000021U,
+    0x0003001EU, 0x0000000FU, 0x00000013U, 0x00040020U, 0x0000002AU, 0x0000000CU, 0x0000000FU, 0x00090019U, 0x00000010U, 0x00000021U, 0x00000001U, 0x00000002U,
+    0x00000000U, 0x00000000U, 0x00000002U, 0x00000021U, 0x00040020U, 0x0000002BU, 0x00000000U, 0x00000010U, 0x00040017U, 0x0000002CU, 0x00000014U, 0x00000004U,
+    0x0007001EU, 0x00000011U, 0x0000002CU, 0x0000002CU, 0x0000002CU, 0x0000002CU, 0x0000002CU, 0x00040020U, 0x0000002DU, 0x00000002U, 0x00000011U, 0x00040017U,
+    0x0000002EU, 0x00000021U, 0x00000003U, 0x00040020U, 0x0000002FU, 0x00000001U, 0x0000002EU, 0x0003001EU, 0x00000012U, 0x00000021U, 0x00040020U, 0x00000030U,
+    0x000014DAU, 0x00000012U, 0x00040020U, 0x00000031U, 0x000014DEU, 0x00000012U, 0x00020013U, 0x00000032U, 0x00030021U, 0x00000033U, 0x00000032U, 0x00040017U,
+    0x00000034U, 0x00000021U, 0x00000002U, 0x00040020U, 0x00000035U, 0x00000007U, 0x00000034U, 0x00040020U, 0x00000036U, 0x00000007U, 0x00000016U, 0x00040017U,
+    0x00000037U, 0x00000014U, 0x00000003U, 0x00040020U, 0x00000038U, 0x00000007U, 0x00000021U, 0x00040020U, 0x00000039U, 0x00000002U, 0x0000002CU, 0x00040020U,
+    0x0000003AU, 0x00000007U, 0x00000014U, 0x00040020U, 0x0000003BU, 0x00000002U, 0x00000014U, 0x00020014U, 0x0000003CU, 0x00040020U, 0x0000003DU, 0x0000000CU,
+    0x00000021U, 0x0004003BU, 0x00000029U, 0x00000007U, 0x00000000U, 0x0004003BU, 0x0000002AU, 0x00000008U, 0x0000000CU, 0x0004003BU, 0x0000002BU, 0x00000009U,
+    0x00000000U, 0x0004003BU, 0x0000002DU, 0x00000005U, 0x00000002U, 0x0004003BU, 0x0000002FU, 0x00000003U, 0x00000001U, 0x0004003BU, 0x0000002FU, 0x00000004U,
+    0x00000001U, 0x0004003BU, 0x00000030U, 0x00000006U, 0x000014DAU, 0x0004003BU, 0x00000031U, 0x0000000BU, 0x000014DEU, 0x0004003BU, 0x00000031U, 0x0000000DU,
+    0x000014DEU, 0x0004002CU, 0x00000012U, 0x0000003EU, 0x00000022U, 0x0004002CU, 0x00000012U, 0x0000003FU, 0x00000024U, 0x00050036U, 0x00000032U, 0x00000002U,
+    0x00000000U, 0x00000033U, 0x000200F8U, 0x00000040U, 0x0004003BU, 0x00000035U, 0x00000041U, 0x00000007U, 0x0004003BU, 0x00000035U, 0x00000042U, 0x00000007U,
+    0x0004003BU, 0x00000036U, 0x00000043U, 0x00000007U, 0x0004003DU, 0x0000002EU, 0x00000044U, 0x00000003U, 0x0007004FU, 0x00000034U, 0x00000045U, 0x00000044U,
+    0x00000044U, 0x00000000U, 0x00000001U, 0x0003003EU, 0x00000041U, 0x00000045U, 0x0004003DU, 0x0000002EU, 0x00000046U, 0x00000004U, 0x0007004FU, 0x00000034U,
+    0x00000047U, 0x00000046U, 0x00000046U, 0x00000000U, 0x00000001U, 0x0003003EU, 0x00000042U, 0x00000047U, 0x00040070U, 0x00000016U, 0x00000048U, 0x00000045U,
+    0x00050081U, 0x00000016U, 0x00000049U, 0x00000048U, 0x00000017U, 0x00040070U, 0x00000016U, 0x0000004AU, 0x00000047U, 0x00050088U, 0x00000016U, 0x0000004BU,
+    0x00000049U, 0x0000004AU, 0x0005008EU, 0x00000016U, 0x0000004CU, 0x0000004BU, 0x00000018U, 0x00050083U, 0x00000016U, 0x0000004DU, 0x0000004CU, 0x0000001AU,
+    0x0003003EU, 0x00000043U, 0x0000004DU, 0x00050041U, 0x00000039U, 0x0000004EU, 0x00000005U, 0x0000001CU, 0x0004003DU, 0x0000002CU, 0x0000004FU, 0x0000004EU,
+    0x0008004FU, 0x00000037U, 0x00000050U, 0x0000004FU, 0x0000004FU, 0x00000000U, 0x00000001U, 0x00000002U, 0x00050041U, 0x00000039U, 0x00000051U, 0x00000005U,
+    0x0000001DU, 0x0004003DU, 0x0000002CU, 0x00000052U, 0x00000051U, 0x0008004FU, 0x00000037U, 0x00000053U, 0x00000052U, 0x00000052U, 0x00000000U, 0x00000001U,
+    0x00000002U, 0x00050041U, 0x00000039U, 0x00000054U, 0x00000005U, 0x0000001EU, 0x0004003DU, 0x0000002CU, 0x00000055U, 0x00000054U, 0x0008004FU, 0x00000037U,
+    0x00000056U, 0x00000055U, 0x00000055U, 0x00000000U, 0x00000001U, 0x00000002U, 0x00050041U, 0x0000003AU, 0x00000057U, 0x00000043U, 0x0000001CU, 0x0004003DU,
+    0x00000014U, 0x00000058U, 0x00000057U, 0x00050041U, 0x00000039U, 0x00000059U, 0x00000005U, 0x0000001FU, 0x00050041U, 0x0000003BU, 0x0000005AU, 0x00000059U,
+    0x0000001EU, 0x0004003DU, 0x00000014U, 0x0000005BU, 0x0000005AU, 0x00050085U, 0x00000014U, 0x0000005CU, 0x00000058U, 0x0000005BU, 0x00050041U, 0x00000039U,
+    0x0000005DU, 0x00000005U, 0x0000001FU, 0x00050041U, 0x0000003BU, 0x0000005EU, 0x0000005DU, 0x0000001CU, 0x0004003DU, 0x00000014U, 0x0000005FU, 0x0000005EU,
+    0x00050085U, 0x00000014U, 0x00000060U, 0x0000005CU, 0x0000005FU, 0x0005008EU, 0x00000037U, 0x00000061U, 0x00000056U, 0x00000060U, 0x00050081U, 0x00000037U,
+    0x00000062U, 0x00000053U, 0x00000061U, 0x00050041U, 0x00000039U, 0x00000063U, 0x00000005U, 0x00000020U, 0x0004003DU, 0x0000002CU, 0x00000064U, 0x00000063U,
+    0x0008004FU, 0x00000037U, 0x00000065U, 0x00000064U, 0x00000064U, 0x00000000U, 0x00000001U, 0x00000002U, 0x00050041U, 0x0000003AU, 0x00000066U, 0x00000043U,
+    0x0000001EU, 0x0004003DU, 0x00000014U, 0x00000067U, 0x00000066U, 0x00050041U, 0x00000039U, 0x00000068U, 0x00000005U, 0x0000001FU, 0x00050041U, 0x0000003BU,
+    0x00000069U, 0x00000068U, 0x0000001CU, 0x0004003DU, 0x00000014U, 0x0000006AU, 0x00000069U, 0x00050085U, 0x00000014U, 0x0000006BU, 0x00000067U, 0x0000006AU,
+    0x0005008EU, 0x00000037U, 0x0000006CU, 0x00000065U, 0x0000006BU, 0x00050083U, 0x00000037U, 0x0000006DU, 0x00000062U, 0x0000006CU, 0x0006000CU, 0x00000037U,
+    0x0000006EU, 0x00000001U, 0x00000045U, 0x0000006DU, 0x00050041U, 0x00000039U, 0x0000006FU, 0x00000005U, 0x0000001FU, 0x00050041U, 0x0000003BU, 0x00000070U,
+    0x0000006FU, 0x00000020U, 0x0004003DU, 0x00000014U, 0x00000071U, 0x00000070U, 0x00050041U, 0x00000039U, 0x00000072U, 0x00000005U, 0x0000001FU, 0x00050041U,
+    0x0000003BU, 0x00000073U, 0x00000072U, 0x0000001DU, 0x0004003DU, 0x00000014U, 0x00000074U, 0x00000073U, 0x0003003EU, 0x00000006U, 0x0000003EU, 0x0004003DU,
+    0x0000000EU, 0x00000075U, 0x00000007U, 0x000C115DU, 0x00000075U, 0x00000022U, 0x00000023U, 0x00000022U, 0x00000024U, 0x00000022U, 0x00000050U, 0x00000071U,
+    0x0000006EU, 0x00000074U, 0x00000006U, 0x0004003DU, 0x00000012U, 0x00000076U, 0x00000006U, 0x00050051U, 0x00000021U, 0x00000077U, 0x00000076U, 0x00000000U,
+    0x00050041U, 0x00000038U, 0x00000078U, 0x00000041U, 0x0000001EU, 0x0004003DU, 0x00000021U, 0x00000079U, 0x00000078U, 0x00050041U, 0x00000038U, 0x0000007AU,
+    0x00000042U, 0x0000001CU, 0x0004003DU, 0x00000021U, 0x0000007BU, 0x0000007AU, 0x00050084U, 0x00000021U, 0x0000007CU, 0x00000079U, 0x0000007BU, 0x00050041U,
+    0x00000038U, 0x0000007DU, 0x00000041U, 0x0000001CU, 0x0004003DU, 0x00000021U, 0x0000007EU, 0x0000007DU, 0x00050080U, 0x00000021U, 0x0000007FU, 0x0000007CU,
+    0x0000007EU, 0x000500ABU, 0x0000003CU, 0x00000080U, 0x00000077U, 0x00000022U, 0x000300F7U, 0x00000081U, 0x00000000U, 0x000400FAU, 0x00000080U, 0x00000082U,
+    0x00000083U, 0x000200F8U, 0x00000082U, 0x000200F9U, 0x00000081U, 0x000200F8U, 0x00000083U, 0x000200F9U, 0x00000081U, 0x000200F8U, 0x00000081U, 0x000700F5U,
+    0x00000021U, 0x00000084U, 0x00000025U, 0x00000082U, 0x00000026U, 0x00000083U, 0x00060041U, 0x0000003DU, 0x00000085U, 0x00000008U, 0x0000001CU, 0x0000007FU,
+    0x0003003EU, 0x00000085U, 0x00000084U, 0x000500ABU, 0x0000003CU, 0x00000086U, 0x00000077U, 0x00000022U, 0x000300F7U, 0x00000087U, 0x00000000U, 0x000400FAU,
+    0x00000086U, 0x00000088U, 0x00000089U, 0x000200F8U, 0x00000088U, 0x000200F9U, 0x00000087U, 0x000200F8U, 0x00000089U, 0x000200F9U, 0x00000087U, 0x000200F8U,
+    0x00000087U, 0x000700F5U, 0x00000021U, 0x0000008AU, 0x00000027U, 0x00000088U, 0x00000028U, 0x00000089U, 0x0004003DU, 0x00000010U, 0x0000008BU, 0x00000009U,
+    0x00050063U, 0x0000008BU, 0x00000045U, 0x0000008AU, 0x00000000U, 0x000100FDU, 0x00010038U, 0x00050036U, 0x00000032U, 0x0000000AU, 0x00000000U, 0x00000033U,
+    0x000200F8U, 0x0000008CU, 0x0003003EU, 0x0000000BU, 0x0000003EU, 0x000100FDU, 0x00010038U, 0x00050036U, 0x00000032U, 0x0000000CU, 0x00000000U, 0x00000033U,
+    0x000200F8U, 0x0000008DU, 0x0003003EU, 0x0000000DU, 0x0000003FU, 0x000100FDU, 0x00010038U
 };
 
 // This is deliberately a compile-time gate rather than a best-effort shader
-// guess.  Any future replacement must bump the public contract and update
-// both the descriptor ABI and the trace path together.
+// guess.  The pinned module has four set-0 descriptors (AS, marker buffer,
+// output image, camera constants).  It also accesses every member of the
+// camera block from RayGen, so the runtime can truthfully publish
+// camera_shader_consumed once the descriptor buffer is bound.
 constexpr bool native_probe_shader_abi_is_supported() noexcept {
+    if (native_raytracing_probe_spirv[0U] != 0x07230203U ||
+        native_raytracing_probe_spirv[1U] != 0x00010400U ||
+        native_raytracing_probe_spirv[3U] <= 0x0000008DU)
+        return false;
+
+    std::array<std::uint32_t, 256U> constant_values{};
+    std::array<bool, 256U> has_constant{};
+    std::array<std::uint32_t, 256U> camera_pointer_member{};
+    std::array<bool, 5U> camera_members{};
+    std::array<bool, 5U> camera_members_loaded{};
     bool has_storage_image_type = false;
+    bool has_acceleration_structure_set = false;
+    bool has_acceleration_structure_binding = false;
+    bool has_output_buffer_set = false;
+    bool has_output_buffer_binding = false;
     bool has_storage_image_set = false;
     bool has_storage_image_binding = false;
+    bool has_camera_set = false;
+    bool has_camera_binding = false;
+    bool has_camera_variable = false;
     bool has_image_write = false;
-    for (std::size_t index = 0U; index + 8U < native_raytracing_probe_spirv.size(); ++index) {
-        if (native_raytracing_probe_spirv[index] == 0x00090019U &&
-            native_raytracing_probe_spirv[index + 1U] == 0x0000002FU &&
-            native_raytracing_probe_spirv[index + 2U] == 0x0000000DU &&
-            native_raytracing_probe_spirv[index + 3U] == 0x00000001U &&
-            native_raytracing_probe_spirv[index + 7U] == 0x00000002U &&
-            native_raytracing_probe_spirv[index + 8U] == 0x00000021U)
+    for (auto& member : camera_pointer_member)
+        member = std::numeric_limits<std::uint32_t>::max();
+    for (std::size_t index = 5U; index < native_raytracing_probe_spirv.size();) {
+        const auto instruction = native_raytracing_probe_spirv[index];
+        const auto word_count = static_cast<std::size_t>(instruction >> 16U);
+        const auto opcode = instruction & 0xffffU;
+        if (word_count == 0U || index + word_count > native_raytracing_probe_spirv.size())
+            return false;
+        if (opcode == 0x2BU && word_count >= 4U) {
+            const auto result_id = native_raytracing_probe_spirv[index + 2U];
+            if (result_id < constant_values.size()) {
+                has_constant[result_id] = true;
+                constant_values[result_id] = native_raytracing_probe_spirv[index + 3U];
+            }
+        } else if (opcode == 0x47U && word_count >= 4U) {
+            const auto target_id = native_raytracing_probe_spirv[index + 1U];
+            const auto decoration = native_raytracing_probe_spirv[index + 2U];
+            const auto value = native_raytracing_probe_spirv[index + 3U];
+            if (target_id == 0x00000007U && decoration == 0x22U && value == 0U)
+                has_acceleration_structure_set = true;
+            if (target_id == 0x00000008U && decoration == 0x22U && value == 0U)
+                has_output_buffer_set = true;
+            if (target_id == 0x00000009U && decoration == 0x22U && value == 0U)
+                has_storage_image_set = true;
+            if (target_id == 0x00000005U && decoration == 0x22U && value == 0U)
+                has_camera_set = true;
+            if (target_id == 0x00000007U && decoration == 0x21U && value == 0U)
+                has_acceleration_structure_binding = true;
+            if (target_id == 0x00000008U && decoration == 0x21U && value == 1U)
+                has_output_buffer_binding = true;
+            if (target_id == 0x00000009U && decoration == 0x21U && value == 2U)
+                has_storage_image_binding = true;
+            if (target_id == 0x00000005U && decoration == 0x21U && value == 3U)
+                has_camera_binding = true;
+        } else if (opcode == 0x3BU && word_count >= 4U &&
+                   native_raytracing_probe_spirv[index + 2U] == 0x00000005U &&
+                   native_raytracing_probe_spirv[index + 3U] == 0x00000002U) {
+            has_camera_variable = true;
+        } else if (opcode == 0x41U && word_count >= 5U) {
+            const auto result_id = native_raytracing_probe_spirv[index + 2U];
+            const auto base_id = native_raytracing_probe_spirv[index + 3U];
+            const auto member_id = native_raytracing_probe_spirv[index + 4U];
+            auto camera_member = std::numeric_limits<std::uint32_t>::max();
+            if (base_id == 0x00000005U && member_id < constant_values.size() &&
+                has_constant[member_id])
+                camera_member = constant_values[member_id];
+            else if (base_id < camera_pointer_member.size())
+                camera_member = camera_pointer_member[base_id];
+            if (result_id < camera_pointer_member.size())
+                camera_pointer_member[result_id] = camera_member;
+            if (camera_member < camera_members.size())
+                camera_members[camera_member] = true;
+        } else if (opcode == 0x3DU && word_count >= 4U) {
+            const auto pointer_id = native_raytracing_probe_spirv[index + 3U];
+            if (pointer_id < camera_pointer_member.size() &&
+                camera_pointer_member[pointer_id] < camera_members_loaded.size())
+                camera_members_loaded[camera_pointer_member[pointer_id]] = true;
+        } else if (opcode == 0x19U && word_count >= 9U &&
+                   native_raytracing_probe_spirv[index + 7U] == 2U &&
+                   native_raytracing_probe_spirv[index + 8U] == 0x00000021U) {
             has_storage_image_type = true;
-        if (native_raytracing_probe_spirv[index] == 0x00040047U &&
-            native_raytracing_probe_spirv[index + 1U] == 0x00000031U &&
-            native_raytracing_probe_spirv[index + 2U] == 0x00000022U &&
-            native_raytracing_probe_spirv[index + 3U] == 0x00000000U)
-            has_storage_image_set = true;
-        if (native_raytracing_probe_spirv[index] == 0x00040047U &&
-            native_raytracing_probe_spirv[index + 1U] == 0x00000031U &&
-            native_raytracing_probe_spirv[index + 2U] == 0x00000021U &&
-            native_raytracing_probe_spirv[index + 3U] == 0x00000002U)
-            has_storage_image_binding = true;
-        if (index + 3U < native_raytracing_probe_spirv.size() &&
-            native_raytracing_probe_spirv[index] == 0x00040063U &&
-            native_raytracing_probe_spirv[index + 1U] == 0x00000034U &&
-            native_raytracing_probe_spirv[index + 2U] == 0x00000033U &&
-            native_raytracing_probe_spirv[index + 3U] == 0x0000002BU)
+        } else if (opcode == 0x63U && word_count >= 5U) {
             has_image_write = true;
+        }
+        index += word_count;
     }
-    return native_raytracing_probe_spirv[0U] == 0x07230203U &&
-           native_raytracing_probe_spirv[1U] == 0x00010400U &&
-           native_raytracing_probe_spirv[3U] > 0x00000034U &&
-           has_storage_image_type && has_storage_image_set && has_storage_image_binding && has_image_write;
+    return has_storage_image_type && has_acceleration_structure_set && has_acceleration_structure_binding &&
+           has_output_buffer_set && has_output_buffer_binding && has_storage_image_set && has_storage_image_binding &&
+           has_camera_set && has_camera_binding && has_camera_variable && has_image_write &&
+           std::ranges::all_of(camera_members, [](const bool value) { return value; }) &&
+           std::ranges::all_of(camera_members_loaded, [](const bool value) { return value; });
 }
 static_assert(native_probe_shader_abi_is_supported(),
               "The embedded Vulkan full-frame shader ABI must be versioned before use.");
@@ -179,6 +268,50 @@ float dot(const Vec3 left, const Vec3 right) noexcept {
 
 bool finite_vec(const Vec3 value) noexcept {
     return finite_bounded(value.x) && finite_bounded(value.y) && finite_bounded(value.z);
+}
+
+Vec3 operator*(const Vec3 value, const float scalar) noexcept {
+    return {value.x * scalar, value.y * scalar, value.z * scalar};
+}
+
+Vec3 normalized_vec(const Vec3 value) noexcept {
+    const auto length_squared = dot(value, value);
+    if (!std::isfinite(length_squared) || length_squared <= kEpsilon * kEpsilon)
+        return {};
+    return value * (1.0F / std::sqrt(length_squared));
+}
+
+// The pinned SPIR-V camera block is five std140-compatible vec4 values:
+// position, right, up, forward, and (tanHalfVerticalFov, aspect, near, far).
+// Keeping this type private prevents Vulkan ABI details from entering the
+// public request/receipt contract.
+struct NativeVulkanRayTracingCameraConstants final {
+    std::array<float, 4U> position{};
+    std::array<float, 4U> right{};
+    std::array<float, 4U> up{};
+    std::array<float, 4U> forward{};
+    std::array<float, 4U> lens{};
+};
+static_assert(sizeof(NativeVulkanRayTracingCameraConstants) == sizeof(float) * 20U);
+
+NativeVulkanRayTracingCameraConstants make_camera_constants(
+    const NativeVulkanRayTracingCameraInput& camera,
+    const std::uint32_t output_width,
+    const std::uint32_t output_height) noexcept {
+    const auto forward = normalized_vec(to_vec3(camera.forward));
+    const auto right = normalized_vec(cross(forward, to_vec3(camera.up)));
+    const auto up = normalized_vec(cross(right, forward));
+    const auto aspect = static_cast<float>(std::max(output_width, 1U)) /
+                        static_cast<float>(std::max(output_height, 1U));
+    constexpr float degrees_to_radians = 0.017453292519943295769F;
+    const auto tangent_half_fov = std::tan(camera.vertical_fov_degrees * degrees_to_radians * 0.5F);
+    NativeVulkanRayTracingCameraConstants constants;
+    constants.position = {camera.position[0], camera.position[1], camera.position[2], 1.0F};
+    constants.right = {right.x, right.y, right.z, 0.0F};
+    constants.up = {up.x, up.y, up.z, 0.0F};
+    constants.forward = {forward.x, forward.y, forward.z, 0.0F};
+    constants.lens = {tangent_half_fov, aspect, camera.near_distance, camera.far_distance};
+    return constants;
 }
 
 bool valid_camera_input(const NativeVulkanRayTracingCameraInput& camera) noexcept {
@@ -773,6 +906,8 @@ struct NativeVulkanRayTracingContext::Impl final {
     bool trace_submitted{};
     bool camera_requested{};
     bool camera_valid{};
+    bool camera_shader_consumed{};
+    bool full_frame_dispatch{};
     std::uint32_t camera_contract_version{};
     bool borrowed_device{};
     bool output_image_sync_complete{};
@@ -819,6 +954,7 @@ struct NativeVulkanRayTracingContext::Impl final {
     BufferResource tlas_result_buffer;
     BufferResource tlas_scratch_buffer;
     BufferResource output_buffer;
+    BufferResource camera_buffer;
     ImageResource output_image;
     BufferResource sbt_buffer;
     AccelerationStructureResource blas;
@@ -956,6 +1092,7 @@ struct NativeVulkanRayTracingContext::Impl final {
         destroy_trace_objects();
         destroy_scene_native();
         destroy_output_image();
+        destroy_buffer(camera_buffer);
         destroy_buffer(output_buffer);
         if (device != VK_NULL_HANDLE && fence != VK_NULL_HANDLE && device_functions.destroy_fence != nullptr)
             device_functions.destroy_fence(device, fence, nullptr);
@@ -978,6 +1115,8 @@ struct NativeVulkanRayTracingContext::Impl final {
         memory_properties = {};
         queue_family_index = 0U;
         borrowed_device = false;
+        camera_shader_consumed = false;
+        full_frame_dispatch = false;
     }
 
     NativeVulkanRayTracingContextReceipt receipt(
@@ -1005,30 +1144,30 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.readback_completed = readback_completed;
         result.camera_requested = camera_requested;
         result.camera_valid = camera_requested && camera_valid;
-        // The pinned probe SPIR-V declares only AS, storage-buffer, and
-        // storage-image bindings.  Camera data is therefore contract-checked
-        // at the API boundary but never reported as shader-consumed.
-        result.camera_shader_consumed = false;
+        // The pinned SPIR-V camera ABI is bound at set 0/binding 3.  The bit
+        // is set only after a successful native TraceRays submission using a
+        // validated camera request; a mere descriptor declaration is not
+        // enough evidence.
+        result.camera_shader_consumed = camera_shader_consumed;
         result.camera_contract_version = camera_requested ? camera_contract_version : 0U;
         result.camera_contract = camera_requested
                                     ? std::string(native_vulkan_raytracing_camera_contract)
                                     : std::string{};
         result.camera_boundary = camera_requested
                                      ? (result.camera_valid
-                                            ? "validated plain-data input; pinned SPIR-V has no camera descriptor; shader not consumed"
+                                            ? (camera_shader_consumed
+                                                   ? "validated plain-data input; RayGen consumed the camera descriptor"
+                                                   : "validated plain-data input; camera descriptor is bound but no trace consumed it yet")
                                             : "rejected before submission; camera contract or frustum validation failed")
                                      : "not-requested";
         // The embedded module is intentionally the only accepted full-frame
-        // shader ABI in this context.  Its storage-image binding is versioned
-        // by the public contract and only becomes ready after pipeline
-        // creation succeeds.
-        // The pinned probe dispatches one launch and writes texel (0, 0).  It
-        // is a valid full-frame ABI only for the bounded 1x1x1 diagnostic
-        // surface; larger surfaces stay explicitly non-full-frame until a
-        // LaunchId-based shader is supplied.
-        result.full_frame_shader_ready = trace_pipeline_ready && output_image.view != VK_NULL_HANDLE &&
-                                         options.output_width == 1U && options.output_height == 1U &&
-                                         options.output_depth == 1U;
+        // shader ABI in this context. Its storage-image and camera bindings
+        // are versioned by the public contract and only become ready after
+        // pipeline creation succeeds. The shader is LaunchId/DispatchDims
+        // aware, while this bounded marker path still submits one launch;
+        // full_frame_dispatch therefore remains an independent receipt bit.
+        result.full_frame_shader_ready = trace_pipeline_ready && output_image.view != VK_NULL_HANDLE;
+        result.full_frame_dispatch = full_frame_dispatch;
         result.shader_contract = result.full_frame_shader_ready
                                     ? std::string(native_vulkan_raytracing_full_frame_shader_contract)
                                     : std::string{};
@@ -1071,9 +1210,9 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.output_image_access = result.output_image_live ? "storage-read-write" : "none";
         result.output_image_sync_kind = result.output_image_live ? "fence" : "none";
         result.output_image_interop_boundary = result.output_image_live
-                                                   ? (result.full_frame_shader_ready
+                                                   ? (result.full_frame_dispatch
                                                           ? "runtime-private; same-device adapter only; no handle export"
-                                                          : "runtime-private; pinned probe writes one texel; no handle export")
+                                                          : "runtime-private; camera-capable shader is ready but the submitted dispatch is one texel; no handle export")
                                                    : "unavailable";
         return result;
     }
@@ -1484,12 +1623,19 @@ struct NativeVulkanRayTracingContext::Impl final {
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                            &output_marker, sizeof(output_marker), output_buffer, error_code, error_detail))
             return false;
+        const auto default_camera = make_camera_constants(
+            NativeVulkanRayTracingCameraInput{}, options.output_width, options.output_height);
+        if (!create_buffer(device_functions, device, memory_properties, sizeof(default_camera),
+                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           &default_camera, sizeof(default_camera), camera_buffer, error_code, error_detail))
+            return false;
         if (!create_output_image(instance_functions, device_functions, physical_device, device, memory_properties,
                                  options.output_width, options.output_height, options.output_depth,
                                  output_image, error_code, error_detail))
             return false;
         if (!transition_output_image_to_general(error_code, error_detail)) return false;
-        const std::array<VkDescriptorSetLayoutBinding, 3U> descriptor_bindings{
+        const std::array<VkDescriptorSetLayoutBinding, 4U> descriptor_bindings{
             VkDescriptorSetLayoutBinding{
                 0U, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U,
                 VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
@@ -1502,6 +1648,9 @@ struct NativeVulkanRayTracingContext::Impl final {
                 nullptr},
             VkDescriptorSetLayoutBinding{
                 2U, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR, nullptr},
+            VkDescriptorSetLayoutBinding{
+                3U, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1U,
                 VK_SHADER_STAGE_RAYGEN_BIT_KHR,
                 nullptr}};
         VkDescriptorSetLayoutCreateInfo descriptor_layout_info{
@@ -1523,10 +1672,11 @@ struct NativeVulkanRayTracingContext::Impl final {
             error_detail = "vkCreatePipelineLayout failed for the persistent RT pipeline.";
             return false;
         }
-        const std::array<VkDescriptorPoolSize, 3U> descriptor_pool_sizes{
+        const std::array<VkDescriptorPoolSize, 4U> descriptor_pool_sizes{
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U}};
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1U},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1U}};
         VkDescriptorPoolCreateInfo descriptor_pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         descriptor_pool_info.maxSets = 1U;
         descriptor_pool_info.poolSizeCount = static_cast<std::uint32_t>(descriptor_pool_sizes.size());
@@ -1639,9 +1789,9 @@ struct NativeVulkanRayTracingContext::Impl final {
     bool update_descriptor_bindings(std::string& error_code, std::string& error_detail) {
         if (descriptor_set == VK_NULL_HANDLE || tlas.acceleration_structure == VK_NULL_HANDLE ||
             output_buffer.buffer == VK_NULL_HANDLE || output_image.view == VK_NULL_HANDLE ||
-            output_image_layout != VK_IMAGE_LAYOUT_GENERAL) {
+            camera_buffer.buffer == VK_NULL_HANDLE || output_image_layout != VK_IMAGE_LAYOUT_GENERAL) {
             error_code = "native-vulkan-rt.descriptor-resources-missing";
-            error_detail = "The persistent descriptor set has no current TLAS, output buffer, or general-layout output image.";
+            error_detail = "The persistent descriptor set has no current TLAS, output buffer, camera constants, or general-layout output image.";
             return false;
         }
         VkWriteDescriptorSetAccelerationStructureKHR acceleration_write{
@@ -1649,8 +1799,11 @@ struct NativeVulkanRayTracingContext::Impl final {
         acceleration_write.accelerationStructureCount = 1U;
         acceleration_write.pAccelerationStructures = &tlas.acceleration_structure;
         VkDescriptorBufferInfo output_info{output_buffer.buffer, 0U, sizeof(std::uint32_t)};
+        VkDescriptorBufferInfo camera_info{camera_buffer.buffer, 0U,
+                                           sizeof(NativeVulkanRayTracingCameraConstants)};
         VkDescriptorImageInfo output_image_info{VK_NULL_HANDLE, output_image.view, VK_IMAGE_LAYOUT_GENERAL};
-        std::array<VkWriteDescriptorSet, 3U> writes{
+        std::array<VkWriteDescriptorSet, 4U> writes{
+            VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
             VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
             VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
             VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -1669,8 +1822,33 @@ struct NativeVulkanRayTracingContext::Impl final {
         writes[2].descriptorCount = 1U;
         writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[2].pImageInfo = &output_image_info;
+        writes[3].dstSet = descriptor_set;
+        writes[3].dstBinding = 3U;
+        writes[3].descriptorCount = 1U;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[3].pBufferInfo = &camera_info;
         device_functions.update_descriptor_sets(device, static_cast<std::uint32_t>(writes.size()),
                                                 writes.data(), 0U, nullptr);
+        return true;
+    }
+
+    bool update_camera_buffer(const NativeVulkanRayTracingCameraInput& camera,
+                             std::string& error_code,
+                             std::string& error_detail) {
+        if (camera_buffer.buffer == VK_NULL_HANDLE || camera_buffer.memory == VK_NULL_HANDLE) {
+            error_code = "native-vulkan-rt.camera-buffer-unavailable";
+            error_detail = "The persistent camera constants buffer is unavailable for the native trace.";
+            return false;
+        }
+        const auto constants = make_camera_constants(camera, options.output_width, options.output_height);
+        if (!write_buffer(device_functions, device, camera_buffer, &constants, sizeof(constants),
+                          error_code, error_detail)) {
+            if (error_code == "native-vulkan-rt.buffer-write-invalid")
+                error_detail = "The versioned camera constants exceed the persistent uniform-buffer allocation.";
+            else
+                error_detail = "vkMapMemory failed for the persistent camera constants update.";
+            return false;
+        }
         return true;
     }
 
@@ -2462,6 +2640,8 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::trace(
     impl_->camera_requested = request.camera_enabled;
     impl_->camera_contract_version = request.camera_enabled ? request.camera.contract_version : 0U;
     impl_->camera_valid = request.camera_enabled && valid_camera_input(request.camera);
+    impl_->camera_shader_consumed = false;
+    impl_->full_frame_dispatch = false;
     if (impl_->state == NativeVulkanRayTracingContextState::unsupported)
         return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::device,
                               "native-vulkan-rt.context-unsupported",
@@ -2486,12 +2666,27 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::trace(
                                     "build_or_update must complete before a native trace; the resident AS is not built.");
         std::string error_code;
         std::string error_detail;
+        const auto camera_input = request.camera_enabled
+                                      ? request.camera
+                                      : NativeVulkanRayTracingCameraInput{};
+        if (!impl_->update_camera_buffer(camera_input, error_code, error_detail)) {
+            impl_->state = NativeVulkanRayTracingContextState::error;
+            return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::trace,
+                                    error_code.empty() ? "native-vulkan-rt.camera-update-failed" : error_code,
+                                    error_detail.empty() ? "The persistent Vulkan camera constants update failed." : error_detail);
+        }
         if (!impl_->record_and_submit_native_trace(error_code, error_detail)) {
             impl_->state = NativeVulkanRayTracingContextState::error;
             return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::trace,
                                     error_code.empty() ? "native-vulkan-rt.context-trace-failed" : error_code,
                                     error_detail.empty() ? "The persistent Vulkan RT trace failed." : error_detail);
         }
+        // The embedded RayGen reads the camera block for every launch. This
+        // probe still submits one launch for its one-u32 diagnostic output;
+        // keep full_frame_dispatch false until the output allocation and
+        // readback contract cover the complete requested extent.
+        impl_->camera_shader_consumed = request.camera_enabled;
+        impl_->full_frame_dispatch = false;
         return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::trace,
                               "native-vulkan-rt.context-native-trace-completed",
                               "A persistent Vulkan RT pipeline traced the resident TLAS and completed its fence.");

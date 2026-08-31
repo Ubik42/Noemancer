@@ -356,6 +356,13 @@ target_link_libraries(noemancer_native_raytracing_view_tests PRIVATE
 add_test(NAME noemancer.native_raytracing_view
     COMMAND noemancer_native_raytracing_view_tests)
 
+add_executable(noemancer_native_raytracing_shading_tests
+    native_raytracing_shading_tests.cpp)
+target_link_libraries(noemancer_native_raytracing_shading_tests PRIVATE
+    noemancer::engine)
+add_test(NAME noemancer.native_raytracing_shading
+    COMMAND noemancer_native_raytracing_shading_tests)
+
 add_executable(noemancer_raytracing_context_session_tests
     raytracing_context_session_tests.cpp
     ${PROJECT_SOURCE_DIR}/src/runtime/raytracing_context_session.cpp

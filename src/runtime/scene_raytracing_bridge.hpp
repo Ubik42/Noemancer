@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/native_raytracing_shading.hpp"
 #include "runtime/raytracing_context_session.hpp"
 #include "runtime/scene_raytracing_geometry_cache.hpp"
 #include "runtime/sdl_gpu_native_device_bridge.hpp"
@@ -42,6 +43,9 @@ struct SceneRayTracingBridgeRequest final {
     // Project/RenderWorld camera values.  Omission preserves the bounded
     // legacy probe; production SceneRenderer supplies this every frame.
     std::optional<NativeRayTracingViewInput> view;
+    // Engine-owned material and lighting plan. Runtime adapters consume this
+    // plain-data projection without gaining authority over project assets.
+    std::optional<NativeRayTracingShadingPlan> shading;
 };
 
 struct SceneRayTracingBridgeReceipt final {
@@ -78,6 +82,15 @@ struct SceneRayTracingBridgeReceipt final {
     std::uint64_t output_resource_generation{};
     std::string output_format;
     std::string shader_contract;
+    bool shading_requested{};
+    bool shading_valid{};
+    bool shading_resources_ready{};
+    bool linear_radiance_shader_consumed{};
+    bool claims_rtgi{};
+    bool output_radiance_valid{};
+    std::string shading_schema;
+    std::uint64_t shading_fingerprint{};
+    std::uint32_t shading_material_count{};
 
     // Additional bounded lifecycle evidence keeps fallback and reuse
     // decisions inspectable without exposing backend objects.

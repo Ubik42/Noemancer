@@ -411,15 +411,28 @@ int main() {
         noemancer::NativeD3D12RayTracingContextOptions full_frame_options;
         full_frame_options.output_width = 16U;
         full_frame_options.output_height = 2U;
+        NativeD3D12RayTracingMaterial main_material;
+        main_material.geometry_id = "triangle.main";
+        main_material.base_color = {0.85F, 0.20F, 0.08F, 1.0F};
+        main_material.metallic = 0.1F;
+        main_material.roughness = 0.4F;
+        main_material.emissive = {0.005F, 0.002F, 0.001F};
+        NativeD3D12RayTracingMaterial extra_material;
+        extra_material.geometry_id = "triangle.extra";
+        extra_material.base_color = {0.08F, 0.30F, 0.90F, 1.0F};
+        extra_material.metallic = 0.6F;
+        extra_material.roughness = 0.3F;
+        extra_material.emissive = {0.001F, 0.002F, 0.006F};
+        full_frame_options.materials = {main_material, extra_material};
         full_frame_options.shaders.full_frame_contract =
-            "noemancer.native-rt-full-frame/0.2";
+            native_d3d12_raytracing_full_frame_shader_contract;
         full_frame_options.shaders.full_frame_library_dxil = std::move(shader_bytes);
         NativeD3D12RayTracingContext full_frame(full_frame_options);
         const auto full_frame_init = full_frame.initialize();
         if (!bounded_receipt(full_frame_init) ||
             full_frame_init.state != NativeD3D12RayTracingContextState::ready ||
             !full_frame_init.full_frame_shader_ready ||
-            full_frame_init.shader_contract != "noemancer.native-rt-full-frame/0.2" ||
+            full_frame_init.shader_contract != native_d3d12_raytracing_full_frame_shader_contract ||
             !full_frame_init.camera_ready ||
             full_frame_init.camera_schema != native_d3d12_raytracing_camera_schema ||
             full_frame_init.camera_fingerprint == 0U) {
@@ -433,14 +446,37 @@ int main() {
             full_frame_camera_update.camera_fingerprint == full_frame_init.camera_fingerprint) {
             return fail("full-frame camera update did not publish a new ABI fingerprint", 19);
         }
-        const auto full_frame_scene = full_frame.ensure_scene(triangle_scene());
+        const auto full_frame_scene = full_frame.ensure_scene(two_triangle_scene());
+        main_material.base_color = {0.70F, 0.12F, 0.04F, 1.0F};
+        const auto initial_shading_fingerprint = full_frame_scene.shading_fingerprint;
+        const auto shading_update = full_frame.set_shading(
+            full_frame_options.lighting, {main_material, extra_material});
+        if (!bounded_receipt(shading_update) ||
+            shading_update.code != "native-d3d12.context.shading-updated" ||
+            shading_update.shading_fingerprint == initial_shading_fingerprint ||
+            shading_update.shading_material_count != 2U ||
+            shading_update.shading_resources_ready) {
+            return fail("scene-linear shading update did not invalidate only its GPU inputs", 19);
+        }
         const auto full_frame_build = full_frame.build_or_update();
         const auto full_frame_trace = full_frame.trace();
         if (!full_frame_scene.scene_received || !full_frame_build.build_completed ||
             !full_frame_trace.trace_completed || !full_frame_trace.full_frame_shader_ready ||
             !full_frame_trace.camera_ready || !full_frame_trace.camera_shader_consumed ||
+            !full_frame_trace.shading_resources_ready ||
+            !full_frame_trace.linear_radiance_shader_consumed ||
+            full_frame_trace.claims_rtgi || full_frame_trace.shading_material_count != 2U ||
+            full_frame_trace.shading_schema != native_d3d12_raytracing_shading_schema ||
+            full_frame_trace.output_surface.format != "R32G32B32A32_FLOAT" ||
             full_frame_trace.output_width != 16U || full_frame_trace.output_height != 2U) {
             return fail("versioned full-frame DXR library did not execute its bounded dispatch", 19);
+        }
+        const auto full_frame_readback = full_frame.readback();
+        if (!bounded_receipt(full_frame_readback) ||
+            !full_frame_readback.output_radiance_valid ||
+            full_frame_readback.output_hit != 1U ||
+            full_frame_readback.code != "native-d3d12.context.radiance-readback-complete") {
+            return fail("full-frame DXR did not expose finite scene-linear radiance evidence", 19);
         }
         static_cast<void>(full_frame.shutdown());
     }

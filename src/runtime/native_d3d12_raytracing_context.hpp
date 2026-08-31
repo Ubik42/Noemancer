@@ -33,6 +33,10 @@ inline constexpr std::string_view native_d3d12_raytracing_output_surface_schema 
 // the historical marker probe camera.
 inline constexpr std::string_view native_d3d12_raytracing_camera_schema =
     "noemancer.native-d3d12-raytracing-camera/0.1";
+inline constexpr std::string_view native_d3d12_raytracing_shading_schema =
+    "noemancer.native-d3d12-raytracing-shading/0.1";
+inline constexpr std::string_view native_d3d12_raytracing_full_frame_shader_contract =
+    "noemancer.native-rt-full-frame/0.3";
 
 struct NativeD3D12RayTracingCamera final {
     std::array<float, 3U> position{0.0F, 0.0F, -1.0F};
@@ -43,6 +47,29 @@ struct NativeD3D12RayTracingCamera final {
     float aspect_ratio{1.0F};
     float near_plane{0.001F};
     float far_plane{1.0e6F};
+};
+
+// Scene-linear material values for one retained TLAS instance.  geometry_id
+// is resolved against the canonical scene snapshot before the GPU table is
+// built; this avoids accidental positional remapping after scene sorting.
+struct NativeD3D12RayTracingMaterial final {
+    std::string geometry_id;
+    std::array<float, 4U> base_color{0.80F, 0.36F, 0.12F, 1.0F};
+    float metallic{};
+    float roughness{0.5F};
+    std::array<float, 3U> emissive{};
+    float emissive_intensity{1.0F};
+};
+
+// A bounded direct + ambient lighting input.  directional_direction points
+// from the shaded point toward the light and must be finite, bounded and
+// non-zero.  This contract intentionally does not claim shadows or RTGI.
+struct NativeD3D12RayTracingLighting final {
+    std::array<float, 3U> directional_direction{-0.35F, 0.80F, 0.45F};
+    std::array<float, 3U> directional_color{1.0F, 0.95F, 0.85F};
+    float directional_intensity{1.0F};
+    std::array<float, 3U> ambient_color{0.045F, 0.055F, 0.075F};
+    float ambient_intensity{1.0F};
 };
 
 // The default policy keeps the historical deterministic contract: trace() and
@@ -79,6 +106,7 @@ enum class NativeD3D12RayTracingContextFailureStage : std::uint8_t {
     command_list,
     fence,
     camera,
+    shading,
     scene,
     blas,
     tlas,
@@ -195,6 +223,10 @@ struct NativeD3D12RayTracingContextOptions final {
     // set_camera().  The full-frame DXR contract consumes these constants;
     // the marker probe deliberately reports camera_shader_consumed=false.
     NativeD3D12RayTracingCamera camera{};
+    NativeD3D12RayTracingLighting lighting{};
+    // Empty uses the bounded default material for every geometry.  Otherwise
+    // exactly one entry per geometry is required, keyed by geometry_id.
+    std::vector<NativeD3D12RayTracingMaterial> materials;
     NativeD3D12RayTracingSynchronizationPolicy synchronization_policy{
         NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion};
     NativeD3D12RayTracingContextShaderSet shaders;
@@ -268,6 +300,12 @@ struct NativeD3D12RayTracingContextReceipt final {
     bool camera_shader_consumed{};
     std::string camera_schema;
     std::uint64_t camera_fingerprint{};
+    bool shading_resources_ready{};
+    bool linear_radiance_shader_consumed{};
+    bool claims_rtgi{};
+    std::string shading_schema;
+    std::uint64_t shading_fingerprint{};
+    std::uint32_t shading_material_count{};
     std::string synchronization_policy{"wait-for-completion"};
     bool completion_pending{};
     std::uint64_t submitted_fence_value{};
@@ -295,6 +333,8 @@ struct NativeD3D12RayTracingContextReceipt final {
     std::uint64_t output_readback_bytes{};
     std::uint32_t output_sentinel{};
     std::uint32_t output_hit{};
+    bool output_radiance_valid{};
+    std::array<float, 4U> output_radiance_probe{};
     std::uint64_t output_hash{};
     NativeD3D12RayTracingOutputSurfaceMetadata output_surface;
 };
@@ -321,6 +361,12 @@ public:
     // shader consumption because that legacy shader has no CBV parameter.
     [[nodiscard]] NativeD3D12RayTracingContextReceipt set_camera(
         const NativeD3D12RayTracingCamera& camera);
+    // Replace scene-linear material/light inputs without rebuilding BLAS or
+    // TLAS. The geometry ids are validated against the retained canonical
+    // scene, and the next full-frame trace refreshes only shading resources.
+    [[nodiscard]] NativeD3D12RayTracingContextReceipt set_shading(
+        const NativeD3D12RayTracingLighting& lighting,
+        const std::vector<NativeD3D12RayTracingMaterial>& materials);
     // Poll or explicitly wait for the last asynchronous trace/copy submission.
     // The default is non-blocking; pass true at a hand-off boundary where the
     // output resource must be complete before the caller consumes it.
@@ -353,6 +399,8 @@ private:
     [[nodiscard]] static bool ensure_trace_pipeline(Impl& impl,
                                                     std::string& code,
                                                     std::string& detail);
+    [[nodiscard]] static bool ensure_full_frame_shading_resources(
+        Impl& impl, std::string& code, std::string& detail);
     static void save_result(Impl& impl,
                             NativeD3D12RayTracingContextFailureStage stage,
                             std::string_view code, std::string_view detail);

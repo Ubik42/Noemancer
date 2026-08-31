@@ -111,7 +111,8 @@ bool test_lifecycle_and_stable_scene_cache() {
                    !initialized.build_submitted && !initialized.build_completed &&
                    !initialized.trace_submitted && !initialized.trace_completed &&
                    !initialized.camera_requested && !initialized.camera_valid &&
-                   !initialized.camera_shader_consumed && initialized.camera_contract.empty() &&
+                    !initialized.camera_shader_consumed && !initialized.full_frame_dispatch &&
+                    initialized.camera_contract.empty() &&
                    initialized.camera_contract_version == 0U &&
                    initialized.camera_boundary == "not-requested" &&
                    initialized.generation == 1U,
@@ -210,6 +211,7 @@ bool test_lifecycle_and_stable_scene_cache() {
                    traced.camera_contract_version == 0U &&
                    traced.camera_boundary == "not-requested" &&
                    traced.full_frame_shader_ready == native &&
+                    !traced.full_frame_dispatch &&
                    traced.output_image_trace_written == native &&
                    traced.persistent_backend == native && traced.output_bytes == sizeof(std::uint32_t),
                native ? "native trace did not complete through the persistent pipeline"
@@ -239,14 +241,16 @@ bool test_lifecycle_and_stable_scene_cache() {
     camera_request.camera.up = {0.0F, 1.0F, 0.1F};
     const auto camera_trace = context.trace(camera_request);
     if (!check(camera_trace.state == (native ? NativeVulkanRayTracingContextState::ready
-                                             : NativeVulkanRayTracingContextState::fallback) &&
-                   camera_trace.camera_requested && camera_trace.camera_valid &&
-                   !camera_trace.camera_shader_consumed &&
-                   camera_trace.camera_contract ==
-                       "noemancer.native-vulkan-raytracing-camera/0.1" &&
-                   camera_trace.camera_contract_version == 1U &&
-                   camera_trace.camera_boundary.find("shader not consumed") != std::string::npos,
-               "valid camera input was not accepted with an honest shader-consumption boundary"))
+                                              : NativeVulkanRayTracingContextState::fallback) &&
+                    camera_trace.camera_requested && camera_trace.camera_valid &&
+                    camera_trace.camera_shader_consumed == native &&
+                    !camera_trace.full_frame_dispatch &&
+                    camera_trace.camera_contract ==
+                        "noemancer.native-vulkan-raytracing-camera/0.1" &&
+                    camera_trace.camera_contract_version == 1U &&
+                    ((native && camera_trace.camera_boundary.find("RayGen consumed") != std::string::npos) ||
+                     (!native && camera_trace.camera_boundary.find("fallback shader not applicable") != std::string::npos)),
+                "valid camera input was not accepted with an honest shader-consumption boundary"))
         return false;
 
     const auto generation_before_reuse = context.generation();

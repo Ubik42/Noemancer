@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <ranges>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -273,6 +274,154 @@ std::uint64_t camera_signature(const NativeD3D12RayTracingCamera& camera) noexce
     return hash == 0U ? 1U : hash;
 }
 
+struct ShadingValidation final {
+    bool valid{};
+    std::string code;
+    std::string detail;
+};
+
+bool finite_bounded_array(const std::span<const float> values,
+                          const float minimum,
+                          const float maximum) noexcept {
+    return std::all_of(values.begin(), values.end(), [minimum, maximum](const float value) {
+        return std::isfinite(value) && value >= minimum && value <= maximum;
+    });
+}
+
+ShadingValidation validate_lighting(const NativeD3D12RayTracingLighting& lighting) {
+    constexpr float maximum_channel = 64.0F;
+    constexpr float maximum_coordinate = 1.0e6F;
+    constexpr float minimum_intensity = 0.0F;
+    if (!finite_bounded_array(lighting.directional_direction, -maximum_coordinate,
+                              maximum_coordinate) ||
+        camera_dot(lighting.directional_direction, lighting.directional_direction) <
+            1.0e-8F) {
+        return {false, "native-d3d12.context.shading-direction-invalid",
+                "The directional light vector must be finite and non-zero."};
+    }
+    if (!finite_bounded_array(lighting.directional_color, minimum_intensity,
+                              maximum_channel) ||
+        !std::isfinite(lighting.directional_intensity) ||
+        lighting.directional_intensity < minimum_intensity ||
+        lighting.directional_intensity > maximum_channel ||
+        !finite_bounded_array(lighting.ambient_color, minimum_intensity, maximum_channel) ||
+        !std::isfinite(lighting.ambient_intensity) ||
+        lighting.ambient_intensity < minimum_intensity ||
+        lighting.ambient_intensity > maximum_channel) {
+        return {false, "native-d3d12.context.shading-light-invalid",
+                "Directional and ambient light channels/intensities must be finite and bounded."};
+    }
+    return {true, {}, {}};
+}
+
+ShadingValidation validate_material(const NativeD3D12RayTracingMaterial& material) {
+    constexpr float maximum_channel = 64.0F;
+    if (!valid_identifier(material.geometry_id)) {
+        return {false, "native-d3d12.context.material-id-invalid",
+                "Material geometry_id must identify one path-safe scene geometry."};
+    }
+    if (!finite_bounded_array(material.base_color, 0.0F, maximum_channel) ||
+        material.base_color[3U] > 1.0F || !std::isfinite(material.metallic) ||
+        material.metallic < 0.0F || material.metallic > 1.0F ||
+        !std::isfinite(material.roughness) || material.roughness < 0.02F ||
+        material.roughness > 1.0F ||
+        !finite_bounded_array(material.emissive, 0.0F, maximum_channel) ||
+        !std::isfinite(material.emissive_intensity) ||
+        material.emissive_intensity < 0.0F || material.emissive_intensity > maximum_channel) {
+        return {false, "native-d3d12.context.material-values-invalid",
+                "Material base color, metallic, roughness and emissive values are out of bounds."};
+    }
+    return {true, {}, {}};
+}
+
+NativeD3D12RayTracingMaterial default_material(std::string geometry_id) {
+    NativeD3D12RayTracingMaterial material;
+    material.geometry_id = std::move(geometry_id);
+    return material;
+}
+
+ShadingValidation resolve_materials(
+    const NativeD3D12RayTracingScene& scene,
+    const NativeD3D12RayTracingContextOptions& options,
+    std::vector<NativeD3D12RayTracingMaterial>& resolved) {
+    const auto lighting_validation = validate_lighting(options.lighting);
+    if (!lighting_validation.valid) return lighting_validation;
+    resolved.clear();
+    resolved.reserve(scene.geometries.size());
+    if (options.materials.empty()) {
+        for (const auto& geometry : scene.geometries)
+            resolved.push_back(default_material(geometry.geometry_id));
+        return {true, {}, {}};
+    }
+    if (options.materials.size() != scene.geometries.size()) {
+        return {false, "native-d3d12.context.material-count-invalid",
+                "A non-empty material list must contain exactly one entry per scene geometry."};
+    }
+    for (const auto& material : options.materials) {
+        const auto validation = validate_material(material);
+        if (!validation.valid) return validation;
+        const auto duplicate = std::count_if(
+            options.materials.begin(), options.materials.end(),
+            [&material](const auto& candidate) {
+                return candidate.geometry_id == material.geometry_id;
+            });
+        if (duplicate != 1) {
+            return {false, "native-d3d12.context.material-id-duplicate",
+                    "Material geometry_id values must be unique within one scene."};
+        }
+    }
+    for (const auto& geometry : scene.geometries) {
+        const auto found = std::find_if(
+            options.materials.begin(), options.materials.end(),
+            [&geometry](const auto& material) {
+                return material.geometry_id == geometry.geometry_id;
+            });
+        if (found == options.materials.end()) {
+            return {false, "native-d3d12.context.material-geometry-missing",
+                    "Every scene geometry must have one matching material entry."};
+        }
+        resolved.push_back(*found);
+    }
+    for (const auto& material : options.materials) {
+        const auto known_geometry = std::find_if(
+            scene.geometries.begin(), scene.geometries.end(),
+            [&material](const auto& geometry) {
+                return geometry.geometry_id == material.geometry_id;
+            });
+        if (known_geometry == scene.geometries.end()) {
+            return {false, "native-d3d12.context.material-geometry-unknown",
+                    "A material entry refers to a geometry outside the retained scene."};
+        }
+    }
+    return {true, {}, {}};
+}
+
+std::uint64_t shading_signature(
+    const std::vector<NativeD3D12RayTracingMaterial>& materials,
+    const NativeD3D12RayTracingLighting& lighting) noexcept {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const auto& material : materials) {
+        hash = hash_string(hash, material.geometry_id);
+        hash = hash_bytes(hash, material.base_color.data(), sizeof(material.base_color));
+        hash = hash_bytes(hash, &material.metallic, sizeof(material.metallic));
+        hash = hash_bytes(hash, &material.roughness, sizeof(material.roughness));
+        hash = hash_bytes(hash, material.emissive.data(), sizeof(material.emissive));
+        hash = hash_bytes(hash, &material.emissive_intensity,
+                          sizeof(material.emissive_intensity));
+    }
+    hash = hash_bytes(hash, lighting.directional_direction.data(),
+                      sizeof(lighting.directional_direction));
+    hash = hash_bytes(hash, lighting.directional_color.data(),
+                      sizeof(lighting.directional_color));
+    hash = hash_bytes(hash, &lighting.directional_intensity,
+                      sizeof(lighting.directional_intensity));
+    hash = hash_bytes(hash, lighting.ambient_color.data(),
+                      sizeof(lighting.ambient_color));
+    hash = hash_bytes(hash, &lighting.ambient_intensity,
+                      sizeof(lighting.ambient_intensity));
+    return hash == 0U ? 1U : hash;
+}
+
 #if defined(_WIN32)
 
 using Microsoft::WRL::ComPtr;
@@ -492,6 +641,28 @@ static_assert(sizeof(NativeD3D12RayTracingCameraConstants) == 80U);
 constexpr std::uint64_t native_d3d12_raytracing_camera_constants_bytes =
     D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 
+struct NativeD3D12RayTracingMaterialConstants final {
+    float base_color[4U];
+    float material_parameters[4U]; // metallic, roughness, emissive intensity, reserved
+    float emissive[4U];
+};
+static_assert(sizeof(NativeD3D12RayTracingMaterialConstants) == 48U);
+
+struct NativeD3D12RayTracingInstanceShadingConstants final {
+    std::uint32_t material_index{};
+    std::uint32_t normal_offset{};
+    std::uint32_t normal_count{};
+    std::uint32_t reserved{};
+};
+static_assert(sizeof(NativeD3D12RayTracingInstanceShadingConstants) == 16U);
+
+struct NativeD3D12RayTracingLightingConstants final {
+    float directional_direction[4U];
+    float directional_color_intensity[4U];
+    float ambient_color_intensity[4U];
+};
+static_assert(sizeof(NativeD3D12RayTracingLightingConstants) == 48U);
+
 bool fill_camera_constants(ID3D12Resource* resource,
                            const NativeD3D12RayTracingCamera& camera) {
     if (resource == nullptr) return false;
@@ -540,6 +711,13 @@ struct NativeD3D12RayTracingContext::Impl final {
     bool camera_dirty{true};
     std::uint64_t camera_fingerprint{};
     bool camera_shader_consumed{};
+    NativeD3D12RayTracingLighting lighting{};
+    std::vector<NativeD3D12RayTracingMaterial> resolved_materials;
+    bool shading_resources_ready{};
+    std::uint64_t shading_scene_hash{};
+    std::uint64_t shading_fingerprint{};
+    bool linear_radiance_shader_active{};
+    bool linear_radiance_shader_consumed{};
     bool native_handles_exposed{};
     std::string device_name;
     std::uint32_t raytracing_tier{};
@@ -606,6 +784,10 @@ struct NativeD3D12RayTracingContext::Impl final {
     ComPtr<ID3D12StateObjectProperties> trace_state_properties;
     ComPtr<ID3D12Resource> shader_table;
     ComPtr<ID3D12Resource> camera_constants;
+    ComPtr<ID3D12Resource> shading_materials;
+    ComPtr<ID3D12Resource> shading_lighting;
+    ComPtr<ID3D12Resource> shading_instances;
+    ComPtr<ID3D12Resource> shading_normals;
     ComPtr<ID3D12Resource> output_resource;
     ComPtr<ID3D12Resource> output_readback;
     std::uint64_t instance_buffer_bytes{};
@@ -613,6 +795,10 @@ struct NativeD3D12RayTracingContext::Impl final {
     std::uint64_t tlas_scratch_bytes{};
     std::uint64_t shader_table_bytes{};
     std::uint64_t camera_constants_bytes{};
+    std::uint64_t shading_material_bytes{};
+    std::uint64_t shading_lighting_bytes{};
+    std::uint64_t shading_instance_bytes{};
+    std::uint64_t shading_normal_bytes{};
     std::uint64_t output_resource_bytes{};
     bool shader_pipeline_ready{};
     bool shader_table_ready{};
@@ -625,6 +811,8 @@ struct NativeD3D12RayTracingContext::Impl final {
     bool output_in_copy_source{};
     std::uint32_t output_sentinel{};
     std::uint32_t output_hit{};
+    bool output_radiance_valid{};
+    std::array<float, 4U> output_radiance_probe{};
     std::uint64_t output_hash{};
     std::uint64_t built_scene_hash{};
     std::uint64_t built_topology_hash{};
@@ -638,7 +826,7 @@ struct NativeD3D12RayTracingContext::Impl final {
 #endif
 
     explicit Impl(NativeD3D12RayTracingContextOptions input)
-        : options(std::move(input)), camera(options.camera) {
+        : options(std::move(input)), camera(options.camera), lighting(options.lighting) {
         if (options.output_width == 0U) options.output_width = 1U;
         if (options.output_height == 0U) options.output_height = 1U;
         options.output_width = std::min(options.output_width, 4096U);
@@ -661,6 +849,7 @@ struct NativeD3D12RayTracingContext::Impl final {
         const auto validation = validate_camera(camera);
         camera_valid = validation.valid;
         camera_fingerprint = camera_valid ? camera_signature(camera) : 0U;
+        shading_fingerprint = shading_signature(resolved_materials, lighting);
     }
 };
 
@@ -711,12 +900,20 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.submitted_fence_value = impl.last_submitted_fence_value;
     result.completed_fence_value = impl.last_completed_fence_value;
     result.full_frame_shader_ready =
-        impl.options.shaders.full_frame_contract == "noemancer.native-rt-full-frame/0.2" &&
+        impl.options.shaders.full_frame_contract ==
+            native_d3d12_raytracing_full_frame_shader_contract &&
         !impl.options.shaders.full_frame_library_dxil.empty();
     result.camera_ready = impl.camera_valid;
     result.camera_shader_consumed = impl.camera_shader_consumed;
     result.camera_schema = std::string(native_d3d12_raytracing_camera_schema);
     result.camera_fingerprint = impl.camera_fingerprint;
+    result.shading_resources_ready = impl.shading_resources_ready;
+    result.linear_radiance_shader_consumed = impl.linear_radiance_shader_consumed;
+    result.claims_rtgi = false;
+    result.shading_schema = std::string(native_d3d12_raytracing_shading_schema);
+    result.shading_fingerprint = impl.shading_fingerprint;
+    result.shading_material_count = static_cast<std::uint32_t>(
+        impl.resolved_materials.size());
     result.shader_contract = result.full_frame_shader_ready
         ? impl.options.shaders.full_frame_contract
         : "noemancer.native-rt-marker-probe/0.1";
@@ -735,7 +932,8 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.output_readback_bytes = result.output_bytes;
     result.output_surface.schema = std::string(native_d3d12_raytracing_output_surface_schema);
     result.output_surface.resource_kind = "buffer";
-    result.output_surface.format = "R32G32B32A32_UINT";
+    result.output_surface.format = impl.linear_radiance_shader_active
+        ? "R32G32B32A32_FLOAT" : "R32G32B32A32_UINT";
     result.output_surface.resource_state = impl.output_surface_state;
     result.output_surface.width = impl.options.output_width;
     result.output_surface.height = impl.options.output_height;
@@ -798,6 +996,8 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.readback_completed = impl.last_readback_completed;
     result.output_sentinel = impl.output_sentinel;
     result.output_hit = impl.output_hit;
+    result.output_radiance_valid = impl.output_radiance_valid;
+    result.output_radiance_probe = impl.output_radiance_probe;
     result.output_hash = impl.output_hash;
     result.shader_table_bytes = impl.shader_table_bytes;
     result.output_bytes = impl.output_resource_bytes;
@@ -871,10 +1071,11 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
         return false;
     }
     if (has_full_frame_library &&
-        (impl.options.shaders.full_frame_contract != "noemancer.native-rt-full-frame/0.2" ||
+        (impl.options.shaders.full_frame_contract !=
+             native_d3d12_raytracing_full_frame_shader_contract ||
          impl.options.shaders.full_frame_library_dxil.empty())) {
         code = "native-d3d12.context.full-frame-shader-contract-invalid";
-        detail = "The production DXR library must provide the exact camera-aware noemancer.native-rt-full-frame/0.2 contract and non-empty pinned DXIL bytes.";
+        detail = "The production DXR library must provide the exact camera+shading noemancer.native-rt-full-frame/0.3 contract and non-empty pinned DXIL bytes.";
         return false;
     }
 
@@ -886,7 +1087,7 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
         return false;
     }
 
-    D3D12_ROOT_PARAMETER root_parameters[3U]{};
+    D3D12_ROOT_PARAMETER root_parameters[7U]{};
     root_parameters[0U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     root_parameters[0U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[0U].Descriptor.ShaderRegister = 0U;
@@ -900,9 +1101,25 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
         root_parameters[2U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         root_parameters[2U].Descriptor.ShaderRegister = 0U;
         root_parameters[2U].Descriptor.RegisterSpace = 0U;
+        root_parameters[3U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        root_parameters[3U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        root_parameters[3U].Descriptor.ShaderRegister = 1U;
+        root_parameters[3U].Descriptor.RegisterSpace = 0U;
+        root_parameters[4U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        root_parameters[4U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        root_parameters[4U].Descriptor.ShaderRegister = 1U;
+        root_parameters[4U].Descriptor.RegisterSpace = 0U;
+        root_parameters[5U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        root_parameters[5U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        root_parameters[5U].Descriptor.ShaderRegister = 2U;
+        root_parameters[5U].Descriptor.RegisterSpace = 0U;
+        root_parameters[6U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        root_parameters[6U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        root_parameters[6U].Descriptor.ShaderRegister = 3U;
+        root_parameters[6U].Descriptor.RegisterSpace = 0U;
     }
     D3D12_ROOT_SIGNATURE_DESC root_signature_description{};
-    root_signature_description.NumParameters = has_full_frame_library ? 3U : 2U;
+    root_signature_description.NumParameters = has_full_frame_library ? 7U : 2U;
     root_signature_description.pParameters = root_parameters;
     ComPtr<ID3DBlob> root_signature_blob;
     ComPtr<ID3DBlob> root_signature_error;
@@ -950,7 +1167,7 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     hit_group.HitGroupExport = L"TriangleHitGroup";
     hit_group.ClosestHitShaderImport = L"ClosestHit";
     D3D12_RAYTRACING_SHADER_CONFIG shader_config{};
-    shader_config.MaxPayloadSizeInBytes = sizeof(std::uint32_t);
+    shader_config.MaxPayloadSizeInBytes = sizeof(std::uint32_t) + sizeof(float) * 3U;
     shader_config.MaxAttributeSizeInBytes = sizeof(float) * 2U;
     D3D12_GLOBAL_ROOT_SIGNATURE global_root_signature{};
     global_root_signature.pGlobalRootSignature = root_signature.Get();
@@ -1089,6 +1306,8 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     impl.shader_table_ready = true;
     impl.camera_constants_ready = has_full_frame_library;
     impl.full_frame_shader_active = has_full_frame_library;
+    impl.linear_radiance_shader_active = has_full_frame_library;
+    impl.linear_radiance_shader_consumed = false;
     impl.camera_dirty = false;
     impl.output_resource_ready = true;
     impl.output_surface_resource_ready = true;
@@ -1103,6 +1322,217 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     detail = has_full_frame_library
         ? "The versioned full-frame DXR library, camera CBV, persistent root signature, state object, aligned SBT and UAV/readback resources are ready for TraceRays."
         : "Persistent root signature, marker-probe DXR state object, aligned SBT and UAV/readback resources are ready for TraceRays.";
+    return true;
+#endif
+}
+
+bool NativeD3D12RayTracingContext::ensure_full_frame_shading_resources(
+    NativeD3D12RayTracingContext::Impl& impl,
+    std::string& code,
+    std::string& detail) {
+#if !defined(_WIN32)
+    (void)impl;
+    code = "native-d3d12.context.platform-unavailable";
+    detail = "The persistent D3D12 shading resources are available only on Windows.";
+    return false;
+#else
+    if (!impl.full_frame_shader_active) return true;
+    if (!impl.scene) {
+        code = "native-d3d12.context.shading-scene-unavailable";
+        detail = "Full-frame shading resources require a retained scene.";
+        return false;
+    }
+    if (impl.shading_resources_ready && impl.shading_scene_hash == impl.scene_hash &&
+        impl.shading_materials != nullptr && impl.shading_lighting != nullptr &&
+        impl.shading_instances != nullptr && impl.shading_normals != nullptr)
+        return true;
+
+    if (impl.resolved_materials.size() != impl.scene->geometries.size()) {
+        std::vector<NativeD3D12RayTracingMaterial> resolved;
+        const auto validation = resolve_materials(*impl.scene, impl.options, resolved);
+        if (!validation.valid) {
+            code = validation.code;
+            detail = validation.detail;
+            return false;
+        }
+        impl.resolved_materials = std::move(resolved);
+        impl.shading_fingerprint = shading_signature(
+            impl.resolved_materials, impl.lighting);
+    }
+
+    std::vector<NativeD3D12RayTracingMaterialConstants> material_constants;
+    material_constants.reserve(impl.resolved_materials.size());
+    for (const auto& material : impl.resolved_materials) {
+        NativeD3D12RayTracingMaterialConstants constants{};
+        std::copy(material.base_color.begin(), material.base_color.end(),
+                  std::begin(constants.base_color));
+        constants.material_parameters[0U] = material.metallic;
+        constants.material_parameters[1U] = material.roughness;
+        constants.material_parameters[2U] = material.emissive_intensity;
+        std::copy(material.emissive.begin(), material.emissive.end(),
+                  std::begin(constants.emissive));
+        material_constants.push_back(constants);
+    }
+
+    std::vector<NativeD3D12RayTracingInstanceShadingConstants> instance_constants;
+    std::vector<std::array<float, 4U>> normal_constants;
+    instance_constants.reserve(impl.scene->geometries.size());
+    for (std::size_t instance_index = 0U;
+         instance_index < impl.scene->geometries.size(); ++instance_index) {
+        const auto& geometry = impl.scene->geometries[instance_index];
+        NativeD3D12RayTracingInstanceShadingConstants instance{};
+        instance.material_index = static_cast<std::uint32_t>(instance_index);
+        instance.normal_offset = static_cast<std::uint32_t>(normal_constants.size());
+        const auto triangle_count = geometry.indices.size() / 3U;
+        if (triangle_count == 0U || normal_constants.size() >
+                std::numeric_limits<std::uint32_t>::max() - triangle_count) {
+            code = "native-d3d12.context.shading-normal-count-invalid";
+            detail = "The per-instance triangle normal table exceeded its bounded index range.";
+            return false;
+        }
+        instance.normal_count = static_cast<std::uint32_t>(triangle_count);
+        for (std::size_t triangle_index = 0U;
+             triangle_index < triangle_count; ++triangle_index) {
+            const auto index_base = triangle_index * 3U;
+            const auto index_a = geometry.indices[index_base];
+            const auto index_b = geometry.indices[index_base + 1U];
+            const auto index_c = geometry.indices[index_base + 2U];
+            const auto position = [&geometry](const std::uint32_t index) {
+                const auto base = static_cast<std::size_t>(index) * 3U;
+                return std::array<float, 3U>{geometry.position_xyz[base],
+                                            geometry.position_xyz[base + 1U],
+                                            geometry.position_xyz[base + 2U]};
+            };
+            const auto first = position(index_a);
+            const auto second = position(index_b);
+            const auto third = position(index_c);
+            const std::array<float, 3U> edge_a{
+                second[0U] - first[0U], second[1U] - first[1U],
+                second[2U] - first[2U]};
+            const std::array<float, 3U> edge_b{
+                third[0U] - first[0U], third[1U] - first[1U],
+                third[2U] - first[2U]};
+            auto normal = camera_cross(edge_a, edge_b);
+            const auto length = std::sqrt(camera_dot(normal, normal));
+            if (!std::isfinite(length) || length <= 1.0e-6F) {
+                // Degenerate triangles remain valid visibility geometry; use a
+                // deterministic up normal rather than emitting NaN radiance.
+                normal = {0.0F, 1.0F, 0.0F};
+            } else {
+                normal[0U] /= length;
+                normal[1U] /= length;
+                normal[2U] /= length;
+            }
+            normal_constants.push_back({normal[0U], normal[1U], normal[2U], 0.0F});
+        }
+        instance_constants.push_back(instance);
+    }
+
+    NativeD3D12RayTracingLightingConstants lighting_constants{};
+    lighting_constants.directional_direction[0U] = impl.lighting.directional_direction[0U];
+    lighting_constants.directional_direction[1U] = impl.lighting.directional_direction[1U];
+    lighting_constants.directional_direction[2U] = impl.lighting.directional_direction[2U];
+    lighting_constants.directional_color_intensity[0U] = impl.lighting.directional_color[0U];
+    lighting_constants.directional_color_intensity[1U] = impl.lighting.directional_color[1U];
+    lighting_constants.directional_color_intensity[2U] = impl.lighting.directional_color[2U];
+    lighting_constants.directional_color_intensity[3U] = impl.lighting.directional_intensity;
+    lighting_constants.ambient_color_intensity[0U] = impl.lighting.ambient_color[0U];
+    lighting_constants.ambient_color_intensity[1U] = impl.lighting.ambient_color[1U];
+    lighting_constants.ambient_color_intensity[2U] = impl.lighting.ambient_color[2U];
+    lighting_constants.ambient_color_intensity[3U] = impl.lighting.ambient_intensity;
+
+    const auto byte_count = [](const std::size_t count,
+                               const std::size_t stride) -> std::uint64_t {
+        if (count == 0U || count > std::numeric_limits<std::uint64_t>::max() / stride)
+            return 0U;
+        return static_cast<std::uint64_t>(count) * stride;
+    };
+    const auto material_bytes = byte_count(
+        material_constants.size(), sizeof(NativeD3D12RayTracingMaterialConstants));
+    const auto lighting_bytes = static_cast<std::uint64_t>(
+        D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const auto instance_bytes = byte_count(
+        instance_constants.size(), sizeof(NativeD3D12RayTracingInstanceShadingConstants));
+    const auto normal_bytes = byte_count(
+        normal_constants.size(), sizeof(std::array<float, 4U>));
+    if (material_bytes == 0U || lighting_bytes == 0U || instance_bytes == 0U ||
+        normal_bytes == 0U) {
+        code = "native-d3d12.context.shading-resource-size-invalid";
+        detail = "The full-frame material, lighting, instance or normal table was empty or overflowed.";
+        return false;
+    }
+    std::uint64_t total_bytes = 0U;
+    const auto add_bytes = [&total_bytes, &impl](const std::uint64_t bytes) {
+        if (bytes == 0U || bytes > impl.options.max_resource_bytes -
+                std::min(total_bytes, impl.options.max_resource_bytes))
+            return false;
+        total_bytes += bytes;
+        return total_bytes <= impl.options.max_resource_bytes;
+    };
+    if (!add_bytes(material_bytes) || !add_bytes(lighting_bytes) ||
+        !add_bytes(instance_bytes) || !add_bytes(normal_bytes)) {
+        code = "native-d3d12.context.shading-resource-budget-exceeded";
+        detail = "The full-frame material, lighting, instance and normal tables exceed the context resource budget.";
+        return false;
+    }
+
+    ComPtr<ID3D12Resource> next_materials;
+    HRESULT hr = create_committed_buffer(
+        impl.device.Get(), material_bytes, D3D12_HEAP_TYPE_UPLOAD,
+        D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, next_materials);
+    if (FAILED(hr) || !next_materials ||
+        !fill_upload_buffer(next_materials.Get(), material_constants.data(),
+                            static_cast<std::size_t>(material_bytes))) {
+        code = "native-d3d12.context.shading-material-buffer-failed";
+        detail = "The per-instance material buffer upload failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+    ComPtr<ID3D12Resource> next_lighting;
+    hr = create_committed_buffer(
+        impl.device.Get(), lighting_bytes, D3D12_HEAP_TYPE_UPLOAD,
+        D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, next_lighting);
+    if (FAILED(hr) || !next_lighting ||
+        !fill_upload_buffer(next_lighting.Get(), &lighting_constants,
+                            sizeof(lighting_constants))) {
+        code = "native-d3d12.context.shading-lighting-buffer-failed";
+        detail = "The directional/ambient lighting constant upload failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+    ComPtr<ID3D12Resource> next_instances;
+    hr = create_committed_buffer(
+        impl.device.Get(), instance_bytes, D3D12_HEAP_TYPE_UPLOAD,
+        D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, next_instances);
+    if (FAILED(hr) || !next_instances ||
+        !fill_upload_buffer(next_instances.Get(), instance_constants.data(),
+                            static_cast<std::size_t>(instance_bytes))) {
+        code = "native-d3d12.context.shading-instance-buffer-failed";
+        detail = "The per-instance normal/material mapping upload failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+    ComPtr<ID3D12Resource> next_normals;
+    hr = create_committed_buffer(
+        impl.device.Get(), normal_bytes, D3D12_HEAP_TYPE_UPLOAD,
+        D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, next_normals);
+    if (FAILED(hr) || !next_normals ||
+        !fill_upload_buffer(next_normals.Get(), normal_constants.data(),
+                            static_cast<std::size_t>(normal_bytes))) {
+        code = "native-d3d12.context.shading-normal-buffer-failed";
+        detail = "The per-triangle normal table upload failed with " + hresult_hex(hr) + ".";
+        return false;
+    }
+
+    impl.shading_materials = std::move(next_materials);
+    impl.shading_lighting = std::move(next_lighting);
+    impl.shading_instances = std::move(next_instances);
+    impl.shading_normals = std::move(next_normals);
+    impl.shading_material_bytes = material_bytes;
+    impl.shading_lighting_bytes = lighting_bytes;
+    impl.shading_instance_bytes = instance_bytes;
+    impl.shading_normal_bytes = normal_bytes;
+    impl.shading_scene_hash = impl.scene_hash;
+    impl.shading_resources_ready = true;
+    code = "native-d3d12.context.shading-resources-ready";
+    detail = "Per-instance linear materials, one directional light, ambient term and geometric normal table are ready for the full-frame DXR shader.";
     return true;
 #endif
 }
@@ -1249,6 +1679,7 @@ std::string_view native_d3d12_raytracing_context_failure_stage_name(
     case NativeD3D12RayTracingContextFailureStage::command_list: return "command-list";
     case NativeD3D12RayTracingContextFailureStage::fence: return "fence";
     case NativeD3D12RayTracingContextFailureStage::camera: return "camera";
+    case NativeD3D12RayTracingContextFailureStage::shading: return "shading";
     case NativeD3D12RayTracingContextFailureStage::scene: return "scene";
     case NativeD3D12RayTracingContextFailureStage::blas: return "blas";
     case NativeD3D12RayTracingContextFailureStage::tlas: return "tlas";
@@ -1326,6 +1757,13 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::initialize() {
     }
     impl_->camera_valid = true;
     impl_->camera_fingerprint = camera_signature(impl_->camera);
+    const auto lighting_validation = validate_lighting(impl_->lighting);
+    if (!lighting_validation.valid) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::shading,
+                    lighting_validation.code, lighting_validation.detail);
+        return receipt_from(*impl_, "initialize");
+    }
     const auto shader_bytes = static_cast<std::uint64_t>(
         impl_->options.shaders.ray_generation_dxil.size()) +
         static_cast<std::uint64_t>(impl_->options.shaders.miss_dxil.size()) +
@@ -1619,6 +2057,97 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::set_camera(
     return result;
 }
 
+NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::set_shading(
+    const NativeD3D12RayTracingLighting& lighting,
+    const std::vector<NativeD3D12RayTracingMaterial>& materials) {
+    if (impl_->state == NativeD3D12RayTracingContextState::shutdown) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::cleanup,
+                    "native-d3d12.context.already-shutdown",
+                    "The D3D12 context was shut down; new shading inputs cannot be attached.");
+        auto result = receipt_from(*impl_, "set-shading");
+        result.state = NativeD3D12RayTracingContextState::shutdown;
+        return result;
+    }
+    if (!impl_->scene) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::shading,
+                    "native-d3d12.context.shading-scene-unavailable",
+                    "Attach a canonical scene before mapping materials to geometry ids.");
+        auto result = receipt_from(*impl_, "set-shading");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        result.fallback_active = false;
+        return result;
+    }
+
+    auto candidate_options = impl_->options;
+    candidate_options.lighting = lighting;
+    candidate_options.materials = materials;
+    std::vector<NativeD3D12RayTracingMaterial> resolved;
+    const auto validation = resolve_materials(*impl_->scene, candidate_options, resolved);
+    if (!validation.valid) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::shading,
+                    validation.code, validation.detail);
+        auto result = receipt_from(*impl_, "set-shading");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        result.fallback_active = false;
+        return result;
+    }
+
+    const auto fingerprint = shading_signature(resolved, lighting);
+    const bool changed = fingerprint != impl_->shading_fingerprint;
+    if (changed) {
+#if defined(_WIN32)
+        // The upload resources can still be referenced by a submitted trace.
+        // Shading changes are uncommon structural hand-offs, so wait here and
+        // keep steady-state frame submission free of unconditional stalls.
+        if (impl_->pending_fence_value != 0U) {
+            const auto synchronized = synchronize(true);
+            if (impl_->pending_fence_value != 0U ||
+                synchronized.state == NativeD3D12RayTracingContextState::failed) {
+                auto result = receipt_from(*impl_, "set-shading");
+                result.state = NativeD3D12RayTracingContextState::failed;
+                return result;
+            }
+        }
+#endif
+        impl_->options.lighting = lighting;
+        impl_->options.materials = materials;
+        impl_->lighting = lighting;
+        impl_->resolved_materials = std::move(resolved);
+        impl_->shading_fingerprint = fingerprint;
+        impl_->shading_resources_ready = false;
+        impl_->shading_scene_hash = 0U;
+        impl_->linear_radiance_shader_consumed = false;
+        impl_->output_surface_trace_completed = false;
+        impl_->output_access_token = 0U;
+#if defined(_WIN32)
+        impl_->shading_materials.Reset();
+        impl_->shading_lighting.Reset();
+        impl_->shading_instances.Reset();
+        impl_->shading_normals.Reset();
+        impl_->shading_material_bytes = 0U;
+        impl_->shading_lighting_bytes = 0U;
+        impl_->shading_instance_bytes = 0U;
+        impl_->shading_normal_bytes = 0U;
+        impl_->last_trace_completed = false;
+        impl_->last_readback_completed = false;
+        impl_->last_output_copy_submitted = false;
+        impl_->last_output_copy_completed = false;
+        impl_->output_radiance_valid = false;
+        impl_->output_radiance_probe = {};
+#endif
+    }
+    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                changed ? "native-d3d12.context.shading-updated"
+                        : "native-d3d12.context.shading-unchanged",
+                changed
+                    ? "Validated scene-linear materials and lighting will be uploaded before the next full-frame trace without rebuilding acceleration structures."
+                    : "The shading fingerprint is unchanged; retained shading resources can be reused.");
+    auto result = receipt_from(*impl_, "set-shading");
+    result.state = impl_->state;
+    result.fallback_active = impl_->state == NativeD3D12RayTracingContextState::unsupported;
+    return result;
+}
+
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::ensure_scene(
     const NativeD3D12RayTracingScene& input_scene) {
     auto canonical_scene = input_scene;
@@ -1627,6 +2156,17 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::ensure_scene(
     if (!validation.valid) {
         save_result(*impl_, NativeD3D12RayTracingContextFailureStage::scene,
                     validation.code, validation.detail);
+        auto result = receipt_from(*impl_, "ensure-scene");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        result.fallback_active = false;
+        return result;
+    }
+    std::vector<NativeD3D12RayTracingMaterial> resolved_materials;
+    const auto shading_validation = resolve_materials(
+        canonical_scene, impl_->options, resolved_materials);
+    if (!shading_validation.valid) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::shading,
+                    shading_validation.code, shading_validation.detail);
         auto result = receipt_from(*impl_, "ensure-scene");
         result.state = NativeD3D12RayTracingContextState::failed;
         result.fallback_active = false;
@@ -1665,6 +2205,12 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::ensure_scene(
         impl_->scene = std::move(canonical_scene);
         impl_->scene_hash = signature;
         impl_->scene_dirty = true;
+        impl_->resolved_materials = std::move(resolved_materials);
+        impl_->shading_fingerprint = shading_signature(
+            impl_->resolved_materials, impl_->lighting);
+        impl_->shading_resources_ready = false;
+        impl_->shading_scene_hash = 0U;
+        impl_->linear_radiance_shader_consumed = false;
         // A previously published output belongs to the old scene.  Keep the
         // allocation alive for reuse, but invalidate its borrowed view until
         // a new TraceRays completion publishes a fresh access token.
@@ -2202,6 +2748,9 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     impl_->last_readback_completed = false;
     impl_->output_surface_trace_completed = false;
     impl_->camera_shader_consumed = false;
+    impl_->linear_radiance_shader_consumed = false;
+    impl_->output_radiance_valid = false;
+    impl_->output_radiance_probe.fill(0.0F);
     impl_->output_access_token = 0U;
     impl_->last_output_copy_submitted = false;
     impl_->last_output_copy_completed = false;
@@ -2250,6 +2799,17 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
         result = receipt_from(*impl_, "trace");
         result.state = NativeD3D12RayTracingContextState::unsupported;
         result.fallback_active = true;
+        return result;
+    }
+
+    std::string shading_code;
+    std::string shading_detail;
+    if (!ensure_full_frame_shading_resources(*impl_, shading_code, shading_detail)) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::shading,
+                    shading_code, shading_detail);
+        result = receipt_from(*impl_, "trace");
+        result.state = NativeD3D12RayTracingContextState::failed;
         return result;
     }
 
@@ -2303,6 +2863,14 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     if (impl_->full_frame_shader_active) {
         impl_->command_list->SetComputeRootConstantBufferView(
             2U, impl_->camera_constants->GetGPUVirtualAddress());
+        impl_->command_list->SetComputeRootShaderResourceView(
+            3U, impl_->shading_materials->GetGPUVirtualAddress());
+        impl_->command_list->SetComputeRootConstantBufferView(
+            4U, impl_->shading_lighting->GetGPUVirtualAddress());
+        impl_->command_list->SetComputeRootShaderResourceView(
+            5U, impl_->shading_instances->GetGPUVirtualAddress());
+        impl_->command_list->SetComputeRootShaderResourceView(
+            6U, impl_->shading_normals->GetGPUVirtualAddress());
     }
     constexpr std::uint32_t shader_record_bytes =
         D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
@@ -2356,6 +2924,7 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     impl_->last_completed_fence_value = completed_fence_value;
     impl_->output_fence_value = submitted_fence_value;
     impl_->camera_shader_consumed = impl_->full_frame_shader_active;
+    impl_->linear_radiance_shader_consumed = impl_->full_frame_shader_active;
     impl_->output_in_copy_source = true;
     if (completed_fence_value < submitted_fence_value) {
         // The transition to COPY_SOURCE and the optional readback copy are
@@ -2576,6 +3145,56 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::readback() {
     impl_->output_hash = hash_bytes(1469598103934665603ULL,
                                     output_bytes,
                                     static_cast<std::size_t>(impl_->output_resource_bytes));
+    if (impl_->linear_radiance_shader_active) {
+        const auto pixel_count = impl_->output_resource_bytes /
+            (sizeof(float) * 4U);
+        bool finite_output = pixel_count != 0U;
+        bool hit_found = false;
+        bool probe_captured = false;
+        for (std::uint64_t pixel_index = 0U; pixel_index < pixel_count;
+             ++pixel_index) {
+            std::array<float, 4U> sample{};
+            std::memcpy(sample.data(), output_bytes + pixel_index * sizeof(sample),
+                        sizeof(sample));
+            const bool finite_sample = std::all_of(
+                sample.begin(), sample.end(), [](const float value) {
+                    return std::isfinite(value);
+                });
+            const bool non_negative_radiance = sample[0U] >= 0.0F &&
+                sample[1U] >= 0.0F && sample[2U] >= 0.0F && sample[3U] >= 0.0F &&
+                sample[3U] <= 1.0F;
+            finite_output = finite_output && finite_sample && non_negative_radiance;
+            if (sample[3U] >= 0.5F &&
+                (sample[0U] > 0.0F || sample[1U] > 0.0F || sample[2U] > 0.0F)) {
+                hit_found = true;
+                if (!probe_captured) {
+                    impl_->output_radiance_probe = sample;
+                    probe_captured = true;
+                }
+            }
+        }
+        impl_->output_sentinel = 0U;
+        impl_->output_hit = hit_found ? 1U : 0U;
+        impl_->output_radiance_valid = finite_output && hit_found;
+        const D3D12_RANGE written_range{0U, 0U};
+        impl_->output_readback->Unmap(0U, &written_range);
+        impl_->last_readback_completed = true;
+        if (!impl_->output_radiance_valid) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::readback,
+                        "native-d3d12.context.radiance-output-invalid",
+                        "The full-frame linear-radiance readback contained non-finite data or no hit marker.");
+            result = receipt_from(*impl_, "readback");
+            result.state = NativeD3D12RayTracingContextState::failed;
+            return result;
+        }
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                    "native-d3d12.context.radiance-readback-complete",
+                    "The full-frame shader produced finite scene-linear direct/ambient radiance and a hit alpha marker.");
+        result = receipt_from(*impl_, "readback");
+        result.state = NativeD3D12RayTracingContextState::ready;
+        return result;
+    }
     if (impl_->output_resource_bytes >= sizeof(std::uint32_t) * 2U) {
         std::memcpy(&impl_->output_sentinel, output_bytes, sizeof(std::uint32_t));
         std::memcpy(&impl_->output_hit, output_bytes + sizeof(std::uint32_t), sizeof(std::uint32_t));
@@ -2646,15 +3265,28 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     impl_->trace_state_properties.Reset();
     impl_->shader_table.Reset();
     impl_->camera_constants.Reset();
+    impl_->shading_materials.Reset();
+    impl_->shading_lighting.Reset();
+    impl_->shading_instances.Reset();
+    impl_->shading_normals.Reset();
     impl_->output_resource.Reset();
     impl_->output_readback.Reset();
     impl_->shader_table_bytes = 0U;
     impl_->camera_constants_bytes = 0U;
+    impl_->shading_material_bytes = 0U;
+    impl_->shading_lighting_bytes = 0U;
+    impl_->shading_instance_bytes = 0U;
+    impl_->shading_normal_bytes = 0U;
     impl_->output_resource_bytes = 0U;
     impl_->shader_pipeline_ready = false;
     impl_->shader_table_ready = false;
     impl_->camera_constants_ready = false;
     impl_->full_frame_shader_active = false;
+    impl_->linear_radiance_shader_active = false;
+    impl_->linear_radiance_shader_consumed = false;
+    impl_->shading_resources_ready = false;
+    impl_->shading_scene_hash = 0U;
+    impl_->resolved_materials.clear();
     impl_->output_resource_ready = false;
     impl_->output_surface_resource_ready = false;
     impl_->output_surface_trace_completed = false;
@@ -2673,6 +3305,8 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     impl_->output_in_copy_source = false;
     impl_->output_sentinel = 0U;
     impl_->output_hit = 0U;
+    impl_->output_radiance_valid = false;
+    impl_->output_radiance_probe.fill(0.0F);
     impl_->output_hash = 0U;
     impl_->camera_shader_consumed = false;
     impl_->command_list.Reset();

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <span>
 #include <string>
@@ -417,6 +418,19 @@ void initialize_receipt_from_request(
     receipt.frame_generation = request.plan.frame_generation;
     receipt.graph_generation = request.plan.graph_generation;
     receipt.plan_fingerprint = raytracing_render_graph_fingerprint(request.plan);
+    receipt.shading_requested = request.shading.has_value();
+    if (request.shading) {
+        receipt.shading_valid = request.shading->valid && request.shading->supported;
+        receipt.shading_schema = bounded_text(request.shading->schema);
+        receipt.shading_fingerprint = request.shading->shading_fingerprint;
+        receipt.shading_material_count = request.shading->accepted_material_count;
+        receipt.claims_rtgi = request.shading->claims_linear_radiance;
+        receipt.linear_radiance_shader_consumed =
+            request.shading->linear_radiance_implemented;
+        // A plan is only an input contract.  A native producer may promote
+        // this field after a completed trace; initialization never does.
+        receipt.output_radiance_valid = false;
+    }
     receipt.camera_requested = request.view.has_value();
     if (request.view) {
         receipt.camera_valid = request.view->valid && request.view->supported;
@@ -571,6 +585,74 @@ void mark_unreached_selected_passes(RayTracingContextSessionReceipt& receipt,
     }
 }
 
+bool valid_shading_plan(const NativeRayTracingShadingPlan& plan,
+                        const RayTracingContextSessionScene& scene,
+                        std::string& code, std::string& detail) {
+    if (plan.schema != native_raytracing_shading_schema) {
+        code = "session.shading-schema-mismatch";
+        detail = "The session accepts only the current engine RT shading input schema.";
+        return false;
+    }
+    if (!plan.valid || !plan.supported || plan.fallback_active) {
+        code = "session.shading-invalid";
+        detail = "The RT shading plan is invalid, unsupported or already on fallback.";
+        return false;
+    }
+    if (plan.output_mode != NativeRayTracingShadingOutputMode::diagnostic_hit_mask ||
+        !plan.diagnostic_hit_mask ||
+        plan.output_contract != native_raytracing_shading_diagnostic_contract ||
+        plan.output_format != native_raytracing_shading_diagnostic_format ||
+        plan.claims_linear_radiance || plan.linear_radiance_implemented) {
+        code = "session.shading-output-unsupported";
+        detail = "The current native session consumes only the diagnostic hit-mask shading contract; linear radiance and RTGI remain future work.";
+        return false;
+    }
+    if (!plan.pbr_inputs_valid || !plan.directional_light_described ||
+        !plan.environment_described || plan.shading_fingerprint == 0U) {
+        code = "session.shading-input-invalid";
+        detail = "The RT shading plan must contain validated PBR/light inputs and a stable fingerprint.";
+        return false;
+    }
+    if (!plan.scene_id.empty() && plan.scene_id != scene.scene_id) {
+        code = "session.shading-scene-mismatch";
+        detail = "The RT shading plan scene identity does not match the canonical session scene.";
+        return false;
+    }
+    if (plan.scene_revision != 0U && plan.scene_revision != scene.content_revision &&
+        plan.scene_revision != scene.topology_revision) {
+        code = "session.shading-revision-mismatch";
+        detail = "The RT shading plan revision does not match the canonical session scene.";
+        return false;
+    }
+    if (plan.flattened_binding_count != plan.flattened_bindings.size() ||
+        plan.flattened_binding_count > native_raytracing_shading_max_primitives) {
+        code = "session.shading-binding-count-invalid";
+        detail = "The flattened RT shading binding count exceeds the bounded contract or its vector size.";
+        return false;
+    }
+    for (std::size_t index = 0U; index < plan.flattened_bindings.size(); ++index) {
+        const auto& binding = plan.flattened_bindings[index];
+        if (!valid_text(binding.instance_id) || !valid_text(binding.primitive_id) ||
+            !valid_text(binding.material_id) ||
+            binding.material_index != index ||
+            binding.material.material_id != binding.material_id) {
+            code = "session.shading-binding-invalid";
+            detail = "Each flattened RT shading binding must preserve stable ids and its deterministic material index.";
+            return false;
+        }
+        for (std::size_t previous = 0U; previous < index; ++previous) {
+            const auto& prior = plan.flattened_bindings[previous];
+            if (prior.instance_id == binding.instance_id &&
+                prior.primitive_id == binding.primitive_id) {
+                code = "session.shading-binding-duplicate";
+                detail = "Flattened RT shading bindings must contain one record per instance/primitive pair.";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool valid_scene(const RayTracingContextSessionScene& scene,
                  std::string& code, std::string& detail) {
     if (!valid_id(scene.scene_id)) {
@@ -589,6 +671,68 @@ bool valid_scene(const RayTracingContextSessionScene& scene,
         detail = "The scene must contain at least one triangle within the bounded budget.";
         return false;
     }
+    if (scene.grouped_geometries.size() > raytracing_context_session_max_grouped_geometries) {
+        code = "session.scene-group-count-invalid";
+        detail = "The grouped scene exceeds the bounded native geometry count.";
+        return false;
+    }
+    if (!scene.grouped_geometries.empty()) {
+        std::vector<const RayTracingContextSessionGeometryGroup*> groups;
+        groups.reserve(scene.grouped_geometries.size());
+        for (const auto& group : scene.grouped_geometries) {
+            if (!valid_id(group.geometry_id) || !valid_text(group.source_geometry_id) ||
+                !valid_text(group.instance_id) || !valid_text(group.primitive_id)) {
+                code = "session.scene-group-id-invalid";
+                detail = "The backend geometry key must be path-safe and all source identities must be bounded stable text.";
+                return false;
+            }
+            if (group.triangle_count == 0U) {
+                code = "session.scene-group-range-invalid";
+                detail = "Every grouped scene geometry must contain at least one triangle.";
+                return false;
+            }
+            const auto first = static_cast<std::size_t>(group.first_triangle);
+            const auto count = static_cast<std::size_t>(group.triangle_count);
+            if (first > scene.triangles.size() || count > scene.triangles.size() - first) {
+                code = "session.scene-group-range-out-of-bounds";
+                detail = "A grouped scene geometry range exceeds the canonical triangle storage.";
+                return false;
+            }
+            groups.push_back(&group);
+        }
+        std::sort(groups.begin(), groups.end(), [](const auto* left, const auto* right) {
+            return left->first_triangle < right->first_triangle;
+        });
+        std::size_t expected_triangle = 0U;
+        for (std::size_t index = 0U; index < groups.size(); ++index) {
+            const auto* group = groups[index];
+            if (group->first_triangle != expected_triangle) {
+                code = "session.scene-group-ranges-incomplete";
+                detail = "Grouped scene ranges must partition the triangle storage without gaps or overlap.";
+                return false;
+            }
+            expected_triangle += group->triangle_count;
+            for (std::size_t previous = 0U; previous < index; ++previous) {
+                const auto* prior = groups[previous];
+                if (prior->geometry_id == group->geometry_id) {
+                    code = "session.scene-group-duplicate-geometry";
+                    detail = "Grouped scene backend geometry ids must be unique.";
+                    return false;
+                }
+                if (prior->instance_id == group->instance_id &&
+                    prior->primitive_id == group->primitive_id) {
+                    code = "session.scene-group-duplicate-primitive";
+                    detail = "Grouped scene instance/primitive identities must be unique.";
+                    return false;
+                }
+            }
+        }
+        if (expected_triangle != scene.triangles.size()) {
+            code = "session.scene-group-ranges-incomplete";
+            detail = "Grouped scene ranges must cover every canonical triangle exactly once.";
+            return false;
+        }
+    }
     for (const auto& triangle : scene.triangles) {
         for (const auto& position : triangle.positions) {
             for (const auto coordinate : position) {
@@ -603,25 +747,95 @@ bool valid_scene(const RayTracingContextSessionScene& scene,
     return true;
 }
 
+bool make_d3d_shading(
+    const NativeRayTracingShadingPlan& plan,
+    const RayTracingContextSessionScene& scene,
+    NativeD3D12RayTracingLighting& lighting,
+    std::vector<NativeD3D12RayTracingMaterial>& materials,
+    std::string& code,
+    std::string& detail) {
+    if (scene.grouped_geometries.empty()) {
+        code = "session.shading-grouped-scene-required";
+        detail = "D3D12 shading material mapping requires grouped scene ranges with stable instance and primitive identities.";
+        return false;
+    }
+
+    lighting.directional_direction = plan.directional_light.direction;
+    lighting.directional_color = plan.directional_light.color;
+    lighting.directional_intensity = plan.directional_light.enabled
+        ? plan.directional_light.intensity : 0.0F;
+    lighting.ambient_color = plan.environment.color;
+    lighting.ambient_intensity = plan.environment.enabled
+        ? plan.environment.intensity : 0.0F;
+
+    std::vector<const RayTracingContextSessionGeometryGroup*> groups;
+    groups.reserve(scene.grouped_geometries.size());
+    for (const auto& group : scene.grouped_geometries) groups.push_back(&group);
+    std::sort(groups.begin(), groups.end(), [](const auto* left, const auto* right) {
+        return left->geometry_id < right->geometry_id;
+    });
+    materials.clear();
+    materials.reserve(groups.size());
+    for (const auto* group : groups) {
+        const auto binding = std::find_if(
+            plan.flattened_bindings.begin(), plan.flattened_bindings.end(),
+            [group](const auto& candidate) {
+                return candidate.instance_id == group->instance_id &&
+                    candidate.primitive_id == group->primitive_id;
+            });
+        if (binding == plan.flattened_bindings.end()) {
+            code = "session.shading-binding-missing";
+            detail = "Every grouped scene instance/primitive range must have one matching flattened RT shading binding.";
+            return false;
+        }
+        NativeD3D12RayTracingMaterial material;
+        material.geometry_id = group->geometry_id;
+        material.base_color = binding->material.base_color;
+        material.metallic = binding->material.metallic;
+        material.roughness = binding->material.roughness;
+        material.emissive = binding->material.emissive_color;
+        material.emissive_intensity = binding->material.emissive_intensity;
+        materials.push_back(std::move(material));
+    }
+    return true;
+}
+
 NativeD3D12RayTracingScene make_d3d_scene(
     const RayTracingContextSessionScene& source) {
     NativeD3D12RayTracingScene scene;
     scene.scene_id = source.scene_id;
     scene.revision = std::max(source.topology_revision, source.content_revision);
     scene.allow_update = source.allow_update;
-    NativeD3D12RayTracingGeometry geometry;
-    geometry.geometry_id = "rt.session.geometry";
-    geometry.allow_update = source.allow_update;
-    geometry.position_xyz.reserve(source.triangles.size() * 9U);
-    geometry.indices.reserve(source.triangles.size() * 3U);
-    for (std::size_t index = 0U; index < source.triangles.size(); ++index) {
-        for (const auto& position : source.triangles[index].positions)
-            geometry.position_xyz.insert(geometry.position_xyz.end(),
-                                         position.begin(), position.end());
-        const auto base = static_cast<std::uint32_t>(index * 3U);
-        geometry.indices.insert(geometry.indices.end(), {base, base + 1U, base + 2U});
+    const auto append_range = [&](const std::string_view geometry_id,
+                                  const std::size_t first_triangle,
+                                  const std::size_t triangle_count) {
+        NativeD3D12RayTracingGeometry geometry;
+        geometry.geometry_id = std::string(geometry_id);
+        geometry.allow_update = source.allow_update;
+        geometry.position_xyz.reserve(triangle_count * 9U);
+        geometry.indices.reserve(triangle_count * 3U);
+        for (std::size_t index = 0U; index < triangle_count; ++index) {
+            for (const auto& position : source.triangles[first_triangle + index].positions)
+                geometry.position_xyz.insert(geometry.position_xyz.end(),
+                                             position.begin(), position.end());
+            const auto base = static_cast<std::uint32_t>(index * 3U);
+            geometry.indices.insert(geometry.indices.end(), {base, base + 1U, base + 2U});
+        }
+        scene.geometries.push_back(std::move(geometry));
+    };
+    if (source.grouped_geometries.empty()) {
+        append_range("rt.session.geometry", 0U, source.triangles.size());
+    } else {
+        std::vector<const RayTracingContextSessionGeometryGroup*> groups;
+        groups.reserve(source.grouped_geometries.size());
+        for (const auto& group : source.grouped_geometries) groups.push_back(&group);
+        std::sort(groups.begin(), groups.end(), [](const auto* left, const auto* right) {
+            return left->geometry_id < right->geometry_id;
+        });
+        for (const auto* group : groups)
+            append_range(group->geometry_id, group->first_triangle,
+                         group->triangle_count);
     }
-    scene.geometries.push_back(std::move(geometry));
     return scene;
 }
 
@@ -848,6 +1062,21 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
         impl_->last = receipt;
         return receipt;
     }
+    if (request.shading) {
+        std::string shading_code;
+        std::string shading_detail;
+        if (!valid_shading_plan(*request.shading, request.scene,
+                                shading_code, shading_detail)) {
+            receipt.failed = true;
+            receipt.shading_valid = false;
+            receipt.code = bounded_text(shading_code);
+            receipt.detail = bounded_text(shading_detail);
+            receipt.outcome = RayTracingContextSessionOutcome::failure;
+            impl_->last = receipt;
+            return receipt;
+        }
+        receipt.shading_valid = true;
+    }
 
     bool has_selected_trace = false;
     for (const auto& pass : receipt.passes) {
@@ -910,6 +1139,52 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
             if (receipt.stages.back().failed || receipt.stages.back().unsupported) {
                 stopped = true;
                 stop_index = 0U;
+            }
+            if (!stopped && request.shading) {
+                NativeD3D12RayTracingLighting lighting;
+                std::vector<NativeD3D12RayTracingMaterial> materials;
+                std::string shading_code;
+                std::string shading_detail;
+                if (!make_d3d_shading(*request.shading, request.scene, lighting,
+                                      materials, shading_code, shading_detail)) {
+                    receipt.failed = true;
+                    receipt.shading_valid = false;
+                    receipt.code = bounded_text(shading_code);
+                    receipt.detail = bounded_text(shading_detail);
+                    receipt.outcome = RayTracingContextSessionOutcome::failure;
+                    mark_unreached_selected_passes(receipt, 0U);
+                    impl_->last = receipt;
+                    return receipt;
+                }
+                const auto shading = impl_->d3d12->set_shading(lighting, materials);
+                receipt.shading_resources_ready = shading.shading_resources_ready;
+                receipt.linear_radiance_shader_consumed =
+                    shading.linear_radiance_shader_consumed;
+                receipt.claims_rtgi = shading.claims_rtgi;
+                if (shading.shading_schema.empty() == false)
+                    receipt.shading_schema = bounded_text(request.shading->schema);
+                if (shading.shading_fingerprint != 0U)
+                    receipt.shading_fingerprint = request.shading->shading_fingerprint;
+                receipt.shading_material_count =
+                    static_cast<std::uint32_t>(materials.size());
+                receipt.output_radiance_valid = shading.output_radiance_valid;
+                const bool shading_failed =
+                    shading.state == NativeD3D12RayTracingContextState::failed;
+                const bool shading_unsupported =
+                    shading.state == NativeD3D12RayTracingContextState::unsupported &&
+                    !shading.fallback_active;
+                if (shading_failed || shading_unsupported) {
+                    receipt.failed = shading_failed;
+                    receipt.unsupported = shading_unsupported;
+                    receipt.code = bounded_text(shading.code);
+                    receipt.detail = bounded_text(shading.detail);
+                    receipt.outcome = shading_failed
+                        ? RayTracingContextSessionOutcome::failure
+                        : RayTracingContextSessionOutcome::unsupported;
+                    mark_unreached_selected_passes(receipt, 0U);
+                    impl_->last = receipt;
+                    return receipt;
+                }
             }
         }
 
@@ -1114,6 +1389,14 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
         receipt.camera_valid = request.view && native.camera_ready;
         receipt.camera_shader_consumed = request.view &&
             native.camera_shader_consumed;
+        if (request.shading) {
+            receipt.shading_resources_ready = native.shading_resources_ready;
+            receipt.linear_radiance_shader_consumed =
+                native.linear_radiance_shader_consumed;
+            receipt.claims_rtgi = native.claims_rtgi;
+            receipt.output_radiance_valid = native.output_radiance_valid;
+            receipt.shading_material_count = native.shading_material_count;
+        }
     } else {
         // Vulkan stage receipts remain the authority until its storage-image
         // output is wired into the session. Borrowed-handle presence alone is
@@ -1223,6 +1506,15 @@ std::string raytracing_context_session_observation_json(
         {"outputTraceWritten", receipt.output_trace_written},
         {"outputTransferCandidate", receipt.output_transfer_candidate},
         {"fullFrameShaderReady", receipt.full_frame_shader_ready},
+        {"shadingRequested", receipt.shading_requested},
+        {"shadingValid", receipt.shading_valid},
+        {"shadingResourcesReady", receipt.shading_resources_ready},
+        {"linearRadianceShaderConsumed", receipt.linear_radiance_shader_consumed},
+        {"claimsRtgi", receipt.claims_rtgi},
+        {"shadingSchema", bounded_text(receipt.shading_schema)},
+        {"shadingFingerprint", receipt.shading_fingerprint},
+        {"shadingMaterialCount", receipt.shading_material_count},
+        {"outputRadianceValid", receipt.output_radiance_valid},
         {"outputResourceGeneration", receipt.output_resource_generation},
         {"outputFormat", receipt.output_format},
         {"shaderContract", bounded_text(receipt.shader_contract)},

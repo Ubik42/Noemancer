@@ -178,6 +178,21 @@ struct SceneRayTracingGeometryCacheWorldInstance final {
     std::uint32_t triangle_count{};
 };
 
+// Renderer-neutral grouping metadata for one accepted instance/primitive
+// range.  The cache keeps world_triangles as the only position authority and
+// records this range table instead of duplicating vertices.  geometry_id is a
+// stable backend key generated from instance_id + primitive_id by the shared
+// RayTracingContextSession helper; the source identity fields remain useful
+// for material lookup and Agent-facing diagnostics.
+struct SceneRayTracingGeometryCacheGroupedGeometry final {
+    std::string geometry_id;
+    std::string source_geometry_id;
+    std::string instance_id;
+    std::string primitive_id;
+    std::uint32_t first_triangle{};
+    std::uint32_t triangle_count{};
+};
+
 // Derived world-space snapshot.  It is intentionally shaped as a direct
 // transfer to RayTracingContextSessionScene: scene_id, revisions, update
 // policy and the position-only triangle list are all available here.  It is
@@ -198,6 +213,9 @@ struct SceneRayTracingGeometryCacheSnapshot final {
     std::vector<SceneRayTracingGeometryCacheWorldTriangle> world_triangles;
     std::vector<SceneRayTracingGeometryCachePrimitiveRange> primitive_ranges;
     std::vector<SceneRayTracingGeometryCacheWorldInstance> world_instances;
+    // One entry per accepted AS primitive range.  Empty means no supported
+    // opaque static range survived the cache build.
+    std::vector<SceneRayTracingGeometryCacheGroupedGeometry> grouped_geometries;
     std::vector<SceneRayTracingGeometryCacheDiagnostic> diagnostics;
 };
 

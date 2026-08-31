@@ -462,6 +462,29 @@ BuildResult build_snapshot(const SceneRayTracingGeometryCacheInput& input,
                 primitive->first_index,
                 primitive->index_count,
             });
+            const auto group_geometry_id = raytracing_context_session_group_geometry_id(
+                instance->instance_id, primitive->primitive_id);
+            const auto group_id_collision = std::find_if(
+                result.snapshot.grouped_geometries.begin(),
+                result.snapshot.grouped_geometries.end(),
+                [&group_geometry_id](const auto& existing) {
+                    return existing.geometry_id == group_geometry_id;
+                });
+            if (group_id_collision != result.snapshot.grouped_geometries.end()) {
+                result.valid = false;
+                result.code = "group-geometry-id-collision";
+                result.detail = "The bounded stable instance/primitive geometry key collided; the AS scene was rejected.";
+                return result;
+            }
+            result.snapshot.grouped_geometries.push_back(
+                SceneRayTracingGeometryCacheGroupedGeometry{
+                    group_geometry_id,
+                    geometry->geometry_id,
+                    instance->instance_id,
+                    primitive->primitive_id,
+                    range_first_triangle,
+                    triangle_count,
+                });
             ++result.snapshot.statistics.accepted_primitive_count;
         }
 
@@ -715,6 +738,17 @@ RayTracingContextSessionScene to_raytracing_context_session_scene(
     for (const auto& world_triangle : snapshot.world_triangles) {
         result.triangles.push_back(RayTracingContextSessionTriangle{
             world_triangle.positions});
+    }
+    result.grouped_geometries.reserve(snapshot.grouped_geometries.size());
+    for (const auto& group : snapshot.grouped_geometries) {
+        result.grouped_geometries.push_back(RayTracingContextSessionGeometryGroup{
+            group.geometry_id,
+            group.source_geometry_id,
+            group.instance_id,
+            group.primitive_id,
+            group.first_triangle,
+            group.triangle_count,
+        });
     }
     return result;
 }

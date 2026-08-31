@@ -156,7 +156,7 @@ bool test_project_camera_contract_reaches_session() {
                      receipt.camera_id == "camera.project-main" &&
                      receipt.camera_projection == "perspective" &&
                      receipt.camera_fingerprint != 0U &&
-                     !receipt.camera_shader_consumed,
+                     receipt.camera_shader_consumed == receipt.native_trace_ready,
                  "project camera did not retain its bounded identity or Vulkan consumption boundary");
 }
 

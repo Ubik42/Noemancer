@@ -116,6 +116,80 @@ RayTracingContextSessionRequest request_for(
     return request;
 }
 
+RayTracingContextSessionScene grouped_triangle_scene() {
+    auto scene = triangle_scene();
+    scene.grouped_geometries.push_back(RayTracingContextSessionGeometryGroup{
+        raytracing_context_session_group_geometry_id(
+            "instance.main", "primitive.opaque"),
+        "mesh.triangle",
+        "instance.main",
+        "primitive.opaque",
+        0U,
+        1U,
+    });
+    return scene;
+}
+
+NativeRayTracingShadingPlan diagnostic_shading_plan() {
+    NativeRayTracingShadingInput input;
+    input.scene_id = "session.fixture.scene";
+    input.scene_revision = 1U;
+    NativeRayTracingShadingInstance instance;
+    instance.instance_id = "instance.main";
+    instance.geometry_id = "mesh.triangle";
+    NativeRayTracingShadingPrimitive primitive;
+    primitive.primitive_id = "primitive.opaque";
+    primitive.material.material_id = "material.fixture";
+    instance.primitives.push_back(std::move(primitive));
+    input.instances.push_back(std::move(instance));
+    return build_native_raytracing_shading_plan(input);
+}
+
+bool test_grouped_scene_identity_and_shading_observation() {
+    const auto first_group_id = raytracing_context_session_group_geometry_id(
+        "instance.main", "primitive.opaque");
+    if (!check(first_group_id == raytracing_context_session_group_geometry_id(
+                   "instance.main", "primitive.opaque") &&
+                   first_group_id != raytracing_context_session_group_geometry_id(
+                       "instance.other", "primitive.opaque") &&
+                   first_group_id.find_first_of("/\\ \t") == std::string::npos,
+               "group geometry identity was not deterministic and path-safe"))
+        return false;
+
+    const auto plan = build_raytracing_render_graph_plan(graph_description());
+    RayTracingContextSessionOptions options;
+    options.backend = RayTracingContextSessionBackend::vulkan;
+    RayTracingContextSession session(options);
+    auto grouped_request = request_for(plan);
+    grouped_request.scene = grouped_triangle_scene();
+    grouped_request.shading = diagnostic_shading_plan();
+    if (!check(grouped_request.shading->valid && grouped_request.shading->supported,
+               "diagnostic shading fixture did not produce a supported plan"))
+        return false;
+    const auto receipt = session.execute(grouped_request);
+    if (!check(receipt.scene_consumed && receipt.shading_requested &&
+                   receipt.shading_valid && receipt.shading_schema ==
+                       native_raytracing_shading_schema &&
+                   receipt.shading_fingerprint != 0U &&
+                   receipt.shading_material_count == 1U &&
+                   !receipt.shading_resources_ready &&
+                   !receipt.linear_radiance_shader_consumed &&
+                   !receipt.claims_rtgi && !receipt.output_radiance_valid,
+               "Vulkan session did not retain diagnostic shading observation without claiming consumption"))
+        return false;
+
+    RayTracingContextSession invalid_session(options);
+    auto invalid_request = request_for(plan);
+    invalid_request.scene = grouped_triangle_scene();
+    invalid_request.scene.grouped_geometries[0U].first_triangle = 1U;
+    const auto invalid = invalid_session.execute(invalid_request);
+    return check(invalid.outcome == RayTracingContextSessionOutcome::failure &&
+                     invalid.failed && invalid.code ==
+                         "session.scene-group-range-out-of-bounds" &&
+                     invalid.stages.empty(),
+                 "invalid grouped scene range was not rejected before backend execution");
+}
+
 bool test_plan_to_fallback_and_bounded_observation() {
     const auto plan = build_raytracing_render_graph_plan(graph_description());
     if (!check(plan.valid && plan.supported &&
@@ -250,9 +324,10 @@ bool test_invalid_plan_and_unmapped_prefix() {
 } // namespace
 
 int main() {
-    if (!test_plan_to_fallback_and_bounded_observation()) return 1;
-    if (!test_explicit_plan_fallback_and_unsupported()) return 2;
-    if (!test_invalid_plan_and_unmapped_prefix()) return 3;
+    if (!test_grouped_scene_identity_and_shading_observation()) return 1;
+    if (!test_plan_to_fallback_and_bounded_observation()) return 2;
+    if (!test_explicit_plan_fallback_and_unsupported()) return 3;
+    if (!test_invalid_plan_and_unmapped_prefix()) return 4;
     std::cout << "raytracing_context_session_tests: ok\n";
     return 0;
 }

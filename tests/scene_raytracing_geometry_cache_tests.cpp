@@ -1,4 +1,5 @@
 #include "runtime/scene_raytracing_geometry_cache.hpp"
+#include "runtime/raytracing_context_session.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -61,13 +62,32 @@ bool test_initial_build_and_stable_reuse() {
     if (!check(snapshot.world_triangles.size() == 1U &&
                    snapshot.primitive_ranges.size() == 1U &&
                    snapshot.world_instances.size() == 1U &&
+                   snapshot.grouped_geometries.size() == 1U &&
                    snapshot.world_triangles[0U].instance_id == "instance.main" &&
                    snapshot.world_triangles[0U].geometry_id == "mesh.triangle" &&
                    snapshot.world_triangles[0U].primitive_id == "primitive.opaque" &&
                    snapshot.primitive_ranges[0U].first_triangle == 0U &&
                    snapshot.primitive_ranges[0U].triangle_count == 1U &&
+                   snapshot.grouped_geometries[0U].geometry_id ==
+                       raytracing_context_session_group_geometry_id(
+                           "instance.main", "primitive.opaque") &&
+                   snapshot.grouped_geometries[0U].source_geometry_id ==
+                       "mesh.triangle" &&
+                   snapshot.grouped_geometries[0U].instance_id == "instance.main" &&
+                   snapshot.grouped_geometries[0U].primitive_id == "primitive.opaque" &&
+                   snapshot.grouped_geometries[0U].first_triangle == 0U &&
+                   snapshot.grouped_geometries[0U].triangle_count == 1U &&
                    snapshot.world_triangles[0U].positions[0U][0U] == -1.0F,
                "world-space triangle or primitive range was not materialized"))
+        return false;
+
+    const auto session_scene = to_raytracing_context_session_scene(snapshot);
+    if (!check(session_scene.grouped_geometries.size() == 1U &&
+                   session_scene.grouped_geometries[0U].geometry_id ==
+                       snapshot.grouped_geometries[0U].geometry_id &&
+                   session_scene.grouped_geometries[0U].first_triangle == 0U &&
+                   session_scene.grouped_geometries[0U].triangle_count == 1U,
+               "cache-to-session conversion dropped grouped geometry identity"))
         return false;
 
     const auto reused = cache.update(input);
@@ -126,6 +146,11 @@ bool test_topology_change_and_imported_source() {
                      topology.topology_revision == 2U && topology.content_revision == 2U &&
                      topology.statistics.world_triangle_count == 2U &&
                      topology.statistics.accepted_primitive_count == 2U &&
+                     cache.snapshot().grouped_geometries.size() == 2U &&
+                     cache.snapshot().grouped_geometries[0U].geometry_id !=
+                         cache.snapshot().grouped_geometries[1U].geometry_id &&
+                     cache.snapshot().grouped_geometries[1U].first_triangle == 1U &&
+                     cache.snapshot().grouped_geometries[1U].triangle_count == 1U &&
                      cache.snapshot().primitive_ranges[1U].primitive_id == "primitive.second",
                  "primitive topology change did not rebuild the bounded scene");
 }

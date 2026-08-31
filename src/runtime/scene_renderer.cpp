@@ -10,6 +10,7 @@
 #include "engine/ktx2_cook_adapter.hpp"
 #include "engine/linear_dirty_ranges.hpp"
 #include "engine/mesh_runtime_artifact.hpp"
+#include "engine/native_raytracing_shading.hpp"
 #include "engine/shadow_scalability_policy.hpp"
 #include "engine/sprite_asset.hpp"
 #include "engine/sprite_atlas_artifact.hpp"
@@ -35,6 +36,7 @@
 #include <numeric>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -2925,6 +2927,67 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
             {"triangleCount",cache_update.statistics.world_triangle_count},{"rtgiReady",false}}.dump();
         return;
     }
+    const auto& native_rt_cache_snapshot=raytracing_geometry_cache_.snapshot();
+    NativeRayTracingShadingInput native_rt_shading_input;
+    native_rt_shading_input.scene_id=input.scene_id;
+    native_rt_shading_input.scene_revision=std::max<std::uint64_t>(
+        native_rt_cache_snapshot.content_revision,1U);
+    if(render_world.directional_light) {
+        const auto& light=*render_world.directional_light;
+        // RenderWorld stores the direction travelled by the directional
+        // light; the RT shading ABI stores the direction from surface to sun.
+        native_rt_shading_input.directional_light.direction={
+            -light.direction[0],-light.direction[1],-light.direction[2]};
+        native_rt_shading_input.directional_light.color=light.color;
+        native_rt_shading_input.directional_light.intensity=std::max(light.intensity,0.0F);
+        native_rt_shading_input.directional_light.enabled=light.intensity>0.0F;
+        native_rt_shading_input.environment.color={1.0F,1.0F,1.0F};
+        native_rt_shading_input.environment.intensity=std::max(light.ambient_intensity,0.0F);
+        native_rt_shading_input.environment.enabled=light.ambient_intensity>0.0F;
+    }
+    std::unordered_map<std::string,std::vector<const SceneRayTracingGeometryCachePrimitiveRange*>>
+        native_rt_ranges_by_instance;
+    native_rt_ranges_by_instance.reserve(native_rt_cache_snapshot.world_instances.size());
+    for(const auto& range:native_rt_cache_snapshot.primitive_ranges)
+        native_rt_ranges_by_instance[range.instance_id].push_back(&range);
+    native_rt_shading_input.instances.reserve(eligible.size());
+    for(const auto* source:eligible) {
+        NativeRayTracingShadingInstance shading_instance;
+        shading_instance.instance_id=source->entity_id;
+        shading_instance.geometry_id=source->mesh_asset;
+        const auto found=native_rt_ranges_by_instance.find(source->entity_id);
+        if(found!=native_rt_ranges_by_instance.end()) {
+            shading_instance.primitives.reserve(found->second.size());
+            for(const auto* range:found->second) {
+                NativeRayTracingShadingPrimitive primitive;
+                primitive.primitive_id=range->primitive_id;
+                primitive.material.material_id=source->entity_id;
+                primitive.material.base_color={source->material.base_color[0],
+                    source->material.base_color[1],source->material.base_color[2],1.0F};
+                primitive.material.metallic=std::clamp(source->material.metallic,0.0F,1.0F);
+                primitive.material.roughness=std::clamp(source->material.roughness,0.02F,1.0F);
+                primitive.material.emissive_color=source->material.emissive_color;
+                primitive.material.emissive_intensity=std::max(source->material.emissive_intensity,0.0F);
+                primitive.material.has_base_color_texture=!source->material.base_color_texture.empty();
+                primitive.material.receives_shadows=source->receives_shadows;
+                shading_instance.primitives.push_back(std::move(primitive));
+            }
+        }
+        native_rt_shading_input.instances.push_back(std::move(shading_instance));
+    }
+    const auto native_rt_shading_plan=build_native_raytracing_shading_plan(
+        native_rt_shading_input,NativeRayTracingShadingOutputMode::diagnostic_hit_mask);
+    if(!native_rt_shading_plan.valid||!native_rt_shading_plan.supported) {
+        native_rt_composite_plan_={};
+        native_raytracing_status_json_=nlohmann::json{
+            {"schema",std::string(scene_raytracing_bridge_schema)},
+            {"requested",true},{"enabled",true},{"backend",backend},
+            {"sceneAccepted",true},{"shadingValid",false},
+            {"nativeAsReady",false},{"nativeTraceReady",false},
+            {"visualPath","ssgi-raster-fallback"},{"fallbackCode",native_rt_shading_plan.code},
+            {"fallbackDetail",native_rt_shading_plan.detail},{"rtgiReady",false}}.dump();
+        return;
+    }
     if(!native_rt_texture_export_.ready||native_rt_texture_export_.width!=width_||
         native_rt_texture_export_.height!=height_) {
         release_sdl_gpu_native_rt_texture(device_,native_rt_texture_export_);
@@ -2989,8 +3052,8 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
     }
     const auto receipt=scene_raytracing_bridge_->execute(
         {.backend=backend,.enabled=true,.request_trace=true,.request_readback=false,
-            .view=std::move(native_rt_view)},
-        raytracing_geometry_cache_.snapshot());
+            .view=std::move(native_rt_view),.shading=native_rt_shading_plan},
+        native_rt_cache_snapshot);
     RayTracingContextSessionOutputTransferReceipt transfer;
     transfer.backend=backend;
     if(receipt.output_transfer_candidate&&native_rt_texture_export_.ready&&
@@ -3002,15 +3065,20 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
         transfer.code="renderer.native-output-transfer-not-candidate";
         transfer.detail="The current backend, dimensions or exported texture did not satisfy the bounded same-device transfer contract.";
     }
+    const auto native_rt_composite_mode=receipt.shader_contract==
+        native_raytracing_composite_radiance_contract
+        ?NativeRayTracingCompositeMode::linear_radiance
+        :NativeRayTracingCompositeMode::debug_marker;
     native_rt_composite_plan_=build_native_raytracing_composite_plan({
         .resource_id="render.resource.native-rt-debug-output",
         .resource_kind="texture2d",
         .format=native_rt_texture_export_.format,
+        .producer_shader_contract=receipt.shader_contract,
         .width=native_rt_texture_export_.width,
         .height=native_rt_texture_export_.height,
         .resource_generation=native_rt_texture_export_.generation,
         .producer_complete=transfer.completed&&receipt.output_trace_written,
-        .shader_readable=transfer.completed});
+        .shader_readable=transfer.completed},native_rt_composite_mode);
     native_raytracing_status_json_=nlohmann::json{
         {"schema",receipt.schema},{"requested",receipt.requested},{"enabled",receipt.enabled},
         {"backend",receipt.backend},{"sceneAccepted",receipt.scene_accepted},{"cacheState",receipt.cache_state},
@@ -3026,6 +3094,12 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
         {"outputTraceWritten",receipt.output_trace_written},
         {"outputTransferCandidate",receipt.output_transfer_candidate},
         {"fullFrameShaderReady",receipt.full_frame_shader_ready},
+        {"shadingRequested",receipt.shading_requested},{"shadingValid",receipt.shading_valid},
+        {"shadingResourcesReady",receipt.shading_resources_ready},
+        {"linearRadianceShaderConsumed",receipt.linear_radiance_shader_consumed},
+        {"shadingSchema",receipt.shading_schema},{"shadingFingerprint",receipt.shading_fingerprint},
+        {"shadingMaterialCount",receipt.shading_material_count},
+        {"outputRadianceValid",receipt.output_radiance_valid},{"claimsRtgi",receipt.claims_rtgi},
         {"cameraRequested",receipt.camera_requested},{"cameraValid",receipt.camera_valid},
         {"cameraShaderConsumed",receipt.camera_shader_consumed},{"cameraId",receipt.camera_id},
         {"cameraProjection",receipt.camera_projection},{"cameraFingerprint",receipt.camera_fingerprint},
@@ -3044,6 +3118,10 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
             {"valid",native_rt_composite_plan_.valid},{"supported",native_rt_composite_plan_.supported},
             {"code",native_rt_composite_plan_.code},{"visualPath",native_rt_composite_plan_.visual_path},
             {"shaderContract",native_rt_composite_plan_.shader_contract},
+            {"producerShaderContract",native_rt_composite_plan_.producer_shader_contract},
+            {"mode",native_raytracing_composite_mode_name(native_rt_composite_plan_.mode)},
+            {"decode",native_rt_composite_plan_.decode},{"stage",native_rt_composite_plan_.stage},
+            {"linearRadiance",native_rt_composite_plan_.linear_radiance_composite},
             {"claimsRtgi",native_rt_composite_plan_.claims_rtgi},
             {"inputFormat",native_rt_composite_plan_.input_format},
             {"outputFormat",native_rt_composite_plan_.output_format}}},

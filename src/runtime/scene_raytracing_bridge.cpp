@@ -289,6 +289,7 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
     result.readback_requested = request.request_readback;
     result.requested = request.enabled && request.request_trace;
     result.camera_requested = request.view.has_value();
+    result.shading_requested = request.shading.has_value();
     result.cache_state = bounded_text(
         scene_raytracing_geometry_cache_state_name(snapshot.state));
     result.topology_revision = snapshot.topology_revision;
@@ -428,7 +429,7 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
         session_options.d3d12_options.output_height = impl_->options.output_height;
         if (!impl_->options.d3d12_full_frame_library_dxil.empty()) {
             session_options.d3d12_options.shaders.full_frame_contract =
-                "noemancer.native-rt-full-frame/0.2";
+                std::string(native_d3d12_raytracing_full_frame_shader_contract);
             session_options.d3d12_options.shaders.full_frame_library_dxil =
                 impl_->options.d3d12_full_frame_library_dxil;
         }
@@ -457,6 +458,25 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
     session_request.session_id = "scene-raytracing-bridge";
     session_request.plan = plan;
     session_request.scene = to_raytracing_context_session_scene(snapshot);
+    if (request.shading) {
+        result.shading_valid = request.shading->valid && request.shading->supported &&
+            request.shading->pbr_inputs_valid;
+        result.shading_schema = bounded_text(request.shading->schema);
+        result.shading_fingerprint = request.shading->shading_fingerprint;
+        result.shading_material_count = request.shading->accepted_material_count;
+        if (!result.shading_valid) {
+            result.failed = true;
+            result.code = request.shading->code.empty()
+                ? "bridge.shading-plan-invalid" : bounded_text(request.shading->code);
+            result.detail = request.shading->detail.empty()
+                ? "The engine-owned native RT shading plan was not valid and supported."
+                : bounded_text(request.shading->detail);
+            set_fallback(result,result.code,result.detail);
+            impl_->last=result;
+            return result;
+        }
+        session_request.shading=*request.shading;
+    }
     if (request.view) {
         auto view_input = *request.view;
         view_input.output_width = impl_->options.output_width;
@@ -491,6 +511,16 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
     result.output_trace_written = session_receipt.output_trace_written;
     result.output_transfer_candidate = session_receipt.output_transfer_candidate;
     result.full_frame_shader_ready = session_receipt.full_frame_shader_ready;
+    result.shading_requested = session_receipt.shading_requested;
+    result.shading_valid = session_receipt.shading_valid;
+    result.shading_resources_ready = session_receipt.shading_resources_ready;
+    result.linear_radiance_shader_consumed =
+        session_receipt.linear_radiance_shader_consumed;
+    result.claims_rtgi = session_receipt.claims_rtgi;
+    result.shading_schema = session_receipt.shading_schema;
+    result.shading_fingerprint = session_receipt.shading_fingerprint;
+    result.shading_material_count = session_receipt.shading_material_count;
+    result.output_radiance_valid = session_receipt.output_radiance_valid;
     result.camera_valid = session_receipt.camera_valid;
     result.camera_shader_consumed = session_receipt.camera_shader_consumed;
     result.camera_id = session_receipt.camera_id;

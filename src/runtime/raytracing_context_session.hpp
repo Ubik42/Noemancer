@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/native_raytracing_shading.hpp"
 #include "engine/native_raytracing_view.hpp"
 #include "engine/raytracing_render_graph.hpp"
 #include "runtime/native_d3d12_raytracing_context.hpp"
@@ -25,6 +26,8 @@ inline constexpr std::string_view raytracing_context_session_schema =
 inline constexpr std::size_t raytracing_context_session_max_text_bytes = 512U;
 inline constexpr std::size_t raytracing_context_session_max_triangles =
     native_vulkan_raytracing_context_hard_max_triangles;
+inline constexpr std::size_t raytracing_context_session_max_grouped_geometries =
+    native_d3d12_raytracing_context_max_geometry_count;
 inline constexpr std::size_t raytracing_context_session_max_stages = 8U;
 
 enum class RayTracingContextSessionBackend : std::uint8_t {
@@ -72,8 +75,60 @@ enum class RayTracingContextSessionStageKind : std::uint8_t {
 [[nodiscard]] std::string_view raytracing_context_session_stage_name(
     RayTracingContextSessionStageKind stage) noexcept;
 
+// Stable backend geometry identity for one world-space instance/primitive
+// range.  The cache and the session use this same helper so a D3D material
+// record can be resolved without positional guessing.  The encoded id is
+// bounded, path-safe and deterministic; the human-readable source identities
+// remain present alongside it in RayTracingContextSessionGeometryGroup.
+[[nodiscard]] inline std::string raytracing_context_session_group_geometry_id(
+    const std::string_view instance_id, const std::string_view primitive_id) {
+    // FNV-1a over length-prefixed components is small, deterministic and
+    // independent of platform string concatenation rules.  The source ids
+    // remain in the grouped record for diagnostics; this compact backend key
+    // keeps native geometry/material tables bounded and path-safe.
+    constexpr std::uint64_t offset_basis = 1469598103934665603ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    std::uint64_t hash = offset_basis;
+    const auto add_byte = [&hash](const std::uint8_t value) {
+        hash ^= value;
+        hash *= prime;
+    };
+    const auto add_string = [&add_byte](const std::string_view value) {
+        auto length = static_cast<std::uint64_t>(value.size());
+        for (std::uint32_t index = 0U; index < 8U; ++index)
+            add_byte(static_cast<std::uint8_t>((length >> (index * 8U)) & 0xffU));
+        for (const auto character : value)
+            add_byte(static_cast<std::uint8_t>(character));
+    };
+    add_string(instance_id);
+    add_string(primitive_id);
+
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result{"rt.group."};
+    result.reserve(result.size() + 16U);
+    for (std::int32_t shift = 60; shift >= 0; shift -= 4)
+        result.push_back(hex[(hash >> static_cast<std::uint32_t>(shift)) & 0x0fU]);
+    return result;
+}
+
 struct RayTracingContextSessionTriangle final {
     std::array<std::array<float, 3U>, 3U> positions{};
+};
+
+// One canonical world-space triangle range.  `triangles` remains the sole
+// position storage for compatibility; this structure is only grouping and
+// identity metadata consumed by native adapters.  The backend id is derived
+// from instance_id + primitive_id by the stable helper above, while the
+// source geometry identity remains observable for diagnostics/material
+// lookup.  Ranges are required to partition the triangle vector exactly when
+// this metadata is supplied.
+struct RayTracingContextSessionGeometryGroup final {
+    std::string geometry_id;
+    std::string source_geometry_id;
+    std::string instance_id;
+    std::string primitive_id;
+    std::uint32_t first_triangle{};
+    std::uint32_t triangle_count{};
 };
 
 struct RayTracingContextSessionScene final {
@@ -85,6 +140,10 @@ struct RayTracingContextSessionScene final {
     std::uint64_t content_revision{1U};
     bool allow_update{true};
     std::vector<RayTracingContextSessionTriangle> triangles;
+    // Optional production grouping metadata.  Empty means the legacy single
+    // geometry transfer path; non-empty data is canonicalized into one D3D
+    // geometry per range and flattened for Vulkan's current adapter.
+    std::vector<RayTracingContextSessionGeometryGroup> grouped_geometries;
 };
 
 struct RayTracingContextSessionTraceRequest final {
@@ -120,6 +179,10 @@ struct RayTracingContextSessionRequest final {
     // at a bounded build/trace boundary while shaders or readback are absent.
     bool run_trace{true};
     bool run_readback{true};
+    // Optional engine-owned PBR input/plan.  It is observed on Vulkan (which
+    // does not yet consume this table) and translated to D3D12 after the
+    // canonical scene has been accepted, before AS build/update.
+    std::optional<NativeRayTracingShadingPlan> shading;
 };
 
 struct RayTracingContextSessionStageReceipt final {
@@ -196,6 +259,15 @@ struct RayTracingContextSessionReceipt final {
     bool output_trace_written{};
     bool output_transfer_candidate{};
     bool full_frame_shader_ready{};
+    bool shading_requested{};
+    bool shading_valid{};
+    bool shading_resources_ready{};
+    bool linear_radiance_shader_consumed{};
+    bool claims_rtgi{};
+    std::string shading_schema;
+    std::uint64_t shading_fingerprint{};
+    std::uint32_t shading_material_count{};
+    bool output_radiance_valid{};
     bool camera_requested{};
     bool camera_valid{};
     bool camera_shader_consumed{};

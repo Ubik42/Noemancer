@@ -36,6 +36,7 @@ add_library(noemancer_engine STATIC
     network_replication.cpp
     network_transport.cpp
     native_raytracing_view.cpp
+    native_raytracing_shading.cpp
     package_pipeline.cpp
     play_world_apply.cpp
     pixel_presentation.cpp

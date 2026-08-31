@@ -22,7 +22,7 @@ Noemancer 已经不是“开一个窗口、画几个三角形”的引擎玩具�
 - **基础闭环已经成立**：可以开始拿它制作和验证小型真实游戏。
 - **现代 Raster 渲染骨架已经较完整**：PBR、阴影、天空、AO、SSR、SSGI、时域处理和后期链路都已经进入真实 GPU Render Graph。
 - **正在进入商业画质与大型场景强化期**：公开经典场景已经能实时跑，但大型资产 Cook、流送、复杂阴影、极端负载和画面调优还没有达到成熟商业引擎的宽度。
-- **硬件光追已跑通双后端最小闭环**：D3D12/Vulkan 都能真实构建 BLAS/TLAS、创建光追 Pipeline 和 SBT、发射 `1×1×1` 射线并读回结果；但它还没有接进项目 Render Graph、形成可见场景光追画面，更没有 RTGI。
+- **硬件光追已进入项目画面的早期纵切**：D3D12 已从项目相机、场景几何、PBR 标量、方向光和环境光计算全帧线性直接光，并经同设备 GPU Copy 接进 Render Graph；Vulkan RayGen 也已读取项目相机，但仍只输出单 texel。两端都没有 RTGI，D3D 大场景 AS 组织也尚未达到可用性能。
 - **产品成熟度仍明显不足**：跨平台、安装器、插件生态、显存管理、各种硬件矩阵、稳定 SDK 和大量真实游戏生产检验仍待完成。
 
 如果把引擎成熟度粗略分成五层：
@@ -281,24 +281,24 @@ GPU 粒子已经能在显卡上完成 Spawn、Simulate、Group、Alpha Sort 和�
 
 ## 目前明确没有完成什么？
 
-### 没有完成硬件光追画面与 RTGI
+### 已有早期硬件光追画面，但没有完成 RTGI
 
 硬件光追通常先把三角形组织成便于查询的空间结构：
 
 - BLAS：一组模型三角形的加速结构；
 - TLAS：场景里各个模型实例的上层加速结构。
 
-Noemancer 已经在 RTX 4080 上让 D3D12 DXR 1.1 和 Vulkan RT 真实创建三角形 Vertex Buffer、BLAS、单实例 TLAS、光追 Pipeline 与 SBT，发射 `1×1×1` 射线，记录 GPU 时间戳，并把命中标记读回 CPU。可以把它理解为：高速公路、索引仓库、收费站和第一辆测试车都已经真的跑通，而不是只检查显卡驱动说“应该支持”。
+Noemancer 已经在 RTX 4080 上让 D3D12 DXR 1.1 和 Vulkan RT 真实创建 BLAS/TLAS、光追 Pipeline 与 SBT。D3D12 的 `/0.3` Shader 已读取项目相机、几何法线、材质、方向光和环境光，逐像素写出 scene-linear 直接光 + 环境光 + 自发光；结果不回到 CPU，而是复制进 SDL 纹理并由 composite `/0.2` 正确显示。Vulkan RayGen 也已真正读取相机常量，但 context 仍只 dispatch/readback 一个 texel。
 
 当前真正还缺：
 
-- 长寿命 Native RHI 设备/资源所有权；
-- Render Graph 光追 Pass；
-- 结果纹理与 Raster 画面的合成；
-- 编辑器项目里的可见光追开关、A/B 画面与稳定 fallback；
-- RTGI 的采样、降噪、History、降级和双后端性能证据。
+- source geometry 共享 BLAS、TLAS 实例变换和 primitive/material indirection；当前逐实例/子网格 BLAS 让 RenderLab Debug 首帧超过 90 秒；
+- Vulkan 全分辨率输出与 SDL image/semaphore interop；
+- 光追材质纹理、阴影光线和透明材质；
+- 双后端固定场景 A/B、GPU/显存预算和稳定 fallback；
+- RTGI 的间接光采样、降噪、History、降级和性能证据。
 
-所以当前 **有真实的底层 Ray Tracing 执行证据，但没有项目场景里的可见 Ray Tracing 画面，也没有 RTGI**。这个 `1×1` 探针的意义是把“显卡支持”“能建加速结构”“能真正发射并读回射线”三件事分开证明；它不是供玩家观看的渲染功能。
+所以当前最准确的说法是：**D3D12 已有项目场景里的可见直接光纵切，Vulkan 仍是相机驱动的单 texel 证明，两者都没有 RTGI**。小场景 640×480 烟测已证明相机、23 个材质绑定、线性辐射、GPU Copy 与显示合成闭环；RenderLab 大场景超时则证明 AS 组织还必须重构，不能把“画出来”误写成“性能可用”。
 
 ### 没有完成 VSM / Virtual Shadow Maps
 
@@ -358,11 +358,11 @@ Noemancer 额外做的是把运行事实也变成稳定、有限、可查询的�
 
 按当前权威队列，优先顺序是：
 
-1. 建立可持续跨帧使用的 Native RHI 设备、队列、加速结构和 SBT 所有权；
-2. 把 Ray Tracing 作为真实 Renderer/Render Graph 节点，并保留 Raster fallback；
-3. 把结果写入项目纹理，与 Raster 画面合成，取得双后端可见 A/B 和 GPU 时间证据；
-4. 在此基础上开发 RTGI 的采样、时空降噪、History reset、质量档与性能预算；
-5. 同时用 Sponza、后续 Bistro/San Miguel 等大型场景继续推动分块 Cook、纹理/几何流送和 CPU 帧优化；
+1. 把逐实例世界空间 BLAS 改成 source geometry 共享 BLAS、TLAS instance transform 和材质索引表；
+2. 让材质/灯光热改只更新 shading buffer，不触发 AS 重建，并建立首帧与稳态 GPU/CPU 预算；
+3. 完成 Vulkan 全分辨率 storage image、同步和 SDL 呈现，取得双后端可见 A/B；
+4. 在此基础上开发光追阴影/材质纹理，再进入 RTGI 采样、时空降噪、History reset 和质量档；
+5. 同时用 Sponza、Bistro/San Miguel 等大型场景推动分块 Cook、纹理/几何流送和 CPU 帧优化；
 6. 阴影先优化现有 Atlas 和 CPU 总帧，再凭压力证据决定何时进入真正 VSM。
 
 这条顺序看起来比“先写一个 RTGI Shader”慢，但它保证光追不会成为只能在一台机器、一个测试函数里运行的孤岛。
