@@ -13,7 +13,9 @@ add_executable(noemancer
     native_raytracing_capability_adapter.cpp
     native_raytracing_execution_adapter.cpp
     native_d3d12_raytracing_executor.cpp
+    native_d3d12_raytracing_context.cpp
     native_vulkan_raytracing_executor.cpp
+    native_vulkan_raytracing_context.cpp
     package_vfs_bootstrap.cpp
     main.cpp
     performance_evidence.cpp

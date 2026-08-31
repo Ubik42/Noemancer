@@ -11,12 +11,15 @@
 #include "runtime/native_raytracing_capability_adapter.hpp"
 #include "runtime/native_raytracing_execution_adapter.hpp"
 #include "runtime/native_d3d12_raytracing_executor.hpp"
+#include "runtime/native_d3d12_raytracing_context.hpp"
 #include "runtime/native_vulkan_raytracing_executor.hpp"
+#include "runtime/native_vulkan_raytracing_context.hpp"
 #include "runtime/windows_package_service.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <charconv>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -377,16 +380,69 @@ nlohmann::json native_raytracing_capability_json(
 
 int run_rhi_cli(const int argc,char** argv) {
     if(argc<3) {
-        std::cerr<<"Expected: noemancer rhi capabilities|execute [--format json]\n";return 2;
+        std::cerr<<"Expected: noemancer rhi capabilities|execute|context [--backend d3d12|vulkan] [--frames N] [--format json]\n";return 2;
     }
     const std::string_view operation=argv[2];
-    if(operation!="capabilities"&&operation!="execute") {
-        std::cerr<<"Expected: noemancer rhi capabilities|execute [--format json]\n";return 2;
+    if(operation!="capabilities"&&operation!="execute"&&operation!="context") {
+        std::cerr<<"Expected: noemancer rhi capabilities|execute|context [--backend d3d12|vulkan] [--frames N] [--format json]\n";return 2;
     }
+    std::string backend{"d3d12"};std::uint32_t frames{3U};
     for(int index=3;index<argc;++index) {
         if(std::string_view(argv[index])=="--format"&&index+1<argc&&
-           std::string_view(argv[index+1])=="json") { ++index;continue; }
+            std::string_view(argv[index+1])=="json") { ++index;continue; }
+        if(operation=="context"&&std::string_view(argv[index])=="--backend"&&index+1<argc) {
+            backend=argv[++index];if(backend!="d3d12"&&backend!="vulkan") {std::cerr<<"Invalid RHI context backend\n";return 2;}continue;
+        }
+        if(operation=="context"&&std::string_view(argv[index])=="--frames"&&index+1<argc) {
+            if(!parse_frames(argv[++index],frames)||frames==0U||frames>16U){std::cerr<<"RHI context frames must be in [1,16]\n";return 2;}continue;
+        }
         std::cerr<<"Unknown RHI argument: "<<argv[index]<<'\n';return 2;
+    }
+    if(operation=="context") {
+        nlohmann::json receipts=nlohmann::json::array();bool lifecycle_ok=true;bool persistent_gpu_ready=false;
+        if(backend=="d3d12") {
+            const auto project=[](const noemancer::NativeD3D12RayTracingContextReceipt& receipt) {
+                return nlohmann::json{{"operation",receipt.operation},{"state",noemancer::native_d3d12_raytracing_context_state_name(receipt.state)},
+                    {"code",receipt.code},{"detail",receipt.detail},{"generation",receipt.generation},{"sceneGeneration",receipt.scene_generation},
+                    {"resourceGeneration",receipt.resource_generation},{"deviceReady",receipt.device_ready},{"queueReady",receipt.command_queue_ready},
+                    {"fenceReady",receipt.fence_ready},{"blasReady",receipt.blas_ready},{"tlasReady",receipt.tlas_ready},
+                    {"traceCompleted",receipt.trace_completed},{"readbackCompleted",receipt.readback_completed},{"fallbackActive",receipt.fallback_active},
+                    {"nativeHandleExposed",receipt.native_handle_exposed}};
+            };
+            noemancer::NativeD3D12RayTracingContext context;
+            receipts.push_back(project(context.initialize()));
+            noemancer::NativeD3D12RayTracingScene scene{.scene_id="rhi.context.triangle",.revision=1U,
+                .geometries={{.geometry_id="geometry.triangle",.position_xyz={-1,-1,0,1,-1,0,0,1,0},.indices={0,1,2},.allow_update=true}},.allow_update=true};
+            receipts.push_back(project(context.ensure_scene(scene)));
+            for(std::uint32_t frame=0;frame<frames;++frame)receipts.push_back(project(context.build_or_update()));
+            receipts.push_back(project(context.trace()));receipts.push_back(project(context.readback()));
+            const auto status=context.status();persistent_gpu_ready=status.blas_ready&&status.tlas_ready&&status.trace_completed;
+            receipts.push_back(project(context.shutdown()));
+            lifecycle_ok=!receipts.empty()&&!receipts.front().value("code",std::string{}).empty();
+        } else {
+            const auto project=[](const noemancer::NativeVulkanRayTracingContextReceipt& receipt,const std::string_view operation_name) {
+                return nlohmann::json{{"operation",operation_name},{"state",noemancer::native_vulkan_raytracing_context_state_name(receipt.state)},
+                    {"code",receipt.code},{"detail",receipt.detail},{"generation",receipt.generation},{"persistentBackend",receipt.persistent_backend},
+                    {"sceneReady",receipt.scene_ready},{"sceneRebuilt",receipt.scene_rebuilt},{"sceneUpdated",receipt.scene_updated},
+                    {"sceneReused",receipt.scene_reused},{"buildSubmitted",receipt.build_submitted},{"traceSubmitted",receipt.trace_submitted},
+                    {"traceCompleted",receipt.trace_completed},{"readbackCompleted",receipt.readback_completed},{"fallbackActive",receipt.fallback_active}};
+            };
+            noemancer::NativeVulkanRayTracingContext context;
+            receipts.push_back(project(context.initialize(),"initialize"));
+            std::array<noemancer::NativeVulkanRayTracingTriangle,1> triangles{};
+            triangles[0].positions={{{-1.0F,-1.0F,0.0F},{1.0F,-1.0F,0.0F},{0.0F,1.0F,0.0F}}};
+            receipts.push_back(project(context.ensure_scene({triangles,1U,1U}),"ensure-scene"));
+            for(std::uint32_t frame=0;frame<frames;++frame)receipts.push_back(project(context.build_or_update(),"build-or-update"));
+            receipts.push_back(project(context.trace(),"trace"));receipts.push_back(project(context.readback(),"readback"));
+            persistent_gpu_ready=receipts.back().value("persistentBackend",false)&&receipts.back().value("traceCompleted",false);
+            receipts.push_back(project(context.shutdown(),"shutdown"));
+            lifecycle_ok=!receipts.empty()&&!receipts.front().value("code",std::string{}).empty();
+        }
+        const auto document=nlohmann::json{{"schemaVersion","noemancer.native-rhi-context-session/0.1"},{"success",lifecycle_ok},
+            {"backend",backend},{"requestedFrames",frames},{"persistentGpuReady",persistent_gpu_ready},{"rtgiReady",false},
+            {"receipts",std::move(receipts)},
+            {"boundary","This command proves bounded cross-frame context state and honest fallback only. persistentGpuReady remains false until native AS/SBT/output resources survive and execute across frames."}};
+        std::cout<<document.dump()<<'\n';return lifecycle_ok?0:32;
     }
     if(operation=="execute") {
         const auto d3d12=noemancer::run_native_d3d12_raytracing_executor();

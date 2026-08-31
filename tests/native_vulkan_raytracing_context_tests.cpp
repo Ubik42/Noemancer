@@ -1,0 +1,272 @@
+#include "runtime/native_vulkan_raytracing_context.hpp"
+
+#include <cstdint>
+#include <iostream>
+#include <limits>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace {
+
+using namespace noemancer;
+
+bool check(const bool condition, const std::string_view message) {
+    if (!condition)
+        std::cerr << "native_vulkan_raytracing_context_tests: " << message << '\n';
+    return condition;
+}
+
+NativeVulkanRayTracingTriangle test_triangle() {
+    NativeVulkanRayTracingTriangle triangle;
+    triangle.positions = {{{-1.0F, -1.0F, 0.0F},
+                           {1.0F, -1.0F, 0.0F},
+                           {0.0F, 1.0F, 0.0F}}};
+    return triangle;
+}
+
+NativeVulkanRayTracingScene scene_for(
+    const std::vector<NativeVulkanRayTracingTriangle>& triangles,
+    const std::uint64_t topology_revision = 1U,
+    const std::uint64_t content_revision = 1U) {
+    return NativeVulkanRayTracingScene{
+        .triangles = std::span<const NativeVulkanRayTracingTriangle>(triangles),
+        .topology_revision = topology_revision,
+        .content_revision = content_revision,
+    };
+}
+
+bool test_vocabulary_and_contract_bounds() {
+    if (!check(native_vulkan_raytracing_context_schema ==
+                   "noemancer.native-vulkan-raytracing-context/0.1",
+               "context schema drifted"))
+        return false;
+    if (!check(native_vulkan_raytracing_context_state_name(
+                   NativeVulkanRayTracingContextState::uninitialized) == "uninitialized" &&
+                   native_vulkan_raytracing_context_state_name(
+                       NativeVulkanRayTracingContextState::ready) == "ready" &&
+                   native_vulkan_raytracing_context_state_name(
+                       NativeVulkanRayTracingContextState::unsupported) == "unsupported" &&
+                   native_vulkan_raytracing_context_state_name(
+                       NativeVulkanRayTracingContextState::fallback) == "fallback" &&
+                   native_vulkan_raytracing_context_state_name(
+                       NativeVulkanRayTracingContextState::error) == "error" &&
+                   native_vulkan_raytracing_context_state_name(
+                       NativeVulkanRayTracingContextState::shutdown) == "shutdown",
+               "context state vocabulary drifted"))
+        return false;
+    if (!check(native_vulkan_raytracing_context_failure_stage_name(
+                   NativeVulkanRayTracingContextFailureStage::acceleration_structure) ==
+                   "acceleration-structure" &&
+                   native_vulkan_raytracing_context_failure_stage_name(
+                       NativeVulkanRayTracingContextFailureStage::physical_device) ==
+                   "physical-device" &&
+                   native_vulkan_raytracing_context_failure_stage_name(
+                       NativeVulkanRayTracingContextFailureStage::readback) == "readback",
+               "context failure-stage vocabulary drifted"))
+        return false;
+
+    NativeVulkanRayTracingContextOptions options;
+    options.maximum_triangles = native_vulkan_raytracing_context_hard_max_triangles + 1U;
+    options.output_width = 0U;
+    options.output_height = 50000U;
+    options.output_depth = 0U;
+    NativeVulkanRayTracingContext context(options);
+    const auto receipt = context.initialize();
+    return check(receipt.output_width == 1U && receipt.output_height == 4096U &&
+                     receipt.output_depth == 1U &&
+                     receipt.code.size() <= native_vulkan_raytracing_context_max_text_bytes &&
+                     receipt.detail.size() <= native_vulkan_raytracing_context_max_text_bytes,
+                 "context options were not clamped to bounded output and text contracts");
+}
+
+bool test_fallback_lifecycle_and_stable_scene_cache() {
+    NativeVulkanRayTracingContext context;
+    const auto initialized = context.initialize();
+    if (!check(initialized.state == NativeVulkanRayTracingContextState::fallback &&
+                   initialized.initialized && initialized.fallback_active &&
+                   !initialized.persistent_backend && !initialized.resources_live &&
+                   !initialized.build_submitted && !initialized.build_completed &&
+                   !initialized.trace_submitted && !initialized.trace_completed &&
+                   initialized.generation == 1U,
+               "initialization did not expose an honest fallback lifecycle receipt"))
+        return false;
+
+    const auto initialized_again = context.initialize();
+    if (!check(initialized_again.generation == initialized.generation &&
+                   initialized_again.code.find("already-initialized") != std::string::npos,
+               "initialization was not idempotent"))
+        return false;
+
+    std::vector<NativeVulkanRayTracingTriangle> triangles{test_triangle()};
+    const auto scene = scene_for(triangles);
+    const auto ensured = context.ensure_scene(scene);
+    if (!check(ensured.state == NativeVulkanRayTracingContextState::fallback &&
+                   ensured.scene_ready && ensured.scene_rebuilt && !ensured.scene_updated &&
+                   !ensured.scene_reused && ensured.triangle_count == 1U &&
+                   ensured.generation == 2U,
+               "first scene submission did not create a deterministic snapshot"))
+        return false;
+
+    const auto built = context.build_or_update();
+    if (!check(built.state == NativeVulkanRayTracingContextState::fallback &&
+                   built.scene_ready && !built.build_submitted && !built.build_completed &&
+                   built.code.find("fallback-build-cached") != std::string::npos,
+               "fallback build receipt accidentally claimed a native AS build"))
+        return false;
+
+    const auto traced = context.trace();
+    if (!check(traced.state == NativeVulkanRayTracingContextState::fallback &&
+                   traced.trace_completed && !traced.trace_submitted &&
+                   traced.output_hit == 1U && traced.output_value == 0x48495421U &&
+                   traced.output_bytes == sizeof(std::uint32_t),
+               "fallback trace did not produce the expected bounded hit marker"))
+        return false;
+
+    const auto readback = context.readback();
+    if (!check(readback.readback_completed &&
+                   readback.readback_bytes == sizeof(std::uint32_t) &&
+                   readback.output_hash != 0U && !readback.persistent_backend,
+               "fallback readback receipt was incomplete or overclaimed native work"))
+        return false;
+
+    const auto generation_before_reuse = context.generation();
+    const auto reused = context.ensure_scene(scene);
+    if (!check(reused.scene_reused && !reused.scene_rebuilt && !reused.scene_updated &&
+                   reused.generation == generation_before_reuse,
+               "identical scene submission did not reuse its stable snapshot"))
+        return false;
+
+    triangles[0U].positions[0U][0U] = -0.5F;
+    const auto updated_scene = scene_for(triangles, 1U, 2U);
+    const auto updated = context.ensure_scene(updated_scene);
+    if (!check(updated.scene_updated && !updated.scene_rebuilt && !updated.scene_reused &&
+                   updated.generation > generation_before_reuse &&
+                   updated.scene_content_revision == 2U,
+               "in-place geometry content change did not produce an update"))
+        return false;
+
+    triangles.push_back(test_triangle());
+    const auto rebuilt_scene = scene_for(triangles, 2U, 3U);
+    const auto rebuilt = context.ensure_scene(rebuilt_scene);
+    return check(rebuilt.scene_rebuilt && !rebuilt.scene_updated && !rebuilt.scene_reused &&
+                     rebuilt.triangle_count == 2U && rebuilt.scene_topology_revision == 2U &&
+                     rebuilt.generation > updated.generation,
+                 "topology change did not produce a rebuild");
+}
+
+bool test_missing_invalid_and_unsupported_paths() {
+    NativeVulkanRayTracingContext context;
+    const auto empty = context.ensure_scene({});
+    if (!check(empty.state == NativeVulkanRayTracingContextState::error &&
+                   empty.failure_stage == NativeVulkanRayTracingContextFailureStage::scene &&
+                   empty.code.find("scene-empty") != std::string::npos && !context.scene_ready(),
+               "empty scene was not rejected with a scene diagnostic"))
+        return false;
+
+    std::vector<NativeVulkanRayTracingTriangle> triangles{test_triangle()};
+    triangles[0U].positions[1U][2U] = std::numeric_limits<float>::quiet_NaN();
+    const auto nonfinite = context.ensure_scene(scene_for(triangles));
+    if (!check(nonfinite.state == NativeVulkanRayTracingContextState::error &&
+                   nonfinite.code.find("scene-nonfinite") != std::string::npos &&
+                   !context.scene_ready(),
+               "non-finite scene data was accepted"))
+        return false;
+
+    NativeVulkanRayTracingContextOptions limited_options;
+    limited_options.maximum_triangles = 1U;
+    NativeVulkanRayTracingContext limited(limited_options);
+    std::vector<NativeVulkanRayTracingTriangle> two_triangles{test_triangle(), test_triangle()};
+    const auto over_budget = limited.ensure_scene(scene_for(two_triangles));
+    if (!check(over_budget.state == NativeVulkanRayTracingContextState::error &&
+                   over_budget.code.find("scene-limit") != std::string::npos,
+               "scene triangle budget was not enforced"))
+        return false;
+
+    NativeVulkanRayTracingContextOptions no_fallback_options;
+    no_fallback_options.allow_fallback = false;
+    NativeVulkanRayTracingContext no_fallback(no_fallback_options);
+    const auto unsupported = no_fallback.initialize();
+    if (!check(unsupported.state == NativeVulkanRayTracingContextState::unsupported &&
+                   unsupported.initialized && !unsupported.fallback_active &&
+                   !unsupported.persistent_backend,
+               "fallback-disabled initialization was not explicitly unsupported"))
+        return false;
+    const auto unsupported_scene = no_fallback.ensure_scene(scene_for(two_triangles));
+    if (!check(unsupported_scene.state == NativeVulkanRayTracingContextState::unsupported,
+               "unsupported context accepted scene work"))
+        return false;
+
+    std::vector<NativeVulkanRayTracingTriangle> valid_triangles{test_triangle()};
+    NativeVulkanRayTracingContext valid;
+    if (!check(valid.ensure_scene(scene_for(valid_triangles)).scene_ready,
+               "valid context setup failed"))
+        return false;
+    auto invalid_request = NativeVulkanRayTracingTraceRequest{};
+    invalid_request.direction = {0.0F, 0.0F, 0.0F};
+    const auto invalid_trace = valid.trace(invalid_request);
+    if (!check(invalid_trace.state == NativeVulkanRayTracingContextState::error &&
+                   invalid_trace.failure_stage == NativeVulkanRayTracingContextFailureStage::trace &&
+                   invalid_trace.code.find("trace-invalid-request") != std::string::npos &&
+                   !invalid_trace.trace_completed,
+               "zero-length trace direction was accepted"))
+        return false;
+
+    NativeVulkanRayTracingContext before_trace;
+    if (!check(before_trace.ensure_scene(scene_for(valid_triangles)).scene_ready,
+               "readback precondition setup failed"))
+        return false;
+    const auto missing_trace = before_trace.readback();
+    return check(missing_trace.state == NativeVulkanRayTracingContextState::error &&
+                     missing_trace.failure_stage == NativeVulkanRayTracingContextFailureStage::readback &&
+                     missing_trace.code.find("trace-missing") != std::string::npos,
+                 "readback without a trace was not rejected");
+}
+
+bool test_shutdown_is_idempotent_and_terminal() {
+    NativeVulkanRayTracingContext never_initialized;
+    const auto shutdown_before_initialize = never_initialized.shutdown();
+    if (!check(shutdown_before_initialize.state == NativeVulkanRayTracingContextState::shutdown &&
+                   !shutdown_before_initialize.initialized,
+               "shutdown before initialization did not remain a terminal state"))
+        return false;
+    const auto initialize_after_shutdown = never_initialized.initialize();
+    if (!check(initialize_after_shutdown.state == NativeVulkanRayTracingContextState::error &&
+                   initialize_after_shutdown.failure_stage ==
+                       NativeVulkanRayTracingContextFailureStage::shutdown,
+               "shutdown-before-initialize context was reinitialized"))
+        return false;
+
+    NativeVulkanRayTracingContext context;
+    std::vector<NativeVulkanRayTracingTriangle> triangles{test_triangle()};
+    static_cast<void>(context.ensure_scene(scene_for(triangles)));
+    static_cast<void>(context.trace());
+    const auto shutdown = context.shutdown();
+    if (!check(shutdown.state == NativeVulkanRayTracingContextState::shutdown &&
+                   shutdown.shutdown && !shutdown.resources_live && !shutdown.scene_ready &&
+                   !shutdown.trace_completed,
+               "shutdown did not clear the context-owned lifecycle state"))
+        return false;
+    const auto shutdown_again = context.shutdown();
+    if (!check(shutdown_again.state == NativeVulkanRayTracingContextState::shutdown &&
+                   shutdown_again.code.find("already-complete") != std::string::npos,
+               "shutdown was not idempotent"))
+        return false;
+    const auto after_shutdown = context.ensure_scene(scene_for(triangles));
+    return check(after_shutdown.state == NativeVulkanRayTracingContextState::error &&
+                     after_shutdown.failure_stage == NativeVulkanRayTracingContextFailureStage::shutdown &&
+                     after_shutdown.shutdown,
+                 "terminal shutdown context accepted new scene work");
+}
+
+} // namespace
+
+int main() {
+    if (!test_vocabulary_and_contract_bounds()) return 1;
+    if (!test_fallback_lifecycle_and_stable_scene_cache()) return 2;
+    if (!test_missing_invalid_and_unsupported_paths()) return 3;
+    if (!test_shutdown_is_idempotent_and_terminal()) return 4;
+    std::cout << "native_vulkan_raytracing_context_tests: ok\n";
+    return 0;
+}

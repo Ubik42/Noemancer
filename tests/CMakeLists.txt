@@ -296,6 +296,13 @@ target_link_libraries(noemancer_raytracing_execution_receipt_tests PRIVATE
 add_test(NAME noemancer.raytracing_execution_receipt
     COMMAND noemancer_raytracing_execution_receipt_tests)
 
+add_executable(noemancer_raytracing_render_graph_tests
+    raytracing_render_graph_tests.cpp)
+target_link_libraries(noemancer_raytracing_render_graph_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json)
+add_test(NAME noemancer.raytracing_render_graph
+    COMMAND noemancer_raytracing_render_graph_tests)
+
 add_executable(noemancer_native_d3d12_raytracing_executor_tests
     native_d3d12_raytracing_executor_tests.cpp
     ${PROJECT_SOURCE_DIR}/src/runtime/native_d3d12_raytracing_executor.cpp)
@@ -305,6 +312,14 @@ target_link_libraries(noemancer_native_d3d12_raytracing_executor_tests PRIVATE
     ${CMAKE_DL_LIBS})
 add_test(NAME noemancer.native_d3d12_raytracing_executor
     COMMAND noemancer_native_d3d12_raytracing_executor_tests)
+
+add_executable(noemancer_native_d3d12_raytracing_context_tests
+    native_d3d12_raytracing_context_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/native_d3d12_raytracing_context.cpp)
+target_include_directories(noemancer_native_d3d12_raytracing_context_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME noemancer.native_d3d12_raytracing_context
+    COMMAND noemancer_native_d3d12_raytracing_context_tests)
 
 add_executable(noemancer_native_vulkan_raytracing_executor_tests
     native_vulkan_raytracing_executor_tests.cpp
@@ -316,6 +331,14 @@ target_link_libraries(noemancer_native_vulkan_raytracing_executor_tests PRIVATE
     ${CMAKE_DL_LIBS})
 add_test(NAME noemancer.native_vulkan_raytracing_executor
     COMMAND noemancer_native_vulkan_raytracing_executor_tests)
+
+add_executable(noemancer_native_vulkan_raytracing_context_tests
+    native_vulkan_raytracing_context_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/native_vulkan_raytracing_context.cpp)
+target_include_directories(noemancer_native_vulkan_raytracing_context_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME noemancer.native_vulkan_raytracing_context
+    COMMAND noemancer_native_vulkan_raytracing_context_tests)
 
 add_executable(noemancer_native_raytracing_execution_adapter_tests
     native_raytracing_execution_adapter_tests.cpp

@@ -3,7 +3,7 @@
   "updated": "2026-08-30",
   "status": "in-development",
   "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "establish-persistent-native-rhi-resource-ownership-and-render-graph-raytracing-pass-with-raster-fallback",
+  "currentStep": "materialize-persistent-d3d12-and-vulkan-as-sbt-output-resources-and-bind-the-engine-raytracing-graph-plan",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
