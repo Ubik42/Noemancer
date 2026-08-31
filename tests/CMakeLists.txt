@@ -340,6 +340,19 @@ target_include_directories(noemancer_native_vulkan_raytracing_context_tests PRIV
 add_test(NAME noemancer.native_vulkan_raytracing_context
     COMMAND noemancer_native_vulkan_raytracing_context_tests)
 
+add_executable(noemancer_raytracing_context_session_tests
+    raytracing_context_session_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/raytracing_context_session.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/native_d3d12_raytracing_context.cpp
+    ${PROJECT_SOURCE_DIR}/src/runtime/native_vulkan_raytracing_context.cpp)
+target_include_directories(noemancer_raytracing_context_session_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${SDL3_SOURCE_DIR}/src/video/khronos)
+target_link_libraries(noemancer_raytracing_context_session_tests PRIVATE
+    noemancer::engine nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+add_test(NAME noemancer.raytracing_context_session
+    COMMAND noemancer_raytracing_context_session_tests)
+
 add_executable(noemancer_native_raytracing_execution_adapter_tests
     native_raytracing_execution_adapter_tests.cpp
     ${PROJECT_SOURCE_DIR}/src/runtime/native_raytracing_execution_adapter.cpp)

@@ -81,16 +81,19 @@ bool test_vocabulary_and_contract_bounds() {
                  "context options were not clamped to bounded output and text contracts");
 }
 
-bool test_fallback_lifecycle_and_stable_scene_cache() {
+bool test_lifecycle_and_stable_scene_cache() {
     NativeVulkanRayTracingContext context;
     const auto initialized = context.initialize();
-    if (!check(initialized.state == NativeVulkanRayTracingContextState::fallback &&
-                   initialized.initialized && initialized.fallback_active &&
-                   !initialized.persistent_backend && !initialized.resources_live &&
+    const bool native = initialized.state == NativeVulkanRayTracingContextState::ready &&
+                        initialized.persistent_backend;
+    const bool fallback = initialized.state == NativeVulkanRayTracingContextState::fallback &&
+                          initialized.fallback_active;
+    if (!check((native || fallback) && initialized.initialized &&
+                   initialized.resources_live == native &&
                    !initialized.build_submitted && !initialized.build_completed &&
                    !initialized.trace_submitted && !initialized.trace_completed &&
                    initialized.generation == 1U,
-               "initialization did not expose an honest fallback lifecycle receipt"))
+               "initialization did not expose an honest native-or-fallback lifecycle receipt"))
         return false;
 
     const auto initialized_again = context.initialize();
@@ -110,11 +113,29 @@ bool test_fallback_lifecycle_and_stable_scene_cache() {
         return false;
 
     const auto built = context.build_or_update();
-    if (!check(built.state == NativeVulkanRayTracingContextState::fallback &&
-                   built.scene_ready && !built.build_submitted && !built.build_completed &&
-                   built.code.find("fallback-build-cached") != std::string::npos,
-               "fallback build receipt accidentally claimed a native AS build"))
+    if (!check(built.scene_ready &&
+                   ((native && built.state == NativeVulkanRayTracingContextState::ready &&
+                     built.persistent_backend && built.build_submitted && built.build_completed) ||
+                    (fallback && built.state == NativeVulkanRayTracingContextState::fallback &&
+                     !built.persistent_backend && !built.build_submitted && !built.build_completed)),
+               "first build did not expose an honest native AS build or fallback receipt"))
         return false;
+
+    // A render loop must be able to submit the same scene repeatedly without
+    // rebuilding AS resources.  Keep this as three explicit frame attempts so
+    // the contract covers the common first-frame + two steady-state pattern.
+    const auto generation_after_build = context.generation();
+    for (int frame = 0; frame < 2; ++frame) {
+        const auto frame_scene = context.ensure_scene(scene);
+        const auto frame_build = context.build_or_update();
+        if (!check(frame_scene.scene_reused && !frame_scene.scene_rebuilt &&
+                       !frame_scene.scene_updated && frame_scene.generation == generation_after_build &&
+                       frame_build.generation == generation_after_build &&
+                       !frame_build.build_submitted && !frame_build.build_completed &&
+                       frame_build.scene_ready,
+                   "steady-state frame unexpectedly rebuilt or resubmitted the native scene"))
+            return false;
+    }
 
     const auto traced = context.trace();
     if (!check(traced.state == NativeVulkanRayTracingContextState::fallback &&
@@ -146,14 +167,32 @@ bool test_fallback_lifecycle_and_stable_scene_cache() {
                    updated.scene_content_revision == 2U,
                "in-place geometry content change did not produce an update"))
         return false;
+    const auto updated_build = context.build_or_update();
+    if (!check((native && updated_build.state == NativeVulkanRayTracingContextState::ready &&
+                updated_build.persistent_backend && updated_build.build_submitted &&
+                updated_build.build_completed) ||
+               (fallback && updated_build.state == NativeVulkanRayTracingContextState::fallback &&
+                !updated_build.persistent_backend && !updated_build.build_submitted &&
+                !updated_build.build_completed),
+               "content update did not expose an honest native update or fallback receipt"))
+        return false;
 
     triangles.push_back(test_triangle());
     const auto rebuilt_scene = scene_for(triangles, 2U, 3U);
     const auto rebuilt = context.ensure_scene(rebuilt_scene);
-    return check(rebuilt.scene_rebuilt && !rebuilt.scene_updated && !rebuilt.scene_reused &&
-                     rebuilt.triangle_count == 2U && rebuilt.scene_topology_revision == 2U &&
-                     rebuilt.generation > updated.generation,
-                 "topology change did not produce a rebuild");
+    if (!check(rebuilt.scene_rebuilt && !rebuilt.scene_updated && !rebuilt.scene_reused &&
+                   rebuilt.triangle_count == 2U && rebuilt.scene_topology_revision == 2U &&
+                   rebuilt.generation > updated.generation,
+               "topology change did not produce a rebuild"))
+        return false;
+    const auto rebuilt_build = context.build_or_update();
+    return check((native && rebuilt_build.state == NativeVulkanRayTracingContextState::ready &&
+                  rebuilt_build.persistent_backend && rebuilt_build.build_submitted &&
+                  rebuilt_build.build_completed) ||
+                     (fallback && rebuilt_build.state == NativeVulkanRayTracingContextState::fallback &&
+                      !rebuilt_build.persistent_backend && !rebuilt_build.build_submitted &&
+                      !rebuilt_build.build_completed),
+                 "topology rebuild did not expose an honest native build or fallback receipt");
 }
 
 bool test_missing_invalid_and_unsupported_paths() {
@@ -264,7 +303,7 @@ bool test_shutdown_is_idempotent_and_terminal() {
 
 int main() {
     if (!test_vocabulary_and_contract_bounds()) return 1;
-    if (!test_fallback_lifecycle_and_stable_scene_cache()) return 2;
+    if (!test_lifecycle_and_stable_scene_cache()) return 2;
     if (!test_missing_invalid_and_unsupported_paths()) return 3;
     if (!test_shutdown_is_idempotent_and_terminal()) return 4;
     std::cout << "native_vulkan_raytracing_context_tests: ok\n";

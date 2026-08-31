@@ -76,7 +76,7 @@ struct NativeVulkanRayTracingTraceRequest final {
 
 // Plain, bounded evidence for one context operation.  Native Vulkan handles
 // (VkInstance/VkDevice/VkQueue/VkFence/AS/SBT/output) are intentionally not
-// represented here; they remain private to the eventual backend Impl.
+// represented here; they remain private to the PImpl backend.
 struct NativeVulkanRayTracingContextReceipt final {
     std::string schema{std::string(native_vulkan_raytracing_context_schema)};
     NativeVulkanRayTracingContextState state{NativeVulkanRayTracingContextState::uninitialized};
@@ -115,11 +115,14 @@ struct NativeVulkanRayTracingContextReceipt final {
     std::uint64_t readback_bytes{};
 };
 
-// A single-owner RAII context boundary for persistent Vulkan RT work.  The
-// first implementation intentionally exposes the complete lifecycle and a
-// deterministic CPU fallback while the native extraction from the short-lived
-// executor is pending.  It never calls the short-lived executor and never
-// projects fallback work as NativeVulkanRayTracingContextState::ready.
+// A single-owner RAII context boundary for persistent Vulkan RT work.  When
+// the device exposes the required acceleration-structure features, the
+// implementation owns the loader/instance/device/queue/command stream and
+// persistent geometry, BLAS, TLAS, scratch and output resources.  It supports
+// rebuild/update submissions but intentionally stops before a shader pipeline
+// and SBT; trace/readback therefore remain explicit unsupported operations on
+// the native path.  Devices without those capabilities use a deterministic
+// CPU fallback and never project fallback work as `ready`.
 class NativeVulkanRayTracingContext final {
 public:
     explicit NativeVulkanRayTracingContext(

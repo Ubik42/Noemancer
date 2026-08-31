@@ -14,6 +14,7 @@
 #include "runtime/native_d3d12_raytracing_context.hpp"
 #include "runtime/native_vulkan_raytracing_executor.hpp"
 #include "runtime/native_vulkan_raytracing_context.hpp"
+#include "runtime/raytracing_context_session.hpp"
 #include "runtime/windows_package_service.hpp"
 
 #include <nlohmann/json.hpp>
@@ -380,23 +381,63 @@ nlohmann::json native_raytracing_capability_json(
 
 int run_rhi_cli(const int argc,char** argv) {
     if(argc<3) {
-        std::cerr<<"Expected: noemancer rhi capabilities|execute|context [--backend d3d12|vulkan] [--frames N] [--format json]\n";return 2;
+        std::cerr<<"Expected: noemancer rhi capabilities|execute|context|session [--backend d3d12|vulkan] [--frames N] [--format json]\n";return 2;
     }
     const std::string_view operation=argv[2];
-    if(operation!="capabilities"&&operation!="execute"&&operation!="context") {
-        std::cerr<<"Expected: noemancer rhi capabilities|execute|context [--backend d3d12|vulkan] [--frames N] [--format json]\n";return 2;
+    if(operation!="capabilities"&&operation!="execute"&&operation!="context"&&operation!="session") {
+        std::cerr<<"Expected: noemancer rhi capabilities|execute|context|session [--backend d3d12|vulkan] [--frames N] [--format json]\n";return 2;
     }
     std::string backend{"d3d12"};std::uint32_t frames{3U};
     for(int index=3;index<argc;++index) {
         if(std::string_view(argv[index])=="--format"&&index+1<argc&&
             std::string_view(argv[index+1])=="json") { ++index;continue; }
-        if(operation=="context"&&std::string_view(argv[index])=="--backend"&&index+1<argc) {
+        if((operation=="context"||operation=="session")&&std::string_view(argv[index])=="--backend"&&index+1<argc) {
             backend=argv[++index];if(backend!="d3d12"&&backend!="vulkan") {std::cerr<<"Invalid RHI context backend\n";return 2;}continue;
         }
         if(operation=="context"&&std::string_view(argv[index])=="--frames"&&index+1<argc) {
             if(!parse_frames(argv[++index],frames)||frames==0U||frames>16U){std::cerr<<"RHI context frames must be in [1,16]\n";return 2;}continue;
         }
         std::cerr<<"Unknown RHI argument: "<<argv[index]<<'\n';return 2;
+    }
+    if(operation=="session") {
+        using Resource=noemancer::RayTracingRenderGraphResource;
+        using Lifetime=noemancer::RayTracingRenderGraphResourceLifetime;
+        using ResourceKind=noemancer::RayTracingRenderGraphResourceKind;
+        using Pass=noemancer::RayTracingRenderGraphPass;
+        using PassKind=noemancer::RayTracingRenderGraphPassKind;
+        noemancer::RayTracingRenderGraphDescription graph;
+        graph.graph_id="render.graph.cli-session";
+        graph.resources={
+            Resource{.id="as.blas.main",.kind=ResourceKind::blas,.lifetime=Lifetime::persistent,.format="buffer",.dimension="buffer",.bytes=64U*1024U,.scratch_bytes=128U*1024U},
+            Resource{.id="as.tlas.main",.kind=ResourceKind::tlas,.lifetime=Lifetime::persistent,.format="buffer",.dimension="buffer",.bytes=64U*1024U,.scratch_bytes=128U*1024U},
+            Resource{.id="rt.sbt.main",.kind=ResourceKind::sbt,.lifetime=Lifetime::persistent,.format="buffer",.dimension="buffer",.bytes=1024U},
+            Resource{.id="rt.output",.kind=ResourceKind::output,.lifetime=Lifetime::transient,.format="rgba16f",.dimension="2d",.width=4U,.height=4U,.bytes=128U},
+            Resource{.id="rt.history",.kind=ResourceKind::history,.lifetime=Lifetime::history,.format="rgba16f",.dimension="2d",.width=4U,.height=4U,.bytes=128U,.history_length=2U}};
+        graph.passes={
+            Pass{.id="01.build-blas",.kind=PassKind::build_blas,.writes={"as.blas.main"}},
+            Pass{.id="02.build-tlas",.kind=PassKind::build_tlas,.reads={"as.blas.main"},.writes={"as.tlas.main"},.depends_on={"01.build-blas"}},
+            Pass{.id="03.build-sbt",.kind=PassKind::build_sbt,.writes={"rt.sbt.main"}},
+            Pass{.id="04.trace",.kind=PassKind::trace,.reads={"as.tlas.main","rt.sbt.main"},.writes={"rt.output"},.depends_on={"02.build-tlas","03.build-sbt"}}};
+        noemancer::RayTracingContextSessionOptions options;
+        options.backend=backend=="d3d12"
+            ?noemancer::RayTracingContextSessionBackend::d3d12
+            :noemancer::RayTracingContextSessionBackend::vulkan;
+        noemancer::RayTracingContextSession session{options};
+        noemancer::RayTracingContextSessionRequest request;
+        request.session_id="rhi.cli-session";
+        request.plan=noemancer::build_raytracing_render_graph_plan(graph);
+        noemancer::RayTracingContextSessionTriangle triangle;
+        triangle.positions={{{-1.0F,-1.0F,0.0F},{1.0F,-1.0F,0.0F},{0.0F,1.0F,0.0F}}};
+        request.scene.scene_id="rhi.cli-session.scene";
+        request.scene.triangles.push_back(triangle);
+        const auto receipt=session.execute(request);
+        const auto shutdown=session.shutdown();
+        const auto document=nlohmann::json{{"schemaVersion","noemancer.native-rhi-session-cli/0.1"},
+            {"success",!receipt.failed},{"backend",backend},{"nativeReady",receipt.native_ready},
+            {"session",nlohmann::json::parse(noemancer::raytracing_context_session_observation_json(receipt))},
+            {"shutdown",nlohmann::json::parse(noemancer::raytracing_context_session_observation_json(shutdown))},
+            {"boundary","The Engine plan reached persistent native BLAS/TLAS. SBT, RT pipeline, visible output and RTGI remain unsupported and are not promoted."}};
+        std::cout<<document.dump()<<'\n';return receipt.failed?33:0;
     }
     if(operation=="context") {
         nlohmann::json receipts=nlohmann::json::array();bool lifecycle_ok=true;bool persistent_gpu_ready=false;
@@ -441,7 +482,7 @@ int run_rhi_cli(const int argc,char** argv) {
         const auto document=nlohmann::json{{"schemaVersion","noemancer.native-rhi-context-session/0.1"},{"success",lifecycle_ok},
             {"backend",backend},{"requestedFrames",frames},{"persistentGpuReady",persistent_gpu_ready},{"rtgiReady",false},
             {"receipts",std::move(receipts)},
-            {"boundary","This command proves bounded cross-frame context state and honest fallback only. persistentGpuReady remains false until native AS/SBT/output resources survive and execute across frames."}};
+            {"boundary","This command proves bounded cross-frame context state and persistent native AS reuse. persistentGpuReady remains false until SBT/output resources and trace execute across frames."}};
         std::cout<<document.dump()<<'\n';return lifecycle_ok?0:32;
     }
     if(operation=="execute") {

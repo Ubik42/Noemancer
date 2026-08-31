@@ -3,7 +3,7 @@
   "updated": "2026-08-30",
   "status": "in-development",
   "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "materialize-persistent-d3d12-and-vulkan-as-sbt-output-resources-and-bind-the-engine-raytracing-graph-plan",
+  "currentStep": "materialize-persistent-d3d12-and-vulkan-sbt-pipeline-output-resources-and-bind-the-session-into-the-production-render-graph",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",

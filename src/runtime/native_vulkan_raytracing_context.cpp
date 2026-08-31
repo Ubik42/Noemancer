@@ -1,15 +1,34 @@
 #include "runtime/native_vulkan_raytracing_context.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
+
+#if __has_include(<vulkan/vulkan.h>)
+#  include <vulkan/vulkan.h>
+#  define NOEMANCER_HAS_VULKAN_HEADERS 1
+#else
+#  define NOEMANCER_HAS_VULKAN_HEADERS 0
+#endif
+
+#if defined(_WIN32)
+#  define NOMINMAX
+#  include <windows.h>
+#else
+#  include <dlfcn.h>
+#endif
 
 namespace noemancer {
 
@@ -58,9 +77,8 @@ bool finite_vec(const Vec3 value) noexcept {
 }
 
 bool valid_scene_triangle(const NativeVulkanRayTracingTriangle& triangle) noexcept {
-    for (const auto& position : triangle.positions) {
+    for (const auto& position : triangle.positions)
         if (!finite_vec(to_vec3(position))) return false;
-    }
     return true;
 }
 
@@ -69,9 +87,10 @@ bool valid_trace_request(const NativeVulkanRayTracingTraceRequest& request) noex
     const auto direction = to_vec3(request.direction);
     const auto direction_length_squared = dot(direction, direction);
     return finite_vec(origin) && finite_vec(direction) && std::isfinite(direction_length_squared) &&
-           direction_length_squared > kEpsilon * kEpsilon && finite_bounded(request.minimum_distance, kMaximumDistance) &&
-           finite_bounded(request.maximum_distance, kMaximumDistance) && request.minimum_distance >= 0.0F &&
-           request.maximum_distance > request.minimum_distance;
+           direction_length_squared > kEpsilon * kEpsilon &&
+           finite_bounded(request.minimum_distance, kMaximumDistance) &&
+           finite_bounded(request.maximum_distance, kMaximumDistance) &&
+           request.minimum_distance >= 0.0F && request.maximum_distance > request.minimum_distance;
 }
 
 std::uint64_t hash_u32(std::uint64_t hash, const std::uint32_t value) noexcept {
@@ -82,10 +101,6 @@ std::uint64_t hash_u32(std::uint64_t hash, const std::uint32_t value) noexcept {
     return hash;
 }
 
-std::uint64_t hash_float(std::uint64_t hash, const float value) noexcept {
-    return hash_u32(hash, std::bit_cast<std::uint32_t>(value));
-}
-
 std::uint64_t scene_fingerprint(const NativeVulkanRayTracingScene& scene) noexcept {
     auto hash = kFnvOffsetBasis;
     hash = hash_u32(hash, static_cast<std::uint32_t>(scene.triangles.size()));
@@ -93,11 +108,10 @@ std::uint64_t scene_fingerprint(const NativeVulkanRayTracingScene& scene) noexce
     hash = hash_u32(hash, static_cast<std::uint32_t>(scene.topology_revision >> 32U));
     hash = hash_u32(hash, static_cast<std::uint32_t>(scene.content_revision));
     hash = hash_u32(hash, static_cast<std::uint32_t>(scene.content_revision >> 32U));
-    for (const auto& triangle : scene.triangles) {
-        for (const auto& position : triangle.positions) {
-            for (const auto coordinate : position) hash = hash_float(hash, coordinate);
-        }
-    }
+    for (const auto& triangle : scene.triangles)
+        for (const auto& position : triangle.positions)
+            for (const auto coordinate : position)
+                hash = hash_u32(hash, std::bit_cast<std::uint32_t>(coordinate));
     return hash;
 }
 
@@ -125,7 +139,334 @@ bool ray_intersects_triangle(const Vec3 origin,
     return std::isfinite(distance) && distance >= minimum_distance && distance <= maximum_distance;
 }
 
+#if NOEMANCER_HAS_VULKAN_HEADERS
+
+struct VulkanModule final {
+#if defined(_WIN32)
+    HMODULE handle{};
+#else
+    void* handle{};
+#endif
+    VulkanModule() = default;
+    VulkanModule(const VulkanModule&) = delete;
+    VulkanModule& operator=(const VulkanModule&) = delete;
+    ~VulkanModule() {
+#if defined(_WIN32)
+        if (handle != nullptr) FreeLibrary(handle);
+#else
+        if (handle != nullptr) dlclose(handle);
+#endif
+    }
+    [[nodiscard]] bool load() {
+#if defined(_WIN32)
+        handle = LoadLibraryW(L"vulkan-1.dll");
+#else
+        handle = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+        if (handle == nullptr) handle = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+#endif
+        return handle != nullptr;
+    }
+    [[nodiscard]] void* symbol(const char* name) const {
+        if (handle == nullptr) return nullptr;
+#if defined(_WIN32)
+        return reinterpret_cast<void*>(GetProcAddress(handle, name));
+#else
+        return dlsym(handle, name);
+#endif
+    }
+};
+
+template <typename Function>
+Function load_global(const VulkanModule& module,
+                     const PFN_vkGetInstanceProcAddr gipa,
+                     const char* name) {
+    auto function = module.symbol(name);
+    if (function == nullptr && gipa != nullptr)
+        function = reinterpret_cast<void*>(gipa(VK_NULL_HANDLE, name));
+    return reinterpret_cast<Function>(function);
+}
+
+template <typename Function>
+Function load_instance(const PFN_vkGetInstanceProcAddr gipa,
+                       const VkInstance instance,
+                       const char* name) {
+    if (gipa == nullptr || instance == VK_NULL_HANDLE) return nullptr;
+    return reinterpret_cast<Function>(gipa(instance, name));
+}
+
+template <typename Function>
+Function load_device(const PFN_vkGetDeviceProcAddr gdpa,
+                     const VkDevice device,
+                     const char* name) {
+    if (gdpa == nullptr || device == VK_NULL_HANDLE) return nullptr;
+    return reinterpret_cast<Function>(gdpa(device, name));
+}
+
+struct InstanceFunctions final {
+    PFN_vkDestroyInstance destroy_instance{};
+    PFN_vkEnumeratePhysicalDevices enumerate_physical_devices{};
+    PFN_vkEnumerateDeviceExtensionProperties enumerate_device_extension_properties{};
+    PFN_vkGetPhysicalDeviceFeatures2 get_physical_device_features2{};
+    PFN_vkGetPhysicalDeviceProperties2 get_physical_device_properties2{};
+    PFN_vkGetPhysicalDeviceProperties get_physical_device_properties{};
+    PFN_vkGetPhysicalDeviceMemoryProperties get_physical_device_memory_properties{};
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties get_physical_device_queue_family_properties{};
+    PFN_vkGetDeviceProcAddr get_device_proc_addr{};
+    PFN_vkCreateDevice create_device{};
+};
+
+struct DeviceFunctions final {
+    PFN_vkGetDeviceQueue get_device_queue{};
+    PFN_vkDestroyDevice destroy_device{};
+    PFN_vkDeviceWaitIdle device_wait_idle{};
+    PFN_vkCreateBuffer create_buffer{};
+    PFN_vkDestroyBuffer destroy_buffer{};
+    PFN_vkGetBufferMemoryRequirements get_buffer_memory_requirements{};
+    PFN_vkAllocateMemory allocate_memory{};
+    PFN_vkFreeMemory free_memory{};
+    PFN_vkBindBufferMemory bind_buffer_memory{};
+    PFN_vkMapMemory map_memory{};
+    PFN_vkUnmapMemory unmap_memory{};
+    PFN_vkGetBufferDeviceAddress get_buffer_device_address{};
+    PFN_vkCreateAccelerationStructureKHR create_acceleration_structure{};
+    PFN_vkDestroyAccelerationStructureKHR destroy_acceleration_structure{};
+    PFN_vkGetAccelerationStructureBuildSizesKHR get_acceleration_structure_build_sizes{};
+    PFN_vkGetAccelerationStructureDeviceAddressKHR get_acceleration_structure_device_address{};
+    PFN_vkCmdBuildAccelerationStructuresKHR cmd_build_acceleration_structures{};
+    PFN_vkCreateCommandPool create_command_pool{};
+    PFN_vkDestroyCommandPool destroy_command_pool{};
+    PFN_vkAllocateCommandBuffers allocate_command_buffers{};
+    PFN_vkBeginCommandBuffer begin_command_buffer{};
+    PFN_vkEndCommandBuffer end_command_buffer{};
+    PFN_vkCmdPipelineBarrier cmd_pipeline_barrier{};
+    PFN_vkCreateFence create_fence{};
+    PFN_vkDestroyFence destroy_fence{};
+    PFN_vkResetFences reset_fences{};
+    PFN_vkWaitForFences wait_for_fences{};
+    PFN_vkQueueSubmit queue_submit{};
+};
+
+struct BufferResource final {
+    VkBuffer buffer{};
+    VkDeviceMemory memory{};
+    VkDeviceSize allocation_size{};
+    VkDeviceAddress device_address{};
+};
+
+struct AccelerationStructureResource final {
+    VkAccelerationStructureKHR acceleration_structure{};
+    VkDeviceAddress device_address{};
+};
+
+struct SelectedPhysicalDevice final {
+    VkPhysicalDevice handle{};
+    VkPhysicalDeviceProperties properties{};
+    VkPhysicalDeviceMemoryProperties memory_properties{};
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_properties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    std::uint32_t queue_family_index{};
+    bool buffer_device_address_extension{};
+};
+
+bool has_extension(const std::vector<VkExtensionProperties>& extensions, const char* name) {
+    return std::ranges::any_of(extensions, [name](const VkExtensionProperties& extension) {
+        return std::strcmp(extension.extensionName, name) == 0;
+    });
+}
+
+std::optional<std::uint32_t> find_memory_type(const VkPhysicalDeviceMemoryProperties& properties,
+                                               const std::uint32_t bits,
+                                               const VkMemoryPropertyFlags required) {
+    for (std::uint32_t index = 0U; index < properties.memoryTypeCount; ++index)
+        if ((bits & (1U << index)) != 0U &&
+            (properties.memoryTypes[index].propertyFlags & required) == required)
+            return index;
+    return std::nullopt;
+}
+
+VkDeviceAddress align_address(const VkDeviceAddress address, const VkDeviceSize alignment) {
+    if (alignment <= 1U) return address;
+    const auto remainder = address % alignment;
+    return remainder == 0U ? address : address + alignment - remainder;
+}
+
+bool require_instance_functions(const InstanceFunctions& functions) {
+    return functions.destroy_instance != nullptr && functions.enumerate_physical_devices != nullptr &&
+           functions.enumerate_device_extension_properties != nullptr &&
+           functions.get_physical_device_features2 != nullptr &&
+           functions.get_physical_device_properties2 != nullptr &&
+           functions.get_physical_device_properties != nullptr &&
+           functions.get_physical_device_memory_properties != nullptr &&
+           functions.get_physical_device_queue_family_properties != nullptr &&
+           functions.get_device_proc_addr != nullptr && functions.create_device != nullptr;
+}
+
+bool require_device_functions(const DeviceFunctions& functions) {
+    return functions.get_device_queue != nullptr && functions.destroy_device != nullptr &&
+           functions.device_wait_idle != nullptr && functions.create_buffer != nullptr &&
+           functions.destroy_buffer != nullptr && functions.get_buffer_memory_requirements != nullptr &&
+           functions.allocate_memory != nullptr && functions.free_memory != nullptr &&
+           functions.bind_buffer_memory != nullptr && functions.map_memory != nullptr &&
+           functions.unmap_memory != nullptr && functions.get_buffer_device_address != nullptr &&
+           functions.create_acceleration_structure != nullptr &&
+           functions.destroy_acceleration_structure != nullptr &&
+           functions.get_acceleration_structure_build_sizes != nullptr &&
+           functions.get_acceleration_structure_device_address != nullptr &&
+           functions.cmd_build_acceleration_structures != nullptr &&
+           functions.create_command_pool != nullptr && functions.destroy_command_pool != nullptr &&
+           functions.allocate_command_buffers != nullptr && functions.begin_command_buffer != nullptr &&
+           functions.end_command_buffer != nullptr && functions.cmd_pipeline_barrier != nullptr &&
+           functions.create_fence != nullptr && functions.destroy_fence != nullptr &&
+           functions.reset_fences != nullptr && functions.wait_for_fences != nullptr &&
+           functions.queue_submit != nullptr;
+}
+
+bool create_buffer(const DeviceFunctions& functions,
+                   const VkDevice device,
+                   const VkPhysicalDeviceMemoryProperties& properties,
+                   const VkDeviceSize size,
+                   const VkBufferUsageFlags usage,
+                   const VkMemoryPropertyFlags memory_flags,
+                   const void* initial_data,
+                   const std::size_t initial_bytes,
+                   BufferResource& result,
+                   std::string& error_code,
+                   std::string& error_detail) {
+    result = {};
+    if (size == 0U || initial_bytes > static_cast<std::size_t>(size)) {
+        error_code = "native-vulkan-rt.buffer-size-invalid";
+        error_detail = "The persistent Vulkan buffer size is invalid.";
+        return false;
+    }
+    VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer_info.size = size;
+    buffer_info.usage = usage;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (functions.create_buffer(device, &buffer_info, nullptr, &result.buffer) != VK_SUCCESS) {
+        error_code = "native-vulkan-rt.create-buffer-failed";
+        error_detail = "vkCreateBuffer failed.";
+        return false;
+    }
+    VkMemoryRequirements requirements{};
+    functions.get_buffer_memory_requirements(device, result.buffer, &requirements);
+    const auto memory_type = find_memory_type(properties, requirements.memoryTypeBits, memory_flags);
+    if (!memory_type) {
+        functions.destroy_buffer(device, result.buffer, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.memory-type-unavailable";
+        error_detail = "No compatible Vulkan memory type satisfied the persistent buffer flags.";
+        return false;
+    }
+    VkMemoryAllocateFlagsInfo address_flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    address_flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    VkMemoryAllocateInfo allocate_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate_info.pNext = &address_flags;
+    allocate_info.allocationSize = requirements.size;
+    allocate_info.memoryTypeIndex = *memory_type;
+    if (functions.allocate_memory(device, &allocate_info, nullptr, &result.memory) != VK_SUCCESS) {
+        functions.destroy_buffer(device, result.buffer, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.allocate-buffer-memory-failed";
+        error_detail = "vkAllocateMemory failed for a persistent Vulkan buffer.";
+        return false;
+    }
+    result.allocation_size = requirements.size;
+    if (functions.bind_buffer_memory(device, result.buffer, result.memory, 0U) != VK_SUCCESS) {
+        functions.free_memory(device, result.memory, nullptr);
+        functions.destroy_buffer(device, result.buffer, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.bind-buffer-memory-failed";
+        error_detail = "vkBindBufferMemory failed.";
+        return false;
+    }
+    if (initial_data != nullptr && initial_bytes > 0U) {
+        void* mapped = nullptr;
+        if (functions.map_memory(device, result.memory, 0U, initial_bytes, 0U, &mapped) != VK_SUCCESS ||
+            mapped == nullptr) {
+            functions.free_memory(device, result.memory, nullptr);
+            functions.destroy_buffer(device, result.buffer, nullptr);
+            result = {};
+            error_code = "native-vulkan-rt.map-buffer-memory-failed";
+            error_detail = "vkMapMemory failed for persistent host-visible data.";
+            return false;
+        }
+        std::memcpy(mapped, initial_data, initial_bytes);
+        functions.unmap_memory(device, result.memory);
+    }
+    VkBufferDeviceAddressInfo address_info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    address_info.buffer = result.buffer;
+    result.device_address = functions.get_buffer_device_address(device, &address_info);
+    if (result.device_address == 0U) {
+        functions.free_memory(device, result.memory, nullptr);
+        functions.destroy_buffer(device, result.buffer, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.buffer-device-address-unavailable";
+        error_detail = "vkGetBufferDeviceAddress returned zero.";
+        return false;
+    }
+    return true;
+}
+
+bool write_buffer(const DeviceFunctions& functions,
+                  const VkDevice device,
+                  const BufferResource& buffer,
+                  const void* data,
+                  const std::size_t bytes,
+                  std::string& error_code,
+                  std::string& error_detail) {
+    if (data == nullptr || bytes == 0U || bytes > static_cast<std::size_t>(buffer.allocation_size)) {
+        error_code = "native-vulkan-rt.buffer-write-invalid";
+        error_detail = "The persistent geometry update exceeds its allocation.";
+        return false;
+    }
+    void* mapped = nullptr;
+    if (functions.map_memory(device, buffer.memory, 0U, bytes, 0U, &mapped) != VK_SUCCESS || mapped == nullptr) {
+        error_code = "native-vulkan-rt.map-buffer-update-failed";
+        error_detail = "vkMapMemory failed for the persistent geometry update.";
+        return false;
+    }
+    std::memcpy(mapped, data, bytes);
+    functions.unmap_memory(device, buffer.memory);
+    return true;
+}
+
+bool create_acceleration_structure(const DeviceFunctions& functions,
+                                   const VkDevice device,
+                                   const VkBuffer storage_buffer,
+                                   const VkDeviceSize size,
+                                   const VkAccelerationStructureTypeKHR type,
+                                   AccelerationStructureResource& result,
+                                   std::string& error_code,
+                                   std::string& error_detail) {
+    result = {};
+    VkAccelerationStructureCreateInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+    info.buffer = storage_buffer;
+    info.size = size;
+    info.type = type;
+    if (functions.create_acceleration_structure(device, &info, nullptr, &result.acceleration_structure) != VK_SUCCESS) {
+        error_code = "native-vulkan-rt.create-acceleration-structure-failed";
+        error_detail = "vkCreateAccelerationStructureKHR failed.";
+        return false;
+    }
+    VkAccelerationStructureDeviceAddressInfoKHR address_info{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+    address_info.accelerationStructure = result.acceleration_structure;
+    result.device_address = functions.get_acceleration_structure_device_address(device, &address_info);
+    if (result.device_address == 0U) {
+        functions.destroy_acceleration_structure(device, result.acceleration_structure, nullptr);
+        result = {};
+        error_code = "native-vulkan-rt.acceleration-structure-address-unavailable";
+        error_detail = "vkGetAccelerationStructureDeviceAddressKHR returned zero.";
+        return false;
+    }
+    return true;
+}
+
+#endif
+
 } // namespace
+
+#if NOEMANCER_HAS_VULKAN_HEADERS
 
 struct NativeVulkanRayTracingContext::Impl final {
     NativeVulkanRayTracingContextOptions options;
@@ -137,6 +478,9 @@ struct NativeVulkanRayTracingContext::Impl final {
     bool scene_rebuilt{};
     bool scene_updated{};
     bool scene_reused{};
+    bool build_submitted{};
+    bool build_completed{};
+    bool trace_submitted{};
     std::uint64_t generation{};
     std::uint64_t scene_topology_revision{};
     std::uint64_t scene_content_revision{};
@@ -145,6 +489,40 @@ struct NativeVulkanRayTracingContext::Impl final {
     std::uint64_t output_hash{};
     std::vector<NativeVulkanRayTracingTriangle> triangles;
 
+    VulkanModule module;
+    PFN_vkGetInstanceProcAddr get_instance_proc_addr{};
+    InstanceFunctions instance_functions;
+    DeviceFunctions device_functions;
+    VkInstance instance{};
+    VkPhysicalDevice physical_device{};
+    VkDevice device{};
+    VkQueue queue{};
+    VkCommandPool command_pool{};
+    VkCommandBuffer command_buffer{};
+    VkFence fence{};
+    VkPhysicalDeviceMemoryProperties memory_properties{};
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_properties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    std::uint32_t queue_family_index{};
+    VkDeviceSize scratch_alignment{256U};
+
+    BufferResource vertex_buffer;
+    BufferResource instance_buffer;
+    BufferResource blas_result_buffer;
+    BufferResource blas_scratch_buffer;
+    BufferResource tlas_result_buffer;
+    BufferResource tlas_scratch_buffer;
+    BufferResource output_buffer;
+    AccelerationStructureResource blas;
+    AccelerationStructureResource tlas;
+    std::uint32_t native_primitive_count{};
+    std::size_t native_vertex_bytes{};
+    VkDeviceSize blas_scratch_bytes{};
+    VkDeviceSize tlas_scratch_bytes{};
+    bool native_scene_allocated{};
+    bool native_scene_dirty{};
+    bool native_scene_requires_rebuild{};
+
     explicit Impl(const NativeVulkanRayTracingContextOptions& source) : options(source) {
         options.maximum_triangles = std::min(options.maximum_triangles,
                                              native_vulkan_raytracing_context_hard_max_triangles);
@@ -152,6 +530,65 @@ struct NativeVulkanRayTracingContext::Impl final {
         options.output_height = std::clamp(options.output_height, 1U, 4096U);
         options.output_depth = std::clamp(options.output_depth, 1U, 64U);
         triangles.reserve(std::min(options.maximum_triangles, std::size_t{256U}));
+    }
+
+    void destroy_buffer(BufferResource& resource) noexcept {
+        if (device != VK_NULL_HANDLE && resource.buffer != VK_NULL_HANDLE && device_functions.destroy_buffer != nullptr)
+            device_functions.destroy_buffer(device, resource.buffer, nullptr);
+        if (device != VK_NULL_HANDLE && resource.memory != VK_NULL_HANDLE && device_functions.free_memory != nullptr)
+            device_functions.free_memory(device, resource.memory, nullptr);
+        resource = {};
+    }
+
+    void destroy_scene_native() noexcept {
+        if (device != VK_NULL_HANDLE && device_functions.destroy_acceleration_structure != nullptr) {
+            if (tlas.acceleration_structure != VK_NULL_HANDLE)
+                device_functions.destroy_acceleration_structure(device, tlas.acceleration_structure, nullptr);
+            if (blas.acceleration_structure != VK_NULL_HANDLE)
+                device_functions.destroy_acceleration_structure(device, blas.acceleration_structure, nullptr);
+        }
+        tlas = {};
+        blas = {};
+        destroy_buffer(tlas_scratch_buffer);
+        destroy_buffer(tlas_result_buffer);
+        destroy_buffer(instance_buffer);
+        destroy_buffer(blas_scratch_buffer);
+        destroy_buffer(blas_result_buffer);
+        destroy_buffer(vertex_buffer);
+        native_primitive_count = 0U;
+        native_vertex_bytes = 0U;
+        blas_scratch_bytes = 0U;
+        tlas_scratch_bytes = 0U;
+        native_scene_allocated = false;
+        native_scene_dirty = false;
+        native_scene_requires_rebuild = false;
+    }
+
+    void destroy_native() noexcept {
+        if (device != VK_NULL_HANDLE && device_functions.device_wait_idle != nullptr)
+            static_cast<void>(device_functions.device_wait_idle(device));
+        destroy_scene_native();
+        destroy_buffer(output_buffer);
+        if (device != VK_NULL_HANDLE && fence != VK_NULL_HANDLE && device_functions.destroy_fence != nullptr)
+            device_functions.destroy_fence(device, fence, nullptr);
+        fence = VK_NULL_HANDLE;
+        if (device != VK_NULL_HANDLE && command_pool != VK_NULL_HANDLE && device_functions.destroy_command_pool != nullptr)
+            device_functions.destroy_command_pool(device, command_pool, nullptr);
+        command_pool = VK_NULL_HANDLE;
+        command_buffer = VK_NULL_HANDLE;
+        if (device != VK_NULL_HANDLE && device_functions.destroy_device != nullptr)
+            device_functions.destroy_device(device, nullptr);
+        device = VK_NULL_HANDLE;
+        queue = VK_NULL_HANDLE;
+        physical_device = VK_NULL_HANDLE;
+        if (instance != VK_NULL_HANDLE && instance_functions.destroy_instance != nullptr)
+            instance_functions.destroy_instance(instance, nullptr);
+        instance = VK_NULL_HANDLE;
+        get_instance_proc_addr = nullptr;
+        instance_functions = {};
+        device_functions = {};
+        memory_properties = {};
+        queue_family_index = 0U;
     }
 
     NativeVulkanRayTracingContextReceipt receipt(
@@ -165,16 +602,19 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.code = bounded_text(code);
         result.detail = bounded_text(detail);
         result.initialized = initialized;
-        result.persistent_backend = false;
+        result.persistent_backend = device != VK_NULL_HANDLE && state != NativeVulkanRayTracingContextState::fallback;
         result.fallback_active = result_state == NativeVulkanRayTracingContextState::fallback ||
                                  state == NativeVulkanRayTracingContextState::fallback;
         result.scene_ready = scene_ready;
         result.scene_rebuilt = scene_rebuilt;
         result.scene_updated = scene_updated;
         result.scene_reused = scene_reused;
+        result.build_submitted = build_submitted;
+        result.build_completed = build_completed;
+        result.trace_submitted = trace_submitted;
         result.trace_completed = trace_completed;
         result.readback_completed = readback_completed;
-        result.resources_live = false;
+        result.resources_live = device != VK_NULL_HANDLE && instance != VK_NULL_HANDLE;
         result.shutdown = result_state == NativeVulkanRayTracingContextState::shutdown ||
                           state == NativeVulkanRayTracingContextState::shutdown;
         result.generation = generation;
@@ -200,23 +640,563 @@ struct NativeVulkanRayTracingContext::Impl final {
         return receipt(NativeVulkanRayTracingContextState::error, stage, code, detail);
     }
 
+    bool initialize_native(std::string& error_code, std::string& error_detail, bool& unsupported) {
+        unsupported = false;
+        if (!module.load()) {
+            unsupported = true;
+            error_code = "native-vulkan-rt.loader-unavailable";
+            error_detail = "The Vulkan loader could not be loaded.";
+            return false;
+        }
+        get_instance_proc_addr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(module.symbol("vkGetInstanceProcAddr"));
+        if (get_instance_proc_addr == nullptr) {
+            unsupported = true;
+            error_code = "native-vulkan-rt.entrypoint-unavailable";
+            error_detail = "vkGetInstanceProcAddr is missing from the Vulkan loader.";
+            return false;
+        }
+        const auto enumerate_instance_version = load_global<PFN_vkEnumerateInstanceVersion>(
+            module, get_instance_proc_addr, "vkEnumerateInstanceVersion");
+        std::uint32_t loader_api = VK_API_VERSION_1_0;
+        if (enumerate_instance_version != nullptr) {
+            std::uint32_t queried_api = VK_API_VERSION_1_0;
+            if (enumerate_instance_version(&queried_api) == VK_SUCCESS) loader_api = queried_api;
+        }
+        if (loader_api < VK_API_VERSION_1_1) {
+            unsupported = true;
+            error_code = "native-vulkan-rt.vulkan-version-unsupported";
+            error_detail = "Persistent acceleration structures require a Vulkan 1.1-capable loader.";
+            return false;
+        }
+        VkApplicationInfo application_info{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+        application_info.pApplicationName = "Noemancer Native RHI";
+        application_info.applicationVersion = VK_MAKE_VERSION(0, 2, 0);
+        application_info.pEngineName = "Noemancer";
+        application_info.engineVersion = VK_MAKE_VERSION(0, 2, 0);
+        application_info.apiVersion = VK_API_VERSION_1_1;
+        VkInstanceCreateInfo instance_info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+        instance_info.pApplicationInfo = &application_info;
+        const auto create_instance = load_global<PFN_vkCreateInstance>(
+            module, get_instance_proc_addr, "vkCreateInstance");
+        if (create_instance == nullptr) {
+            unsupported = true;
+            error_code = "native-vulkan-rt.create-instance-entrypoint-unavailable";
+            error_detail = "vkCreateInstance is missing from the Vulkan loader.";
+            return false;
+        }
+        if (create_instance(&instance_info, nullptr, &instance) != VK_SUCCESS || instance == VK_NULL_HANDLE) {
+            error_code = "native-vulkan-rt.create-instance-failed";
+            error_detail = "vkCreateInstance failed.";
+            return false;
+        }
+        instance_functions.destroy_instance = load_instance<PFN_vkDestroyInstance>(get_instance_proc_addr, instance, "vkDestroyInstance");
+        instance_functions.enumerate_physical_devices = load_instance<PFN_vkEnumeratePhysicalDevices>(get_instance_proc_addr, instance, "vkEnumeratePhysicalDevices");
+        instance_functions.enumerate_device_extension_properties = load_instance<PFN_vkEnumerateDeviceExtensionProperties>(get_instance_proc_addr, instance, "vkEnumerateDeviceExtensionProperties");
+        instance_functions.get_physical_device_features2 = load_instance<PFN_vkGetPhysicalDeviceFeatures2>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceFeatures2");
+        instance_functions.get_physical_device_properties2 = load_instance<PFN_vkGetPhysicalDeviceProperties2>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceProperties2");
+        instance_functions.get_physical_device_properties = load_instance<PFN_vkGetPhysicalDeviceProperties>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceProperties");
+        instance_functions.get_physical_device_memory_properties = load_instance<PFN_vkGetPhysicalDeviceMemoryProperties>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceMemoryProperties");
+        instance_functions.get_physical_device_queue_family_properties = load_instance<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(get_instance_proc_addr, instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+        instance_functions.get_device_proc_addr = load_instance<PFN_vkGetDeviceProcAddr>(get_instance_proc_addr, instance, "vkGetDeviceProcAddr");
+        instance_functions.create_device = load_instance<PFN_vkCreateDevice>(get_instance_proc_addr, instance, "vkCreateDevice");
+        if (!require_instance_functions(instance_functions)) {
+            unsupported = true;
+            error_code = "native-vulkan-rt.instance-query-entrypoint-unavailable";
+            error_detail = "The Vulkan instance lacks a required physical-device query entry point.";
+            return false;
+        }
+        std::uint32_t device_count = 0U;
+        auto enumerate_result = instance_functions.enumerate_physical_devices(instance, &device_count, nullptr);
+        if (enumerate_result != VK_SUCCESS && enumerate_result != VK_INCOMPLETE) {
+            error_code = "native-vulkan-rt.enumerate-physical-devices-failed";
+            error_detail = "vkEnumeratePhysicalDevices failed.";
+            return false;
+        }
+        device_count = std::min(device_count, 64U);
+        std::vector<VkPhysicalDevice> devices(device_count);
+        if (device_count > 0U) {
+            enumerate_result = instance_functions.enumerate_physical_devices(instance, &device_count, devices.data());
+            if (enumerate_result != VK_SUCCESS && enumerate_result != VK_INCOMPLETE) {
+                error_code = "native-vulkan-rt.enumerate-physical-devices-failed";
+                error_detail = "vkEnumeratePhysicalDevices failed while reading handles.";
+                return false;
+            }
+        }
+        SelectedPhysicalDevice selected;
+        bool found = false;
+        for (const auto candidate : devices) {
+            std::uint32_t extension_count = 0U;
+            auto extension_result = instance_functions.enumerate_device_extension_properties(candidate, nullptr, &extension_count, nullptr);
+            if (extension_result != VK_SUCCESS && extension_result != VK_INCOMPLETE) continue;
+            extension_count = std::min(extension_count, 256U);
+            std::vector<VkExtensionProperties> extensions(extension_count);
+            if (extension_count > 0U) {
+                extension_result = instance_functions.enumerate_device_extension_properties(candidate, nullptr, &extension_count, extensions.data());
+                if (extension_result != VK_SUCCESS && extension_result != VK_INCOMPLETE) continue;
+            }
+            if (!has_extension(extensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) ||
+                !has_extension(extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) continue;
+            VkPhysicalDeviceProperties candidate_properties{};
+            instance_functions.get_physical_device_properties(candidate, &candidate_properties);
+            const bool bda_extension = has_extension(extensions, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+            if (!bda_extension && candidate_properties.apiVersion < VK_API_VERSION_1_2) continue;
+            VkPhysicalDeviceBufferDeviceAddressFeatures bda{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+            VkPhysicalDeviceAccelerationStructureFeaturesKHR as{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+            as.pNext = &bda;
+            VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            features.pNext = &as;
+            instance_functions.get_physical_device_features2(candidate, &features);
+            if (as.accelerationStructure != VK_TRUE || bda.bufferDeviceAddress != VK_TRUE) continue;
+            std::uint32_t family_count = 0U;
+            instance_functions.get_physical_device_queue_family_properties(candidate, &family_count, nullptr);
+            std::vector<VkQueueFamilyProperties> families(family_count);
+            if (family_count > 0U)
+                instance_functions.get_physical_device_queue_family_properties(candidate, &family_count, families.data());
+            std::optional<std::uint32_t> family;
+            for (std::uint32_t index = 0U; index < family_count; ++index) {
+                if ((families[index].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0U) {
+                    family = index;
+                    if ((families[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0U) break;
+                }
+            }
+            if (!family) continue;
+            selected.handle = candidate;
+            selected.queue_family_index = *family;
+            selected.properties = candidate_properties;
+            instance_functions.get_physical_device_memory_properties(candidate, &selected.memory_properties);
+            VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            properties2.pNext = &selected.acceleration_properties;
+            instance_functions.get_physical_device_properties2(candidate, &properties2);
+            selected.buffer_device_address_extension = bda_extension;
+            found = true;
+            break;
+        }
+        if (!found) {
+            unsupported = true;
+            error_code = "native-vulkan-rt.ray-tracing-unsupported";
+            error_detail = "No physical device exposed acceleration structures, buffer device address, and a compute queue.";
+            return false;
+        }
+        physical_device = selected.handle;
+        memory_properties = selected.memory_properties;
+        acceleration_properties = selected.acceleration_properties;
+        queue_family_index = selected.queue_family_index;
+        const float queue_priority = 1.0F;
+        VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        queue_info.queueFamilyIndex = queue_family_index;
+        queue_info.queueCount = 1U;
+        queue_info.pQueuePriorities = &queue_priority;
+        std::vector<const char*> extensions{
+            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+            VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME};
+        if (selected.buffer_device_address_extension)
+            extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+        VkPhysicalDeviceBufferDeviceAddressFeatures enabled_bda{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+        enabled_bda.bufferDeviceAddress = VK_TRUE;
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR enabled_as{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        enabled_as.accelerationStructure = VK_TRUE;
+        enabled_as.pNext = &enabled_bda;
+        VkPhysicalDeviceFeatures2 enabled_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        enabled_features.pNext = &enabled_as;
+        VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+        device_info.pNext = &enabled_features;
+        device_info.queueCreateInfoCount = 1U;
+        device_info.pQueueCreateInfos = &queue_info;
+        device_info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
+        device_info.ppEnabledExtensionNames = extensions.data();
+        if (instance_functions.create_device(physical_device, &device_info, nullptr, &device) != VK_SUCCESS || device == VK_NULL_HANDLE) {
+            error_code = "native-vulkan-rt.create-device-failed";
+            error_detail = "vkCreateDevice failed for the acceleration-structure feature chain.";
+            return false;
+        }
+#define NOEMANCER_LOAD_DEVICE(member, type, name) \
+        device_functions.member = load_device<type>(instance_functions.get_device_proc_addr, device, name)
+        NOEMANCER_LOAD_DEVICE(get_device_queue, PFN_vkGetDeviceQueue, "vkGetDeviceQueue");
+        NOEMANCER_LOAD_DEVICE(destroy_device, PFN_vkDestroyDevice, "vkDestroyDevice");
+        NOEMANCER_LOAD_DEVICE(device_wait_idle, PFN_vkDeviceWaitIdle, "vkDeviceWaitIdle");
+        NOEMANCER_LOAD_DEVICE(create_buffer, PFN_vkCreateBuffer, "vkCreateBuffer");
+        NOEMANCER_LOAD_DEVICE(destroy_buffer, PFN_vkDestroyBuffer, "vkDestroyBuffer");
+        NOEMANCER_LOAD_DEVICE(get_buffer_memory_requirements, PFN_vkGetBufferMemoryRequirements, "vkGetBufferMemoryRequirements");
+        NOEMANCER_LOAD_DEVICE(allocate_memory, PFN_vkAllocateMemory, "vkAllocateMemory");
+        NOEMANCER_LOAD_DEVICE(free_memory, PFN_vkFreeMemory, "vkFreeMemory");
+        NOEMANCER_LOAD_DEVICE(bind_buffer_memory, PFN_vkBindBufferMemory, "vkBindBufferMemory");
+        NOEMANCER_LOAD_DEVICE(map_memory, PFN_vkMapMemory, "vkMapMemory");
+        NOEMANCER_LOAD_DEVICE(unmap_memory, PFN_vkUnmapMemory, "vkUnmapMemory");
+        NOEMANCER_LOAD_DEVICE(get_buffer_device_address, PFN_vkGetBufferDeviceAddress, "vkGetBufferDeviceAddress");
+        if (device_functions.get_buffer_device_address == nullptr)
+            NOEMANCER_LOAD_DEVICE(get_buffer_device_address, PFN_vkGetBufferDeviceAddressKHR, "vkGetBufferDeviceAddressKHR");
+        NOEMANCER_LOAD_DEVICE(create_acceleration_structure, PFN_vkCreateAccelerationStructureKHR, "vkCreateAccelerationStructureKHR");
+        NOEMANCER_LOAD_DEVICE(destroy_acceleration_structure, PFN_vkDestroyAccelerationStructureKHR, "vkDestroyAccelerationStructureKHR");
+        NOEMANCER_LOAD_DEVICE(get_acceleration_structure_build_sizes, PFN_vkGetAccelerationStructureBuildSizesKHR, "vkGetAccelerationStructureBuildSizesKHR");
+        NOEMANCER_LOAD_DEVICE(get_acceleration_structure_device_address, PFN_vkGetAccelerationStructureDeviceAddressKHR, "vkGetAccelerationStructureDeviceAddressKHR");
+        NOEMANCER_LOAD_DEVICE(cmd_build_acceleration_structures, PFN_vkCmdBuildAccelerationStructuresKHR, "vkCmdBuildAccelerationStructuresKHR");
+        NOEMANCER_LOAD_DEVICE(create_command_pool, PFN_vkCreateCommandPool, "vkCreateCommandPool");
+        NOEMANCER_LOAD_DEVICE(destroy_command_pool, PFN_vkDestroyCommandPool, "vkDestroyCommandPool");
+        NOEMANCER_LOAD_DEVICE(allocate_command_buffers, PFN_vkAllocateCommandBuffers, "vkAllocateCommandBuffers");
+        NOEMANCER_LOAD_DEVICE(begin_command_buffer, PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+        NOEMANCER_LOAD_DEVICE(end_command_buffer, PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+        NOEMANCER_LOAD_DEVICE(cmd_pipeline_barrier, PFN_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
+        NOEMANCER_LOAD_DEVICE(create_fence, PFN_vkCreateFence, "vkCreateFence");
+        NOEMANCER_LOAD_DEVICE(destroy_fence, PFN_vkDestroyFence, "vkDestroyFence");
+        NOEMANCER_LOAD_DEVICE(reset_fences, PFN_vkResetFences, "vkResetFences");
+        NOEMANCER_LOAD_DEVICE(wait_for_fences, PFN_vkWaitForFences, "vkWaitForFences");
+        NOEMANCER_LOAD_DEVICE(queue_submit, PFN_vkQueueSubmit, "vkQueueSubmit");
+#undef NOEMANCER_LOAD_DEVICE
+        if (!require_device_functions(device_functions)) {
+            error_code = "native-vulkan-rt.device-entrypoint-unavailable";
+            error_detail = "The Vulkan device lacks a required persistent AS entry point.";
+            return false;
+        }
+        device_functions.get_device_queue(device, queue_family_index, 0U, &queue);
+        if (queue == VK_NULL_HANDLE) {
+            error_code = "native-vulkan-rt.queue-unavailable";
+            error_detail = "vkGetDeviceQueue returned a null queue.";
+            return false;
+        }
+        VkCommandPoolCreateInfo command_pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        command_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        command_pool_info.queueFamilyIndex = queue_family_index;
+        if (device_functions.create_command_pool(device, &command_pool_info, nullptr, &command_pool) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.create-command-pool-failed";
+            error_detail = "vkCreateCommandPool failed for persistent AS work.";
+            return false;
+        }
+        VkCommandBufferAllocateInfo command_buffer_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        command_buffer_info.commandPool = command_pool;
+        command_buffer_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        command_buffer_info.commandBufferCount = 1U;
+        if (device_functions.allocate_command_buffers(device, &command_buffer_info, &command_buffer) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.allocate-command-buffer-failed";
+            error_detail = "vkAllocateCommandBuffers failed for persistent AS work.";
+            return false;
+        }
+        VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        if (device_functions.create_fence(device, &fence_info, nullptr, &fence) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.create-fence-failed";
+            error_detail = "vkCreateFence failed for persistent AS submissions.";
+            return false;
+        }
+        scratch_alignment = std::max<VkDeviceSize>(acceleration_properties.minAccelerationStructureScratchOffsetAlignment, 256U);
+        const std::uint32_t output_marker = 0U;
+        if (!create_buffer(device_functions, device, memory_properties, sizeof(output_marker),
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           &output_marker, sizeof(output_marker), output_buffer, error_code, error_detail))
+            return false;
+        return true;
+    }
+
+    bool allocate_native_scene(const std::vector<float>& vertices,
+                               const std::uint32_t primitive_count,
+                               std::string& error_code,
+                               std::string& error_detail) {
+        destroy_scene_native();
+        const auto host_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        const auto geometry_usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+        if (!create_buffer(device_functions, device, memory_properties,
+                           static_cast<VkDeviceSize>(vertices.size() * sizeof(float)), geometry_usage,
+                           host_flags, vertices.data(), vertices.size() * sizeof(float), vertex_buffer,
+                           error_code, error_detail)) return false;
+        native_vertex_bytes = vertices.size() * sizeof(float);
+        VkAccelerationStructureGeometryTrianglesDataKHR triangle_data{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
+        triangle_data.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        triangle_data.vertexData.deviceAddress = vertex_buffer.device_address;
+        triangle_data.vertexStride = sizeof(float) * 3U;
+        triangle_data.maxVertex = primitive_count * 3U - 1U;
+        triangle_data.indexType = VK_INDEX_TYPE_NONE_KHR;
+        VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+        geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        geometry.geometry.triangles = triangle_data;
+        VkAccelerationStructureBuildGeometryInfoKHR blas_info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        blas_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        blas_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                          VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+        blas_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        blas_info.geometryCount = 1U;
+        blas_info.pGeometries = &geometry;
+        const std::uint32_t primitive_count_value = primitive_count;
+        VkAccelerationStructureBuildSizesInfoKHR blas_sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        device_functions.get_acceleration_structure_build_sizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                                                                &blas_info, &primitive_count_value, &blas_sizes);
+        blas_scratch_bytes = blas_sizes.buildScratchSize + scratch_alignment;
+        if (blas_sizes.updateScratchSize + scratch_alignment > blas_scratch_bytes)
+            blas_scratch_bytes = blas_sizes.updateScratchSize + scratch_alignment;
+        if (!create_buffer(device_functions, device, memory_properties, blas_scratch_bytes,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, 0U, blas_scratch_buffer,
+                           error_code, error_detail) ||
+            !create_buffer(device_functions, device, memory_properties, blas_sizes.accelerationStructureSize,
+                           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, 0U, blas_result_buffer,
+                           error_code, error_detail) ||
+            !create_acceleration_structure(device_functions, device, blas_result_buffer.buffer,
+                                           blas_sizes.accelerationStructureSize,
+                                           VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, blas,
+                                           error_code, error_detail)) return false;
+        VkAccelerationStructureInstanceKHR instance_data{};
+        instance_data.transform.matrix[0][0] = 1.0F;
+        instance_data.transform.matrix[1][1] = 1.0F;
+        instance_data.transform.matrix[2][2] = 1.0F;
+        instance_data.mask = 0xffU;
+        instance_data.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        instance_data.accelerationStructureReference = blas.device_address;
+        if (!create_buffer(device_functions, device, memory_properties, sizeof(instance_data), geometry_usage,
+                           host_flags, &instance_data, sizeof(instance_data), instance_buffer,
+                           error_code, error_detail)) return false;
+        VkAccelerationStructureGeometryInstancesDataKHR instances{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
+        instances.arrayOfPointers = VK_FALSE;
+        instances.data.deviceAddress = instance_buffer.device_address;
+        VkAccelerationStructureGeometryKHR tlas_geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+        tlas_geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+        tlas_geometry.geometry.instances = instances;
+        VkAccelerationStructureBuildGeometryInfoKHR tlas_info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        tlas_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+        tlas_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                          VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+        tlas_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        tlas_info.geometryCount = 1U;
+        tlas_info.pGeometries = &tlas_geometry;
+        const std::uint32_t instance_count = 1U;
+        VkAccelerationStructureBuildSizesInfoKHR tlas_sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        device_functions.get_acceleration_structure_build_sizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                                                                &tlas_info, &instance_count, &tlas_sizes);
+        tlas_scratch_bytes = tlas_sizes.buildScratchSize + scratch_alignment;
+        if (tlas_sizes.updateScratchSize + scratch_alignment > tlas_scratch_bytes)
+            tlas_scratch_bytes = tlas_sizes.updateScratchSize + scratch_alignment;
+        if (!create_buffer(device_functions, device, memory_properties, tlas_scratch_bytes,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, 0U, tlas_scratch_buffer,
+                           error_code, error_detail) ||
+            !create_buffer(device_functions, device, memory_properties, tlas_sizes.accelerationStructureSize,
+                           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, nullptr, 0U, tlas_result_buffer,
+                           error_code, error_detail) ||
+            !create_acceleration_structure(device_functions, device, tlas_result_buffer.buffer,
+                                           tlas_sizes.accelerationStructureSize,
+                                           VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, tlas,
+                                           error_code, error_detail)) return false;
+        native_primitive_count = primitive_count;
+        native_scene_allocated = true;
+        native_scene_dirty = true;
+        native_scene_requires_rebuild = true;
+        return true;
+    }
+
+    bool update_native_vertices(const std::vector<float>& vertices,
+                                std::string& error_code,
+                                std::string& error_detail) {
+        if (vertices.size() * sizeof(float) != native_vertex_bytes) return false;
+        return write_buffer(device_functions, device, vertex_buffer, vertices.data(),
+                            vertices.size() * sizeof(float), error_code, error_detail);
+    }
+
+    bool record_and_submit_native_build(std::string& error_code, std::string& error_detail) {
+        if (!native_scene_allocated || !native_scene_dirty) return true;
+        VkAccelerationStructureGeometryTrianglesDataKHR triangle_data{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
+        triangle_data.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        triangle_data.vertexData.deviceAddress = vertex_buffer.device_address;
+        triangle_data.vertexStride = sizeof(float) * 3U;
+        triangle_data.maxVertex = native_primitive_count * 3U - 1U;
+        triangle_data.indexType = VK_INDEX_TYPE_NONE_KHR;
+        VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+        geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        geometry.geometry.triangles = triangle_data;
+        VkAccelerationStructureBuildGeometryInfoKHR blas_info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        blas_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        blas_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                          VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+        blas_info.mode = native_scene_requires_rebuild ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR
+                                                        : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+        blas_info.geometryCount = 1U;
+        blas_info.pGeometries = &geometry;
+        blas_info.dstAccelerationStructure = blas.acceleration_structure;
+        if (!native_scene_requires_rebuild) blas_info.srcAccelerationStructure = blas.acceleration_structure;
+        const auto blas_scratch = align_address(blas_scratch_buffer.device_address, scratch_alignment);
+        if (blas_scratch < blas_scratch_buffer.device_address ||
+            blas_scratch - blas_scratch_buffer.device_address >
+                blas_scratch_buffer.allocation_size - std::min(blas_scratch_buffer.allocation_size, blas_scratch_bytes)) {
+            error_code = "native-vulkan-rt.blas-scratch-alignment-failed";
+            error_detail = "BLAS scratch address could not satisfy the device alignment.";
+            return false;
+        }
+        blas_info.scratchData.deviceAddress = blas_scratch;
+        VkAccelerationStructureBuildRangeInfoKHR blas_range{native_primitive_count, 0U, 0U, 0U};
+        const VkAccelerationStructureBuildRangeInfoKHR* blas_range_pointer = &blas_range;
+
+        VkAccelerationStructureGeometryInstancesDataKHR instances{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
+        instances.arrayOfPointers = VK_FALSE;
+        instances.data.deviceAddress = instance_buffer.device_address;
+        VkAccelerationStructureGeometryKHR tlas_geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+        tlas_geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+        tlas_geometry.geometry.instances = instances;
+        VkAccelerationStructureBuildGeometryInfoKHR tlas_info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+        tlas_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+        tlas_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                          VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+        tlas_info.mode = native_scene_requires_rebuild ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR
+                                                        : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+        tlas_info.geometryCount = 1U;
+        tlas_info.pGeometries = &tlas_geometry;
+        tlas_info.dstAccelerationStructure = tlas.acceleration_structure;
+        if (!native_scene_requires_rebuild) tlas_info.srcAccelerationStructure = tlas.acceleration_structure;
+        const auto tlas_scratch = align_address(tlas_scratch_buffer.device_address, scratch_alignment);
+        if (tlas_scratch < tlas_scratch_buffer.device_address ||
+            tlas_scratch - tlas_scratch_buffer.device_address >
+                tlas_scratch_buffer.allocation_size - std::min(tlas_scratch_buffer.allocation_size, tlas_scratch_bytes)) {
+            error_code = "native-vulkan-rt.tlas-scratch-alignment-failed";
+            error_detail = "TLAS scratch address could not satisfy the device alignment.";
+            return false;
+        }
+        tlas_info.scratchData.deviceAddress = tlas_scratch;
+        VkAccelerationStructureBuildRangeInfoKHR tlas_range{1U, 0U, 0U, 0U};
+        const VkAccelerationStructureBuildRangeInfoKHR* tlas_range_pointer = &tlas_range;
+        VkCommandBufferBeginInfo begin_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        if (device_functions.begin_command_buffer(command_buffer, &begin_info) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.begin-command-buffer-failed";
+            error_detail = "vkBeginCommandBuffer failed for the persistent AS build.";
+            return false;
+        }
+        VkMemoryBarrier host_to_as{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        host_to_as.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        host_to_as.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                                   VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        device_functions.cmd_pipeline_barrier(command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
+                                               VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                               0U, 1U, &host_to_as, 0U, nullptr, 0U, nullptr);
+        device_functions.cmd_build_acceleration_structures(command_buffer, 1U, &blas_info, &blas_range_pointer);
+        VkMemoryBarrier blas_to_tlas{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        blas_to_tlas.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        blas_to_tlas.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                                     VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        device_functions.cmd_pipeline_barrier(command_buffer,
+                                               VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                               VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                               0U, 1U, &blas_to_tlas, 0U, nullptr, 0U, nullptr);
+        device_functions.cmd_build_acceleration_structures(command_buffer, 1U, &tlas_info, &tlas_range_pointer);
+        if (device_functions.end_command_buffer(command_buffer) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.end-command-buffer-failed";
+            error_detail = "vkEndCommandBuffer failed for the persistent AS build.";
+            return false;
+        }
+        if (device_functions.reset_fences(device, 1U, &fence) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.reset-fence-failed";
+            error_detail = "vkResetFences failed before the persistent AS submit.";
+            return false;
+        }
+        VkSubmitInfo submit_info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit_info.commandBufferCount = 1U;
+        submit_info.pCommandBuffers = &command_buffer;
+        if (device_functions.queue_submit(queue, 1U, &submit_info, fence) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.queue-submit-failed";
+            error_detail = "vkQueueSubmit failed for the persistent AS build.";
+            return false;
+        }
+        build_submitted = true;
+        if (device_functions.wait_for_fences(device, 1U, &fence, VK_TRUE,
+                                             std::numeric_limits<std::uint64_t>::max()) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.fence-wait-failed";
+            error_detail = "vkWaitForFences failed for the persistent AS build.";
+            return false;
+        }
+        build_completed = true;
+        native_scene_dirty = false;
+        native_scene_requires_rebuild = false;
+        return true;
+    }
 };
+
+#else
+
+struct NativeVulkanRayTracingContext::Impl final {
+    NativeVulkanRayTracingContextOptions options;
+    NativeVulkanRayTracingContextState state{NativeVulkanRayTracingContextState::uninitialized};
+    bool initialized{};
+    bool scene_ready{};
+    bool trace_completed{};
+    bool readback_completed{};
+    bool scene_rebuilt{};
+    bool scene_updated{};
+    bool scene_reused{};
+    bool build_submitted{};
+    bool build_completed{};
+    bool trace_submitted{};
+    std::uint64_t generation{};
+    std::uint64_t scene_topology_revision{};
+    std::uint64_t scene_content_revision{};
+    std::uint64_t scene_fingerprint{};
+    std::uint32_t output_value{};
+    std::uint64_t output_hash{};
+    std::vector<NativeVulkanRayTracingTriangle> triangles;
+    explicit Impl(const NativeVulkanRayTracingContextOptions& source) : options(source) {
+        options.maximum_triangles = std::min(options.maximum_triangles,
+                                             native_vulkan_raytracing_context_hard_max_triangles);
+        options.output_width = std::clamp(options.output_width, 1U, 4096U);
+        options.output_height = std::clamp(options.output_height, 1U, 4096U);
+        options.output_depth = std::clamp(options.output_depth, 1U, 64U);
+        triangles.reserve(std::min(options.maximum_triangles, std::size_t{256U}));
+    }
+    NativeVulkanRayTracingContextReceipt receipt(const NativeVulkanRayTracingContextState result_state,
+                                                 const NativeVulkanRayTracingContextFailureStage stage,
+                                                 const std::string_view code,
+                                                 const std::string_view detail) const {
+        NativeVulkanRayTracingContextReceipt result;
+        result.state = result_state;
+        result.failure_stage = stage;
+        result.code = bounded_text(code);
+        result.detail = bounded_text(detail);
+        result.initialized = initialized;
+        result.persistent_backend = false;
+        result.fallback_active = result_state == NativeVulkanRayTracingContextState::fallback ||
+                                 state == NativeVulkanRayTracingContextState::fallback;
+        result.scene_ready = scene_ready;
+        result.scene_rebuilt = scene_rebuilt;
+        result.scene_updated = scene_updated;
+        result.scene_reused = scene_reused;
+        result.build_submitted = build_submitted;
+        result.build_completed = build_completed;
+        result.trace_submitted = trace_submitted;
+        result.trace_completed = trace_completed;
+        result.readback_completed = readback_completed;
+        result.resources_live = false;
+        result.shutdown = result_state == NativeVulkanRayTracingContextState::shutdown ||
+                          state == NativeVulkanRayTracingContextState::shutdown;
+        result.generation = generation;
+        result.scene_topology_revision = scene_topology_revision;
+        result.scene_content_revision = scene_content_revision;
+        result.scene_fingerprint = scene_fingerprint;
+        result.triangle_count = static_cast<std::uint32_t>(triangles.size());
+        result.output_width = options.output_width;
+        result.output_height = options.output_height;
+        result.output_depth = options.output_depth;
+        result.output_value = output_value;
+        result.output_hit = output_value == kHitMarker ? 1U : 0U;
+        result.output_hash = output_hash;
+        result.output_bytes = trace_completed ? sizeof(std::uint32_t) : 0U;
+        result.readback_bytes = readback_completed ? sizeof(std::uint32_t) : 0U;
+        return result;
+    }
+    NativeVulkanRayTracingContextReceipt not_ready(const NativeVulkanRayTracingContextFailureStage stage,
+                                                   const std::string_view code,
+                                                   const std::string_view detail) const {
+        return receipt(NativeVulkanRayTracingContextState::error, stage, code, detail);
+    }
+};
+
+#endif
 
 std::string_view native_vulkan_raytracing_context_state_name(
     const NativeVulkanRayTracingContextState state) noexcept {
     switch (state) {
-    case NativeVulkanRayTracingContextState::uninitialized:
-        return "uninitialized";
-    case NativeVulkanRayTracingContextState::ready:
-        return "ready";
-    case NativeVulkanRayTracingContextState::unsupported:
-        return "unsupported";
-    case NativeVulkanRayTracingContextState::fallback:
-        return "fallback";
-    case NativeVulkanRayTracingContextState::error:
-        return "error";
-    case NativeVulkanRayTracingContextState::shutdown:
-        return "shutdown";
+    case NativeVulkanRayTracingContextState::uninitialized: return "uninitialized";
+    case NativeVulkanRayTracingContextState::ready: return "ready";
+    case NativeVulkanRayTracingContextState::unsupported: return "unsupported";
+    case NativeVulkanRayTracingContextState::fallback: return "fallback";
+    case NativeVulkanRayTracingContextState::error: return "error";
+    case NativeVulkanRayTracingContextState::shutdown: return "shutdown";
     }
     return "error";
 }
@@ -224,28 +1204,17 @@ std::string_view native_vulkan_raytracing_context_state_name(
 std::string_view native_vulkan_raytracing_context_failure_stage_name(
     const NativeVulkanRayTracingContextFailureStage stage) noexcept {
     switch (stage) {
-    case NativeVulkanRayTracingContextFailureStage::none:
-        return "none";
-    case NativeVulkanRayTracingContextFailureStage::loader:
-        return "loader";
-    case NativeVulkanRayTracingContextFailureStage::instance:
-        return "instance";
-    case NativeVulkanRayTracingContextFailureStage::physical_device:
-        return "physical-device";
-    case NativeVulkanRayTracingContextFailureStage::device:
-        return "device";
-    case NativeVulkanRayTracingContextFailureStage::acceleration_structure:
-        return "acceleration-structure";
-    case NativeVulkanRayTracingContextFailureStage::pipeline:
-        return "pipeline";
-    case NativeVulkanRayTracingContextFailureStage::scene:
-        return "scene";
-    case NativeVulkanRayTracingContextFailureStage::trace:
-        return "trace";
-    case NativeVulkanRayTracingContextFailureStage::readback:
-        return "readback";
-    case NativeVulkanRayTracingContextFailureStage::shutdown:
-        return "shutdown";
+    case NativeVulkanRayTracingContextFailureStage::none: return "none";
+    case NativeVulkanRayTracingContextFailureStage::loader: return "loader";
+    case NativeVulkanRayTracingContextFailureStage::instance: return "instance";
+    case NativeVulkanRayTracingContextFailureStage::physical_device: return "physical-device";
+    case NativeVulkanRayTracingContextFailureStage::device: return "device";
+    case NativeVulkanRayTracingContextFailureStage::acceleration_structure: return "acceleration-structure";
+    case NativeVulkanRayTracingContextFailureStage::pipeline: return "pipeline";
+    case NativeVulkanRayTracingContextFailureStage::scene: return "scene";
+    case NativeVulkanRayTracingContextFailureStage::trace: return "trace";
+    case NativeVulkanRayTracingContextFailureStage::readback: return "readback";
+    case NativeVulkanRayTracingContextFailureStage::shutdown: return "shutdown";
     }
     return "shutdown";
 }
@@ -257,72 +1226,78 @@ NativeVulkanRayTracingContext::NativeVulkanRayTracingContext(
 NativeVulkanRayTracingContext::~NativeVulkanRayTracingContext() { static_cast<void>(shutdown()); }
 
 NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::initialize() {
-    if (impl_->state == NativeVulkanRayTracingContextState::shutdown) {
+    if (impl_->state == NativeVulkanRayTracingContextState::shutdown)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::shutdown,
                                 "native-vulkan-rt.context-shutdown",
                                 "The context has already been shut down and cannot be initialized again.");
-    }
-    if (impl_->initialized) {
+    if (impl_->initialized)
         return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::none,
                               impl_->state == NativeVulkanRayTracingContextState::fallback
                                   ? "native-vulkan-rt.context-fallback-already-initialized"
                                   : "native-vulkan-rt.context-already-initialized",
                               impl_->state == NativeVulkanRayTracingContextState::fallback
                                   ? "The persistent Vulkan backend is unavailable; the existing fallback context is reused."
-                                  : "The Vulkan context is already initialized.");
-    }
-
+                                  : "The persistent Vulkan context is already initialized.");
     impl_->initialized = true;
     impl_->generation = 1U;
-    if (!impl_->options.allow_fallback) {
-        impl_->state = NativeVulkanRayTracingContextState::unsupported;
-        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
-                              NativeVulkanRayTracingContextFailureStage::device,
-                              "native-vulkan-rt.context-persistent-backend-unsupported",
-                              "Persistent Vulkan instance/device/AS/SBT ownership is not available in this context slice; fallback is disabled.");
+#if NOEMANCER_HAS_VULKAN_HEADERS
+    std::string error_code;
+    std::string error_detail;
+    bool unsupported = false;
+    if (impl_->initialize_native(error_code, error_detail, unsupported)) {
+        impl_->state = NativeVulkanRayTracingContextState::ready;
+        return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::none,
+                              "native-vulkan-rt.context-ready",
+                              "Persistent Vulkan instance, device, queue, command pool, fence and output buffer are live.");
     }
-
-    // Do not invoke execute_native_vulkan_raytracing_blas_tlas() here.  That
-    // function owns a short-lived probe and releases every native object
-    // before returning, which cannot satisfy a cross-frame context contract.
+    const auto stage = unsupported ? NativeVulkanRayTracingContextFailureStage::physical_device
+                                   : NativeVulkanRayTracingContextFailureStage::device;
+    impl_->destroy_native();
+    if (!impl_->options.allow_fallback) {
+        impl_->state = unsupported ? NativeVulkanRayTracingContextState::unsupported
+                                   : NativeVulkanRayTracingContextState::error;
+        return impl_->receipt(impl_->state, stage, error_code, error_detail);
+    }
     impl_->state = NativeVulkanRayTracingContextState::fallback;
-    return impl_->receipt(NativeVulkanRayTracingContextState::fallback,
-                          NativeVulkanRayTracingContextFailureStage::device,
-                          "native-vulkan-rt.context-persistent-backend-unavailable",
-                          "Persistent Vulkan resource ownership is not extracted from the short-lived executor yet; the deterministic CPU fallback is active.");
+    return impl_->receipt(impl_->state, stage,
+                          "native-vulkan-rt.context-fallback-after-native-failure",
+                          error_detail.empty() ? "Persistent Vulkan resources were unavailable; CPU fallback is active."
+                                               : error_detail);
+#else
+    impl_->state = impl_->options.allow_fallback ? NativeVulkanRayTracingContextState::fallback
+                                                 : NativeVulkanRayTracingContextState::unsupported;
+    return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::loader,
+                          "native-vulkan-rt.vulkan-headers-unavailable",
+                          impl_->options.allow_fallback
+                              ? "The build has no Vulkan headers; the deterministic CPU fallback is active."
+                              : "The build has no Vulkan headers for a native context.");
+#endif
 }
 
 NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::ensure_scene(
     const NativeVulkanRayTracingScene& scene) {
     if (!impl_->initialized) static_cast<void>(initialize());
-    if (impl_->state == NativeVulkanRayTracingContextState::shutdown) {
+    if (impl_->state == NativeVulkanRayTracingContextState::shutdown)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::shutdown,
                                 "native-vulkan-rt.context-shutdown",
                                 "A scene cannot be submitted after context shutdown.");
-    }
-    if (impl_->state == NativeVulkanRayTracingContextState::unsupported) {
-        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
-                              NativeVulkanRayTracingContextFailureStage::device,
+    if (impl_->state == NativeVulkanRayTracingContextState::unsupported)
+        return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::device,
                               "native-vulkan-rt.context-unsupported",
                               "The persistent Vulkan backend is unsupported and fallback is disabled.");
-    }
-    if (scene.triangles.empty()) {
+    if (scene.triangles.empty())
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::scene,
                                 "native-vulkan-rt.context-scene-empty",
                                 "At least one triangle is required for the bounded scene contract.");
-    }
-    if (scene.triangles.size() > impl_->options.maximum_triangles) {
+    if (scene.triangles.size() > impl_->options.maximum_triangles)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::scene,
                                 "native-vulkan-rt.context-scene-limit",
                                 "The scene exceeds the configured triangle budget.");
-    }
-    for (const auto& triangle : scene.triangles) {
-        if (!valid_scene_triangle(triangle)) {
+    for (const auto& triangle : scene.triangles)
+        if (!valid_scene_triangle(triangle))
             return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::scene,
                                     "native-vulkan-rt.context-scene-nonfinite",
                                     "Scene vertices must be finite and within the bounded coordinate range.");
-        }
-    }
     const auto fingerprint = scene_fingerprint(scene);
     const auto topology_changed = !impl_->scene_ready ||
                                    impl_->scene_topology_revision != scene.topology_revision ||
@@ -331,12 +1306,14 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::ensure_scene
     impl_->scene_rebuilt = topology_changed;
     impl_->scene_updated = !topology_changed && content_changed;
     impl_->scene_reused = !topology_changed && !content_changed;
+    impl_->build_submitted = false;
+    impl_->build_completed = false;
+    impl_->trace_submitted = false;
     if (content_changed) {
-        if (impl_->generation == std::numeric_limits<std::uint64_t>::max()) {
+        if (impl_->generation == std::numeric_limits<std::uint64_t>::max())
             return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::scene,
                                     "native-vulkan-rt.context-generation-overflow",
                                     "The context generation cannot be incremented safely.");
-        }
         ++impl_->generation;
         impl_->triangles.assign(scene.triangles.begin(), scene.triangles.end());
         impl_->scene_topology_revision = scene.topology_revision;
@@ -347,34 +1324,95 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::ensure_scene
         impl_->readback_completed = false;
         impl_->output_value = 0U;
         impl_->output_hash = 0U;
+#if NOEMANCER_HAS_VULKAN_HEADERS
+        if (impl_->state == NativeVulkanRayTracingContextState::ready) {
+            std::vector<float> vertices;
+            vertices.reserve(scene.triangles.size() * 9U);
+            for (const auto& triangle : scene.triangles)
+                for (const auto& position : triangle.positions)
+                    vertices.insert(vertices.end(), position.begin(), position.end());
+            std::string error_code;
+            std::string error_detail;
+            bool native_ok = false;
+            if (topology_changed)
+                native_ok = impl_->allocate_native_scene(vertices, static_cast<std::uint32_t>(scene.triangles.size()),
+                                                         error_code, error_detail);
+            else {
+                native_ok = impl_->update_native_vertices(vertices, error_code, error_detail);
+                impl_->native_scene_dirty = native_ok;
+                impl_->native_scene_requires_rebuild = false;
+            }
+            if (!native_ok) {
+                impl_->destroy_native();
+                if (!impl_->options.allow_fallback) {
+                    impl_->state = NativeVulkanRayTracingContextState::error;
+                    return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::acceleration_structure,
+                                            error_code.empty() ? "native-vulkan-rt.context-scene-allocation-failed" : error_code,
+                                            error_detail.empty() ? "Persistent Vulkan scene allocation failed." : error_detail);
+                }
+                impl_->state = NativeVulkanRayTracingContextState::fallback;
+            }
+        }
+#endif
     }
     return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::scene,
                           topology_changed ? "native-vulkan-rt.context-scene-rebuilt"
                                             : (content_changed ? "native-vulkan-rt.context-scene-updated"
                                                                 : "native-vulkan-rt.context-scene-reused"),
-                          topology_changed ? "The fallback scene snapshot changed topology and was rebuilt."
-                                            : (content_changed ? "The fallback scene snapshot changed content and was updated."
+                          topology_changed ? "The persistent scene snapshot changed topology and was rebuilt."
+                                            : (content_changed ? "The persistent scene snapshot changed content and was updated."
                                                                : "The scene fingerprint is unchanged; the existing snapshot is reused."));
 }
 
 NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::build_or_update() {
     if (!impl_->initialized) static_cast<void>(initialize());
-    if (impl_->state == NativeVulkanRayTracingContextState::shutdown) {
+    if (impl_->state == NativeVulkanRayTracingContextState::shutdown)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::shutdown,
                                 "native-vulkan-rt.context-shutdown",
                                 "A scene build cannot be submitted after context shutdown.");
-    }
-    if (impl_->state == NativeVulkanRayTracingContextState::unsupported) {
-        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
-                              NativeVulkanRayTracingContextFailureStage::device,
+    if (impl_->state == NativeVulkanRayTracingContextState::unsupported)
+        return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::device,
                               "native-vulkan-rt.context-unsupported",
                               "The persistent Vulkan backend is unsupported and fallback is disabled.");
-    }
-    if (!impl_->scene_ready) {
+    if (!impl_->scene_ready)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::scene,
                                 "native-vulkan-rt.context-scene-missing",
                                 "ensure_scene must provide a scene before build_or_update.");
+#if NOEMANCER_HAS_VULKAN_HEADERS
+    if (impl_->state == NativeVulkanRayTracingContextState::ready) {
+        if (!impl_->native_scene_allocated)
+            return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::acceleration_structure,
+                                    "native-vulkan-rt.context-native-scene-missing",
+                                    "The native context has no persistent geometry/AS allocation for the scene.");
+        if (!impl_->native_scene_dirty) {
+            impl_->build_submitted = false;
+            impl_->build_completed = false;
+            return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::acceleration_structure,
+                                  "native-vulkan-rt.context-native-build-cached",
+                                  "The persistent BLAS/TLAS are unchanged and no build was submitted.");
+        }
+        std::string error_code;
+        std::string error_detail;
+        if (!impl_->record_and_submit_native_build(error_code, error_detail)) {
+            impl_->destroy_native();
+            if (impl_->options.allow_fallback) {
+                impl_->state = NativeVulkanRayTracingContextState::fallback;
+                return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::acceleration_structure,
+                                      "native-vulkan-rt.context-fallback-after-build-failure",
+                                      error_detail.empty() ? "The native AS build failed; CPU fallback is active." : error_detail);
+            }
+            impl_->state = NativeVulkanRayTracingContextState::error;
+            return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::acceleration_structure,
+                                    error_code.empty() ? "native-vulkan-rt.context-build-failed" : error_code,
+                                    error_detail.empty() ? "The persistent AS build failed." : error_detail);
+        }
+        return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::acceleration_structure,
+                              impl_->scene_rebuilt ? "native-vulkan-rt.context-native-build-completed"
+                                                   : "native-vulkan-rt.context-native-update-completed",
+                              impl_->scene_rebuilt ? "Persistent BLAS/TLAS build submitted and completed on Vulkan."
+                                                   : "Persistent BLAS/TLAS update submitted and completed on Vulkan.");
     }
+#endif
     return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::acceleration_structure,
                           "native-vulkan-rt.context-fallback-build-cached",
                           "The scene is resident in the fallback context; no Vulkan AS build is claimed.");
@@ -383,38 +1421,37 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::build_or_upd
 NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::trace(
     const NativeVulkanRayTracingTraceRequest& request) {
     if (!impl_->initialized) static_cast<void>(initialize());
-    if (impl_->state == NativeVulkanRayTracingContextState::shutdown) {
+    if (impl_->state == NativeVulkanRayTracingContextState::shutdown)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::shutdown,
                                 "native-vulkan-rt.context-shutdown",
                                 "A trace cannot be submitted after context shutdown.");
-    }
-    if (impl_->state == NativeVulkanRayTracingContextState::unsupported) {
-        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
-                              NativeVulkanRayTracingContextFailureStage::device,
+    if (impl_->state == NativeVulkanRayTracingContextState::unsupported)
+        return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::device,
                               "native-vulkan-rt.context-unsupported",
                               "The persistent Vulkan backend is unsupported and fallback is disabled.");
-    }
-    if (!impl_->scene_ready) {
+    if (!impl_->scene_ready)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::scene,
                                 "native-vulkan-rt.context-scene-missing",
                                 "ensure_scene must provide a scene before trace.");
-    }
-    if (!valid_trace_request(request)) {
+    if (!valid_trace_request(request))
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::trace,
                                 "native-vulkan-rt.context-trace-invalid-request",
                                 "Trace origin, direction and distance range must be finite and bounded.");
-    }
-
+#if NOEMANCER_HAS_VULKAN_HEADERS
+    if (impl_->state == NativeVulkanRayTracingContextState::ready)
+        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
+                              NativeVulkanRayTracingContextFailureStage::pipeline,
+                              "native-vulkan-rt.context-trace-pipeline-unavailable",
+                              "Persistent BLAS/TLAS are live, but this context has no Vulkan RT pipeline or SBT yet; no CPU fallback is substituted.");
+#endif
     const auto origin = to_vec3(request.origin);
     const auto direction = to_vec3(request.direction);
     bool hit = false;
-    for (const auto& triangle : impl_->triangles) {
-        if (ray_intersects_triangle(origin, direction, triangle, request.minimum_distance,
-                                    request.maximum_distance)) {
+    for (const auto& triangle : impl_->triangles)
+        if (ray_intersects_triangle(origin, direction, triangle, request.minimum_distance, request.maximum_distance)) {
             hit = true;
             break;
         }
-    }
     impl_->output_value = hit ? kHitMarker : kMissMarker;
     impl_->output_hash = hash_u32(kFnvOffsetBasis, impl_->output_value);
     impl_->trace_completed = true;
@@ -428,22 +1465,25 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::trace(
 
 NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::readback() {
     if (!impl_->initialized) static_cast<void>(initialize());
-    if (impl_->state == NativeVulkanRayTracingContextState::shutdown) {
+    if (impl_->state == NativeVulkanRayTracingContextState::shutdown)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::shutdown,
                                 "native-vulkan-rt.context-shutdown",
                                 "A readback cannot be requested after context shutdown.");
-    }
-    if (impl_->state == NativeVulkanRayTracingContextState::unsupported) {
-        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
-                              NativeVulkanRayTracingContextFailureStage::device,
+    if (impl_->state == NativeVulkanRayTracingContextState::unsupported)
+        return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::device,
                               "native-vulkan-rt.context-unsupported",
                               "The persistent Vulkan backend is unsupported and fallback is disabled.");
-    }
-    if (!impl_->trace_completed) {
+#if NOEMANCER_HAS_VULKAN_HEADERS
+    if (impl_->state == NativeVulkanRayTracingContextState::ready)
+        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
+                              NativeVulkanRayTracingContextFailureStage::readback,
+                              "native-vulkan-rt.context-readback-pipeline-unavailable",
+                              "No Vulkan RT output pipeline exists in this context slice; no readback is claimed.");
+#endif
+    if (!impl_->trace_completed)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::readback,
                                 "native-vulkan-rt.context-trace-missing",
                                 "trace must complete before readback.");
-    }
     impl_->readback_completed = true;
     return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::readback,
                           "native-vulkan-rt.context-fallback-readback-completed",
@@ -452,12 +1492,14 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::readback() {
 
 NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::shutdown() noexcept {
     if (impl_ == nullptr) return {};
-    if (impl_->state == NativeVulkanRayTracingContextState::shutdown) {
+    if (impl_->state == NativeVulkanRayTracingContextState::shutdown)
         return impl_->receipt(NativeVulkanRayTracingContextState::shutdown,
                               NativeVulkanRayTracingContextFailureStage::none,
                               "native-vulkan-rt.context-shutdown-already-complete",
                               "The context shutdown operation is idempotent.");
-    }
+#if NOEMANCER_HAS_VULKAN_HEADERS
+    impl_->destroy_native();
+#endif
     impl_->triangles.clear();
     impl_->scene_ready = false;
     impl_->trace_completed = false;
@@ -465,19 +1507,23 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::shutdown() n
     impl_->scene_rebuilt = false;
     impl_->scene_updated = false;
     impl_->scene_reused = false;
+    impl_->build_submitted = false;
+    impl_->build_completed = false;
+    impl_->trace_submitted = false;
     impl_->scene_topology_revision = 0U;
     impl_->scene_content_revision = 0U;
     impl_->scene_fingerprint = 0U;
     impl_->output_value = 0U;
     impl_->output_hash = 0U;
     impl_->state = NativeVulkanRayTracingContextState::shutdown;
-    return impl_->receipt(NativeVulkanRayTracingContextState::shutdown,
-                          NativeVulkanRayTracingContextFailureStage::shutdown,
+    return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::shutdown,
                           "native-vulkan-rt.context-shutdown-complete",
                           "The context is shut down; repeated shutdown calls are safe.");
 }
 
-bool NativeVulkanRayTracingContext::initialized() const noexcept { return impl_ != nullptr && impl_->initialized; }
+bool NativeVulkanRayTracingContext::initialized() const noexcept {
+    return impl_ != nullptr && impl_->initialized;
+}
 
 bool NativeVulkanRayTracingContext::scene_ready() const noexcept {
     return impl_ != nullptr && impl_->scene_ready;
