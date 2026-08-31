@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/native_raytracing_view.hpp"
 #include "engine/raytracing_render_graph.hpp"
 #include "runtime/native_d3d12_raytracing_context.hpp"
 #include "runtime/native_vulkan_raytracing_context.hpp"
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -109,6 +111,10 @@ struct RayTracingContextSessionRequest final {
     RayTracingRenderGraphPlan plan;
     RayTracingContextSessionScene scene;
     RayTracingContextSessionTraceRequest trace{};
+    // Optional renderer-neutral primary-ray view.  When present, the session
+    // validates and translates this plain-data plan into the selected native
+    // backend; legacy marker probes can omit it and retain the historical ray.
+    std::optional<NativeRayTracingViewPlan> view;
     // Build and scene submission always follow the selected plan.  These two
     // switches only gate optional proof stages, so a caller can safely stop
     // at a bounded build/trace boundary while shaders or readback are absent.
@@ -190,6 +196,12 @@ struct RayTracingContextSessionReceipt final {
     bool output_trace_written{};
     bool output_transfer_candidate{};
     bool full_frame_shader_ready{};
+    bool camera_requested{};
+    bool camera_valid{};
+    bool camera_shader_consumed{};
+    std::string camera_id;
+    std::string camera_projection;
+    std::uint64_t camera_fingerprint{};
     std::uint64_t output_resource_generation{};
     std::string output_format;
     std::string shader_contract;

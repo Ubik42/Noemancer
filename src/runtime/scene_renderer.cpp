@@ -2954,8 +2954,42 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
     // otherwise serialize every frame (and mistake a legitimate miss in an
     // arbitrary scene for a failed fixture). Presentation interop consumes
     // this native output directly once resource sharing lands.
+    NativeRayTracingViewInput native_rt_view;
+    native_rt_view.camera_id="camera.unowned";
+    native_rt_view.camera_revision=std::max<std::uint64_t>(render_world.world_revision,1U);
+    native_rt_view.position={7.0F,5.5F,8.5F};
+    native_rt_view.forward={-7.0F,-4.5F,-8.5F};
+    native_rt_view.up={0.0F,1.0F,0.0F};
+    native_rt_view.projection="perspective";
+    native_rt_view.vertical_fov_degrees=45.0F;
+    native_rt_view.orthographic_height=10.0F;
+    native_rt_view.aspect=static_cast<float>(std::max(width_,1U)) /
+        static_cast<float>(std::max(height_,1U));
+    native_rt_view.near_clip=0.1F;
+    native_rt_view.far_clip=100.0F;
+    native_rt_view.output_width=std::max(width_,1U);
+    native_rt_view.output_height=std::max(height_,1U);
+    if(render_world.camera) {
+        const auto& camera=*render_world.camera;
+        native_rt_view.camera_id=camera.entity_id.empty()?"camera.unowned":camera.entity_id;
+        native_rt_view.position=camera.position;
+        native_rt_view.forward={camera.target[0]-camera.position[0],
+            camera.target[1]-camera.position[1],camera.target[2]-camera.position[2]};
+        const auto forward_length=std::sqrt(native_rt_view.forward[0]*native_rt_view.forward[0]+
+            native_rt_view.forward[1]*native_rt_view.forward[1]+
+            native_rt_view.forward[2]*native_rt_view.forward[2]);
+        if(forward_length>0.00001F&&
+           std::abs(native_rt_view.forward[1]/forward_length)>0.999F)
+            native_rt_view.up={0.0F,0.0F,1.0F};
+        native_rt_view.projection=camera.projection;
+        native_rt_view.vertical_fov_degrees=camera.vertical_fov_degrees;
+        native_rt_view.orthographic_height=camera.orthographic_height;
+        native_rt_view.near_clip=camera.near_clip;
+        native_rt_view.far_clip=camera.far_clip;
+    }
     const auto receipt=scene_raytracing_bridge_->execute(
-        {.backend=backend,.enabled=true,.request_trace=true,.request_readback=false},
+        {.backend=backend,.enabled=true,.request_trace=true,.request_readback=false,
+            .view=std::move(native_rt_view)},
         raytracing_geometry_cache_.snapshot());
     RayTracingContextSessionOutputTransferReceipt transfer;
     transfer.backend=backend;
@@ -2992,6 +3026,9 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
         {"outputTraceWritten",receipt.output_trace_written},
         {"outputTransferCandidate",receipt.output_transfer_candidate},
         {"fullFrameShaderReady",receipt.full_frame_shader_ready},
+        {"cameraRequested",receipt.camera_requested},{"cameraValid",receipt.camera_valid},
+        {"cameraShaderConsumed",receipt.camera_shader_consumed},{"cameraId",receipt.camera_id},
+        {"cameraProjection",receipt.camera_projection},{"cameraFingerprint",receipt.camera_fingerprint},
         {"shaderContract",receipt.shader_contract},
         {"outputTransferAttempted",transfer.attempted},
         {"outputTransferCompleted",transfer.completed},

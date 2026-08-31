@@ -16,6 +16,13 @@ inline constexpr std::string_view native_vulkan_raytracing_output_image_contract
     "noemancer.native-vulkan-raytracing-output-image/0.1";
 inline constexpr std::string_view native_vulkan_raytracing_full_frame_shader_contract =
     "noemancer.native-rt-full-frame/0.1";
+// The camera contract is deliberately separate from the pinned probe shader
+// ABI.  It describes the bounded input we can validate today; the current
+// embedded SPIR-V has no camera descriptor and therefore cannot claim to
+// consume this data on the GPU yet.
+inline constexpr std::string_view native_vulkan_raytracing_camera_contract =
+    "noemancer.native-vulkan-raytracing-camera/0.1";
+inline constexpr std::uint32_t native_vulkan_raytracing_camera_contract_version = 1U;
 inline constexpr std::size_t native_vulkan_raytracing_context_max_text_bytes = 256U;
 inline constexpr std::size_t native_vulkan_raytracing_context_hard_max_triangles = 65536U;
 
@@ -85,11 +92,30 @@ struct NativeVulkanRayTracingScene final {
     std::uint64_t content_revision{};
 };
 
+// Versioned, bounded, runtime-only camera input.  This is intentionally plain
+// data: no Vulkan/SDL handles, pointers, callbacks, or opaque engine objects
+// cross the trace boundary.  The current probe validates this input but does
+// not bind it to RayGen until a matching SPIR-V camera ABI is available.
+struct NativeVulkanRayTracingCameraInput final {
+    std::uint32_t contract_version{native_vulkan_raytracing_camera_contract_version};
+    std::array<float, 3U> position{0.0F, 0.0F, -1.0F};
+    std::array<float, 3U> forward{0.0F, 0.0F, 1.0F};
+    std::array<float, 3U> up{0.0F, 1.0F, 0.0F};
+    float vertical_fov_degrees{60.0F};
+    float near_distance{0.01F};
+    float far_distance{1.0e6F};
+};
+
 struct NativeVulkanRayTracingTraceRequest final {
     std::array<float, 3U> origin{0.0F, 0.0F, -1.0F};
     std::array<float, 3U> direction{0.0F, 0.0F, 1.0F};
     float minimum_distance{0.0F};
     float maximum_distance{1.0e6F};
+    // Camera input is opt-in so existing ray requests remain source- and
+    // behavior-compatible.  Until the versioned shader ABI is extended,
+    // receipts must report camera_shader_consumed=false.
+    bool camera_enabled{};
+    NativeVulkanRayTracingCameraInput camera{};
 };
 
 // Plain, bounded evidence for one context operation.  Native Vulkan handles
@@ -115,6 +141,9 @@ struct NativeVulkanRayTracingContextReceipt final {
     bool trace_submitted{};
     bool trace_completed{};
     bool readback_completed{};
+    bool camera_requested{};
+    bool camera_valid{};
+    bool camera_shader_consumed{};
     // The embedded SPIR-V probe is the pinned full-frame shader ABI.  A
     // caller must never infer this from a generic Vulkan pipeline alone;
     // the explicit contract string is the version gate.
@@ -152,6 +181,9 @@ struct NativeVulkanRayTracingContextReceipt final {
     std::uint64_t output_image_generation{};
     std::uint64_t output_image_bytes{};
     std::uint64_t output_image_sync_value{};
+    std::uint32_t camera_contract_version{};
+    std::string camera_contract;
+    std::string camera_boundary;
     std::string shader_contract;
     std::string output_image_contract{std::string(native_vulkan_raytracing_output_image_contract)};
     std::string output_image_format;

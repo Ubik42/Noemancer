@@ -37,6 +37,8 @@ namespace {
 constexpr float kEpsilon = 1.0e-6F;
 constexpr float kMaximumCoordinate = 1.0e6F;
 constexpr float kMaximumDistance = 1.0e9F;
+constexpr float kMinimumCameraFovDegrees = 1.0F;
+constexpr float kMaximumCameraFovDegrees = 179.0F;
 constexpr std::uint32_t kHitMarker = 0x48495421U;
 constexpr std::uint32_t kMissMarker = 0x4D495353U;
 constexpr std::uint64_t kFnvOffsetBasis = 1469598103934665603ULL;
@@ -179,6 +181,28 @@ bool finite_vec(const Vec3 value) noexcept {
     return finite_bounded(value.x) && finite_bounded(value.y) && finite_bounded(value.z);
 }
 
+bool valid_camera_input(const NativeVulkanRayTracingCameraInput& camera) noexcept {
+    if (camera.contract_version != native_vulkan_raytracing_camera_contract_version)
+        return false;
+    const auto position = to_vec3(camera.position);
+    const auto forward = to_vec3(camera.forward);
+    const auto up = to_vec3(camera.up);
+    const auto forward_length_squared = dot(forward, forward);
+    const auto up_length_squared = dot(up, up);
+    const auto right = cross(forward, up);
+    const auto right_length_squared = dot(right, right);
+    return finite_vec(position) && finite_vec(forward) && finite_vec(up) && finite_vec(right) &&
+           std::isfinite(forward_length_squared) && std::isfinite(up_length_squared) &&
+           std::isfinite(right_length_squared) && forward_length_squared > kEpsilon * kEpsilon &&
+           up_length_squared > kEpsilon * kEpsilon && right_length_squared > kEpsilon * kEpsilon &&
+           finite_bounded(camera.vertical_fov_degrees, kMaximumCameraFovDegrees) &&
+           camera.vertical_fov_degrees >= kMinimumCameraFovDegrees &&
+           camera.vertical_fov_degrees <= kMaximumCameraFovDegrees &&
+           finite_bounded(camera.near_distance, kMaximumDistance) &&
+           finite_bounded(camera.far_distance, kMaximumDistance) && camera.near_distance > 0.0F &&
+           camera.far_distance > camera.near_distance;
+}
+
 bool valid_scene_triangle(const NativeVulkanRayTracingTriangle& triangle) noexcept {
     for (const auto& position : triangle.positions)
         if (!finite_vec(to_vec3(position))) return false;
@@ -193,7 +217,8 @@ bool valid_trace_request(const NativeVulkanRayTracingTraceRequest& request) noex
            direction_length_squared > kEpsilon * kEpsilon &&
            finite_bounded(request.minimum_distance, kMaximumDistance) &&
            finite_bounded(request.maximum_distance, kMaximumDistance) &&
-           request.minimum_distance >= 0.0F && request.maximum_distance > request.minimum_distance;
+           request.minimum_distance >= 0.0F && request.maximum_distance > request.minimum_distance &&
+           (!request.camera_enabled || valid_camera_input(request.camera));
 }
 
 std::uint64_t hash_u32(std::uint64_t hash, const std::uint32_t value) noexcept {
@@ -746,6 +771,9 @@ struct NativeVulkanRayTracingContext::Impl final {
     bool build_submitted{};
     bool build_completed{};
     bool trace_submitted{};
+    bool camera_requested{};
+    bool camera_valid{};
+    std::uint32_t camera_contract_version{};
     bool borrowed_device{};
     bool output_image_sync_complete{};
     bool output_image_trace_written{};
@@ -975,6 +1003,21 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.trace_submitted = trace_submitted;
         result.trace_completed = trace_completed;
         result.readback_completed = readback_completed;
+        result.camera_requested = camera_requested;
+        result.camera_valid = camera_requested && camera_valid;
+        // The pinned probe SPIR-V declares only AS, storage-buffer, and
+        // storage-image bindings.  Camera data is therefore contract-checked
+        // at the API boundary but never reported as shader-consumed.
+        result.camera_shader_consumed = false;
+        result.camera_contract_version = camera_requested ? camera_contract_version : 0U;
+        result.camera_contract = camera_requested
+                                    ? std::string(native_vulkan_raytracing_camera_contract)
+                                    : std::string{};
+        result.camera_boundary = camera_requested
+                                     ? (result.camera_valid
+                                            ? "validated plain-data input; pinned SPIR-V has no camera descriptor; shader not consumed"
+                                            : "rejected before submission; camera contract or frustum validation failed")
+                                     : "not-requested";
         // The embedded module is intentionally the only accepted full-frame
         // shader ABI in this context.  Its storage-image binding is versioned
         // by the public contract and only becomes ready after pipeline
@@ -2074,6 +2117,9 @@ struct NativeVulkanRayTracingContext::Impl final {
     bool build_submitted{};
     bool build_completed{};
     bool trace_submitted{};
+    bool camera_requested{};
+    bool camera_valid{};
+    std::uint32_t camera_contract_version{};
     std::uint64_t generation{};
     std::uint64_t scene_topology_revision{};
     std::uint64_t scene_content_revision{};
@@ -2111,6 +2157,18 @@ struct NativeVulkanRayTracingContext::Impl final {
         result.trace_submitted = trace_submitted;
         result.trace_completed = trace_completed;
         result.readback_completed = readback_completed;
+        result.camera_requested = camera_requested;
+        result.camera_valid = camera_requested && camera_valid;
+        result.camera_shader_consumed = false;
+        result.camera_contract_version = camera_requested ? camera_contract_version : 0U;
+        result.camera_contract = camera_requested
+                                    ? std::string(native_vulkan_raytracing_camera_contract)
+                                    : std::string{};
+        result.camera_boundary = camera_requested
+                                     ? (result.camera_valid
+                                            ? "validated plain-data input; fallback shader not applicable"
+                                            : "rejected before fallback trace; camera contract or frustum validation failed")
+                                     : "not-requested";
         result.full_frame_shader_ready = false;
         result.shader_contract.clear();
         result.output_image_live = false;
@@ -2401,6 +2459,9 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::trace(
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::shutdown,
                                 "native-vulkan-rt.context-shutdown",
                                 "A trace cannot be submitted after context shutdown.");
+    impl_->camera_requested = request.camera_enabled;
+    impl_->camera_contract_version = request.camera_enabled ? request.camera.contract_version : 0U;
+    impl_->camera_valid = request.camera_enabled && valid_camera_input(request.camera);
     if (impl_->state == NativeVulkanRayTracingContextState::unsupported)
         return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::device,
                               "native-vulkan-rt.context-unsupported",
@@ -2409,6 +2470,10 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::trace(
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::scene,
                                 "native-vulkan-rt.context-scene-missing",
                                 "ensure_scene must provide a scene before trace.");
+    if (request.camera_enabled && !impl_->camera_valid)
+        return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::trace,
+                                "native-vulkan-rt.context-camera-invalid",
+                                "Camera input version, basis vectors, field of view, and clip distances must be finite and bounded.");
     if (!valid_trace_request(request))
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::trace,
                                 "native-vulkan-rt.context-trace-invalid-request",
@@ -2509,6 +2574,9 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::shutdown() n
     impl_->build_submitted = false;
     impl_->build_completed = false;
     impl_->trace_submitted = false;
+    impl_->camera_requested = false;
+    impl_->camera_valid = false;
+    impl_->camera_contract_version = 0U;
     impl_->scene_topology_revision = 0U;
     impl_->scene_content_revision = 0U;
     impl_->scene_fingerprint = 0U;

@@ -1,8 +1,23 @@
-// noemancer.native-rt-full-frame/0.1
+// noemancer.native-rt-full-frame/0.2
 // Runtime-private DXR library. The Engine/Agent boundary observes only the
 // versioned output metadata and never depends on these native bindings.
 RaytracingAccelerationStructure sceneAccelerationStructure : register(t0);
 RWStructuredBuffer<uint4> outputPixels : register(u0);
+
+// ABI noemancer.native-d3d12-raytracing-camera/0.1.  The CPU uploads five
+// float4 values to a 256-byte CBV at b0.  Position and right/up/forward are
+// world-space values; the basis is right-handed and already orthonormal, so
+// no row/column-major matrix convention or transpose is involved.  This
+// shader writes marker colours proving visibility only; it is not radiance,
+// RTGI or a material-lighting implementation.
+cbuffer CameraConstants : register(b0)
+{
+    float4 cameraPosition;
+    float4 cameraRight;
+    float4 cameraUp;
+    float4 cameraForward;
+    float4 cameraLens; // tan-half vertical FOV, aspect, near, far
+};
 
 struct RayPayload
 {
@@ -17,10 +32,13 @@ void RayGen()
     const float2 uv = ((float2(pixel) + 0.5F) / float2(dimensions)) * 2.0F - 1.0F;
 
     RayDesc ray;
-    ray.Origin = float3(0.0F, 0.0F, -1.0F);
-    ray.Direction = normalize(float3(uv.x, -uv.y, 1.0F));
-    ray.TMin = 0.001F;
-    ray.TMax = 1000000.0F;
+    ray.Origin = cameraPosition.xyz;
+    ray.Direction = normalize(
+        cameraForward.xyz
+        + cameraRight.xyz * (uv.x * cameraLens.y * cameraLens.x)
+        - cameraUp.xyz * (uv.y * cameraLens.x));
+    ray.TMin = cameraLens.z;
+    ray.TMax = cameraLens.w;
 
     RayPayload payload;
     payload.hit = 0U;
@@ -43,5 +61,3 @@ void ClosestHit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes 
 {
     payload.hit = 1U;
 }
-
-

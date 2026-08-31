@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -50,7 +51,8 @@ bool bounded_receipt(const noemancer::NativeD3D12RayTracingContextReceipt& recei
     return receipt.schema == noemancer::native_d3d12_raytracing_context_schema &&
         receipt.backend == "d3d12" && !receipt.native_handle_exposed &&
         receipt.code.size() <= noemancer::native_d3d12_raytracing_context_max_text_bytes &&
-        receipt.detail.size() <= noemancer::native_d3d12_raytracing_context_max_text_bytes;
+        receipt.detail.size() <= noemancer::native_d3d12_raytracing_context_max_text_bytes &&
+        receipt.camera_schema.size() <= noemancer::native_d3d12_raytracing_context_max_text_bytes;
 }
 
 } // namespace
@@ -58,11 +60,27 @@ bool bounded_receipt(const noemancer::NativeD3D12RayTracingContextReceipt& recei
 int main() {
     using namespace noemancer;
 
+    NativeD3D12RayTracingContextOptions invalid_camera_options;
+    invalid_camera_options.camera.forward[0U] =
+        std::numeric_limits<float>::quiet_NaN();
+    NativeD3D12RayTracingContext invalid_camera(invalid_camera_options);
+    const auto invalid_camera_init = invalid_camera.initialize();
+    if (!bounded_receipt(invalid_camera_init) ||
+        invalid_camera_init.state != NativeD3D12RayTracingContextState::failed ||
+        invalid_camera_init.failure_stage != NativeD3D12RayTracingContextFailureStage::camera ||
+        invalid_camera_init.code != "native-d3d12.context.camera-non-finite" ||
+        invalid_camera_init.camera_ready || invalid_camera_init.camera_fingerprint != 0U) {
+        return fail("invalid camera input did not produce a strict bounded diagnostic", 1);
+    }
+    static_cast<void>(invalid_camera.shutdown());
+
     NativeD3D12RayTracingContext context;
     const auto initial = context.status();
     if (!bounded_receipt(initial) || initial.state != NativeD3D12RayTracingContextState::uninitialized ||
-        initial.generation != 0U || context.is_shutdown()) {
-        return fail("fresh context did not expose an empty lifecycle state", 1);
+        initial.generation != 0U || context.is_shutdown() || !initial.camera_ready ||
+        initial.camera_schema != native_d3d12_raytracing_camera_schema ||
+        initial.camera_fingerprint == 0U) {
+        return fail("fresh context did not expose an empty lifecycle state", 2);
     }
 
     NativeD3D12RayTracingScene invalid;
@@ -71,12 +89,12 @@ int main() {
     if (!bounded_receipt(invalid_scene) || invalid_scene.state != NativeD3D12RayTracingContextState::failed ||
         invalid_scene.failure_stage != NativeD3D12RayTracingContextFailureStage::scene ||
         invalid_scene.code != "native-d3d12.context.scene-empty") {
-        return fail("invalid scene input did not produce a bounded scene diagnostic", 2);
+        return fail("invalid scene input did not produce a bounded scene diagnostic", 3);
     }
 
     const auto initialized = context.initialize();
     if (!bounded_receipt(initialized) || initialized.generation > 1U) {
-        return fail("initialization receipt was not bounded or generation was unstable", 3);
+        return fail("initialization receipt was not bounded or generation was unstable", 4);
     }
     const auto generation = context.generation();
     const auto initialized_again = context.initialize();
@@ -85,26 +103,37 @@ int main() {
             initialized_again.code != "native-d3d12.context.platform-unavailable" &&
             initialized_again.code != "native-d3d12.context.loader-unavailable" &&
             initialized_again.code != "native-d3d12.context.hardware-unsupported") {
-        return fail("second initialization was not idempotent", 4);
+        return fail("second initialization was not idempotent", 5);
+    }
+
+    auto moved_camera = NativeD3D12RayTracingCamera{};
+    moved_camera.position[2U] = -2.0F;
+    const auto camera_update = context.set_camera(moved_camera);
+    if (!bounded_receipt(camera_update) || !camera_update.camera_ready ||
+        camera_update.camera_schema != native_d3d12_raytracing_camera_schema ||
+        camera_update.camera_fingerprint == 0U ||
+        camera_update.camera_fingerprint == initial.camera_fingerprint ||
+        camera_update.code != "native-d3d12.context.camera-updated") {
+        return fail("valid camera update did not publish a new bounded fingerprint", 6);
     }
 
     const auto attached = context.ensure_scene(triangle_scene());
     if (!bounded_receipt(attached) || !attached.scene_received || !attached.scene_changed ||
         attached.scene_generation != 1U || attached.geometry_count != 1U ||
         attached.instance_count != 1U || attached.scene_revision != 9U) {
-        return fail("valid scene was not retained with a stable scene generation", 5);
+        return fail("valid scene was not retained with a stable scene generation", 7);
     }
     const auto attached_again = context.ensure_scene(triangle_scene());
     if (!bounded_receipt(attached_again) || attached_again.scene_changed ||
         attached_again.scene_generation != attached.scene_generation ||
         context.scene_generation() != 1U) {
-        return fail("unchanged scene was not recognized by its stable fingerprint", 6);
+        return fail("unchanged scene was not recognized by its stable fingerprint", 8);
     }
 
     const bool native_available = initialized.state == NativeD3D12RayTracingContextState::ready &&
         initialized.device_ready && initialized.command_queue_ready && initialized.fence_ready;
     const auto build = context.build_or_update();
-    if (!bounded_receipt(build)) return fail("first AS build receipt was unbounded", 7);
+    if (!bounded_receipt(build)) return fail("first AS build receipt was unbounded", 9);
     if (native_available) {
         if (build.state != NativeD3D12RayTracingContextState::ready || !build.blas_ready ||
             !build.tlas_ready || !build.build_submitted || !build.build_completed ||
@@ -114,32 +143,33 @@ int main() {
             build.blas_scratch_bytes == 0U || build.tlas_result_bytes == 0U ||
             build.tlas_scratch_bytes == 0U ||
             build.code != "native-d3d12.context.as-build-complete") {
-            return fail("persistent BLAS/TLAS build did not complete with truthful resource evidence", 7);
+            return fail("persistent BLAS/TLAS build did not complete with truthful resource evidence", 9);
         }
     } else if (build.state != NativeD3D12RayTracingContextState::unsupported ||
                build.blas_ready || build.tlas_ready || build.build_completed ||
                !build.fallback_active) {
-        return fail("unsupported D3D12 context did not retain an explicit fallback", 7);
+        return fail("unsupported D3D12 context did not retain an explicit fallback", 9);
     }
 
     const auto reused = context.build_or_update();
-    if (!bounded_receipt(reused)) return fail("resource reuse receipt was unbounded", 8);
+    if (!bounded_receipt(reused)) return fail("resource reuse receipt was unbounded", 10);
     if (native_available) {
         if (reused.code != "native-d3d12.context.resources-reused" ||
             !reused.blas_ready || !reused.tlas_ready || reused.build_submitted ||
             reused.update_submitted || reused.resource_generation != build.resource_generation ||
             !reused.synchronization_completed) {
-            return fail("second build did not reuse the persistent AS resources", 8);
+            return fail("second build did not reuse the persistent AS resources", 10);
         }
     } else if (reused.state != NativeD3D12RayTracingContextState::unsupported ||
                !reused.fallback_active) {
-        return fail("unsupported D3D12 context changed fallback state on reuse", 8);
+        return fail("unsupported D3D12 context changed fallback state on reuse", 10);
     }
 
     const auto trace = context.trace();
     if (!bounded_receipt(trace)) return fail("trace receipt was unbounded", 9);
     if (native_available) {
         if (trace.state != NativeD3D12RayTracingContextState::ready ||
+            !trace.camera_ready || trace.camera_shader_consumed ||
             !trace.shader_pipeline_ready || !trace.shader_table_ready ||
             !trace.output_resource_ready || !trace.trace_submitted ||
             !trace.trace_completed || !trace.synchronization_completed ||
@@ -382,21 +412,33 @@ int main() {
         full_frame_options.output_width = 16U;
         full_frame_options.output_height = 2U;
         full_frame_options.shaders.full_frame_contract =
-            "noemancer.native-rt-full-frame/0.1";
+            "noemancer.native-rt-full-frame/0.2";
         full_frame_options.shaders.full_frame_library_dxil = std::move(shader_bytes);
         NativeD3D12RayTracingContext full_frame(full_frame_options);
         const auto full_frame_init = full_frame.initialize();
         if (!bounded_receipt(full_frame_init) ||
             full_frame_init.state != NativeD3D12RayTracingContextState::ready ||
             !full_frame_init.full_frame_shader_ready ||
-            full_frame_init.shader_contract != "noemancer.native-rt-full-frame/0.1") {
+            full_frame_init.shader_contract != "noemancer.native-rt-full-frame/0.2" ||
+            !full_frame_init.camera_ready ||
+            full_frame_init.camera_schema != native_d3d12_raytracing_camera_schema ||
+            full_frame_init.camera_fingerprint == 0U) {
             return fail("versioned full-frame DXR library did not initialize", 19);
+        }
+        auto full_frame_camera = NativeD3D12RayTracingCamera{};
+        full_frame_camera.position[2U] = -2.0F;
+        const auto full_frame_camera_update = full_frame.set_camera(full_frame_camera);
+        if (!bounded_receipt(full_frame_camera_update) ||
+            full_frame_camera_update.code != "native-d3d12.context.camera-updated" ||
+            full_frame_camera_update.camera_fingerprint == full_frame_init.camera_fingerprint) {
+            return fail("full-frame camera update did not publish a new ABI fingerprint", 19);
         }
         const auto full_frame_scene = full_frame.ensure_scene(triangle_scene());
         const auto full_frame_build = full_frame.build_or_update();
         const auto full_frame_trace = full_frame.trace();
         if (!full_frame_scene.scene_received || !full_frame_build.build_completed ||
             !full_frame_trace.trace_completed || !full_frame_trace.full_frame_shader_ready ||
+            !full_frame_trace.camera_ready || !full_frame_trace.camera_shader_consumed ||
             full_frame_trace.output_width != 16U || full_frame_trace.output_height != 2U) {
             return fail("versioned full-frame DXR library did not execute its bounded dispatch", 19);
         }

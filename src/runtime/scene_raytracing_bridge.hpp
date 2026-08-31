@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +39,9 @@ struct SceneRayTracingBridgeRequest final {
     bool enabled{true};
     bool request_trace{true};
     bool request_readback{true};
+    // Project/RenderWorld camera values.  Omission preserves the bounded
+    // legacy probe; production SceneRenderer supplies this every frame.
+    std::optional<NativeRayTracingViewInput> view;
 };
 
 struct SceneRayTracingBridgeReceipt final {
@@ -65,6 +69,12 @@ struct SceneRayTracingBridgeReceipt final {
     bool output_trace_written{};
     bool output_transfer_candidate{};
     bool full_frame_shader_ready{};
+    bool camera_requested{};
+    bool camera_valid{};
+    bool camera_shader_consumed{};
+    std::string camera_id;
+    std::string camera_projection;
+    std::uint64_t camera_fingerprint{};
     std::uint64_t output_resource_generation{};
     std::string output_format;
     std::string shader_contract;

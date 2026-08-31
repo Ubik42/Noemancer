@@ -50,6 +50,11 @@ bool test_vocabulary_and_contract_bounds() {
                    "noemancer.native-rt-full-frame/0.1",
                "full-frame Vulkan shader contract drifted"))
         return false;
+    if (!check(native_vulkan_raytracing_camera_contract ==
+                   "noemancer.native-vulkan-raytracing-camera/0.1" &&
+                   native_vulkan_raytracing_camera_contract_version == 1U,
+               "camera contract drifted"))
+        return false;
     if (!check(native_vulkan_raytracing_context_state_name(
                    NativeVulkanRayTracingContextState::uninitialized) == "uninitialized" &&
                    native_vulkan_raytracing_context_state_name(
@@ -105,6 +110,10 @@ bool test_lifecycle_and_stable_scene_cache() {
                    initialized.resources_live == native &&
                    !initialized.build_submitted && !initialized.build_completed &&
                    !initialized.trace_submitted && !initialized.trace_completed &&
+                   !initialized.camera_requested && !initialized.camera_valid &&
+                   !initialized.camera_shader_consumed && initialized.camera_contract.empty() &&
+                   initialized.camera_contract_version == 0U &&
+                   initialized.camera_boundary == "not-requested" &&
                    initialized.generation == 1U,
                "initialization did not expose an honest native-or-fallback lifecycle receipt"))
         return false;
@@ -196,6 +205,10 @@ bool test_lifecycle_and_stable_scene_cache() {
     if (!check(traced.state == (native ? NativeVulkanRayTracingContextState::ready
                                        : NativeVulkanRayTracingContextState::fallback) &&
                    traced.trace_completed && traced.trace_submitted == native &&
+                   !traced.camera_requested && !traced.camera_valid &&
+                   !traced.camera_shader_consumed && traced.camera_contract.empty() &&
+                   traced.camera_contract_version == 0U &&
+                   traced.camera_boundary == "not-requested" &&
                    traced.full_frame_shader_ready == native &&
                    traced.output_image_trace_written == native &&
                    traced.persistent_backend == native && traced.output_bytes == sizeof(std::uint32_t),
@@ -217,6 +230,23 @@ bool test_lifecycle_and_stable_scene_cache() {
                    readback.full_frame_shader_ready == native &&
                    (!native || readback.shader_contract == "noemancer.native-rt-full-frame/0.1"),
                "trace/readback did not preserve the runtime-private output image boundary"))
+        return false;
+
+    NativeVulkanRayTracingTraceRequest camera_request;
+    camera_request.camera_enabled = true;
+    camera_request.camera.position = {0.0F, 0.5F, -2.0F};
+    camera_request.camera.forward = {0.0F, -0.1F, 1.0F};
+    camera_request.camera.up = {0.0F, 1.0F, 0.1F};
+    const auto camera_trace = context.trace(camera_request);
+    if (!check(camera_trace.state == (native ? NativeVulkanRayTracingContextState::ready
+                                             : NativeVulkanRayTracingContextState::fallback) &&
+                   camera_trace.camera_requested && camera_trace.camera_valid &&
+                   !camera_trace.camera_shader_consumed &&
+                   camera_trace.camera_contract ==
+                       "noemancer.native-vulkan-raytracing-camera/0.1" &&
+                   camera_trace.camera_contract_version == 1U &&
+                   camera_trace.camera_boundary.find("shader not consumed") != std::string::npos,
+               "valid camera input was not accepted with an honest shader-consumption boundary"))
         return false;
 
     const auto generation_before_reuse = context.generation();
@@ -335,6 +365,23 @@ bool test_missing_invalid_and_unsupported_paths() {
                    invalid_trace.code.find("trace-invalid-request") != std::string::npos &&
                    !invalid_trace.trace_completed,
                "zero-length trace direction was accepted"))
+        return false;
+
+    auto invalid_camera_request = NativeVulkanRayTracingTraceRequest{};
+    invalid_camera_request.camera_enabled = true;
+    invalid_camera_request.camera.contract_version = 99U;
+    invalid_camera_request.camera.forward = {0.0F, 0.0F, 0.0F};
+    const auto invalid_camera_trace = valid.trace(invalid_camera_request);
+    if (!check(invalid_camera_trace.state == NativeVulkanRayTracingContextState::error &&
+                   invalid_camera_trace.failure_stage == NativeVulkanRayTracingContextFailureStage::trace &&
+                   invalid_camera_trace.code.find("camera-invalid") != std::string::npos &&
+                   invalid_camera_trace.camera_requested && !invalid_camera_trace.camera_valid &&
+                   !invalid_camera_trace.camera_shader_consumed &&
+                   invalid_camera_trace.camera_contract ==
+                       "noemancer.native-vulkan-raytracing-camera/0.1" &&
+                   invalid_camera_trace.camera_contract_version == 99U &&
+                   invalid_camera_trace.camera_boundary.find("rejected") != std::string::npos,
+               "invalid camera input was not rejected before any trace submission"))
         return false;
 
     NativeVulkanRayTracingContext before_trace;

@@ -288,6 +288,7 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
     result.trace_requested = request.request_trace;
     result.readback_requested = request.request_readback;
     result.requested = request.enabled && request.request_trace;
+    result.camera_requested = request.view.has_value();
     result.cache_state = bounded_text(
         scene_raytracing_geometry_cache_state_name(snapshot.state));
     result.topology_revision = snapshot.topology_revision;
@@ -427,7 +428,7 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
         session_options.d3d12_options.output_height = impl_->options.output_height;
         if (!impl_->options.d3d12_full_frame_library_dxil.empty()) {
             session_options.d3d12_options.shaders.full_frame_contract =
-                "noemancer.native-rt-full-frame/0.1";
+                "noemancer.native-rt-full-frame/0.2";
             session_options.d3d12_options.shaders.full_frame_library_dxil =
                 impl_->options.d3d12_full_frame_library_dxil;
         }
@@ -456,6 +457,24 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
     session_request.session_id = "scene-raytracing-bridge";
     session_request.plan = plan;
     session_request.scene = to_raytracing_context_session_scene(snapshot);
+    if (request.view) {
+        auto view_input = *request.view;
+        view_input.output_width = impl_->options.output_width;
+        view_input.output_height = impl_->options.output_height;
+        session_request.view = build_native_raytracing_view_plan(view_input);
+        result.camera_id = bounded_text(session_request.view->camera_id);
+        result.camera_projection = bounded_text(session_request.view->projection);
+        result.camera_fingerprint = session_request.view->primary_ray_fingerprint;
+        result.camera_valid = session_request.view->valid && session_request.view->supported;
+        if (!result.camera_valid) {
+            result.failed = true;
+            result.code = bounded_text(session_request.view->code);
+            result.detail = bounded_text(session_request.view->detail);
+            set_fallback(result, result.code, result.detail);
+            impl_->last = result;
+            return result;
+        }
+    }
     session_request.run_trace = request.request_trace;
     session_request.run_readback = request.request_readback;
     const auto session_receipt = impl_->session->execute(session_request);
@@ -472,6 +491,11 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
     result.output_trace_written = session_receipt.output_trace_written;
     result.output_transfer_candidate = session_receipt.output_transfer_candidate;
     result.full_frame_shader_ready = session_receipt.full_frame_shader_ready;
+    result.camera_valid = session_receipt.camera_valid;
+    result.camera_shader_consumed = session_receipt.camera_shader_consumed;
+    result.camera_id = session_receipt.camera_id;
+    result.camera_projection = session_receipt.camera_projection;
+    result.camera_fingerprint = session_receipt.camera_fingerprint;
     result.output_resource_generation = session_receipt.output_resource_generation;
     result.output_format = session_receipt.output_format;
     result.shader_contract = session_receipt.shader_contract;

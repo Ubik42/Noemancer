@@ -417,6 +417,13 @@ void initialize_receipt_from_request(
     receipt.frame_generation = request.plan.frame_generation;
     receipt.graph_generation = request.plan.graph_generation;
     receipt.plan_fingerprint = raytracing_render_graph_fingerprint(request.plan);
+    receipt.camera_requested = request.view.has_value();
+    if (request.view) {
+        receipt.camera_valid = request.view->valid && request.view->supported;
+        receipt.camera_id = bounded_text(request.view->camera_id);
+        receipt.camera_projection = bounded_text(request.view->projection);
+        receipt.camera_fingerprint = request.view->primary_ray_fingerprint;
+    }
     receipt.execution_order.reserve(request.plan.execution_order.size());
     for (const auto& id : request.plan.execution_order)
         receipt.execution_order.push_back(bounded_text(id));
@@ -831,6 +838,16 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
         impl_->last = receipt;
         return receipt;
     }
+    if (request.view && (!request.view->valid || !request.view->supported ||
+                         request.view->primary_ray_fingerprint == 0U)) {
+        receipt.failed = true;
+        receipt.camera_valid = false;
+        receipt.code = "session.camera-view-invalid";
+        receipt.detail = "The renderer-neutral camera plan is invalid, unsupported or has no stable ray fingerprint.";
+        receipt.outcome = RayTracingContextSessionOutcome::failure;
+        impl_->last = receipt;
+        return receipt;
+    }
 
     bool has_selected_trace = false;
     for (const auto& pass : receipt.passes) {
@@ -839,6 +856,8 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
     }
     bool has_unmapped_pass = false;
     bool stopped = false;
+    bool vulkan_camera_valid = false;
+    bool vulkan_camera_shader_consumed = false;
     std::size_t stop_index = request.plan.execution_order.size();
 
     if (impl_->options.backend == RayTracingContextSessionBackend::d3d12) {
@@ -849,6 +868,41 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
             stopped = true;
             stop_index = 0U;
         } else {
+            if (request.view) {
+                if (request.view->projection != "perspective") {
+                    receipt.unsupported = true;
+                    receipt.camera_valid = false;
+                    receipt.code = "session.camera-projection-unsupported";
+                    receipt.detail = "The current D3D12 full-frame RayGen ABI accepts perspective project cameras only.";
+                    receipt.outcome = RayTracingContextSessionOutcome::unsupported;
+                    impl_->last = receipt;
+                    return receipt;
+                }
+                NativeD3D12RayTracingCamera camera;
+                camera.position = request.view->basis.position;
+                camera.right = request.view->basis.right;
+                camera.up = request.view->basis.up;
+                camera.forward = request.view->basis.forward;
+                camera.vertical_fov_tan_half =
+                    request.view->primary_ray_parameters.tan_half_fov_y;
+                camera.aspect_ratio = request.view->aspect;
+                camera.near_plane = request.view->near_clip;
+                camera.far_plane = request.view->far_clip;
+                const auto camera_receipt = impl_->d3d12->set_camera(camera);
+                receipt.camera_valid = camera_receipt.camera_ready;
+                if (!camera_receipt.camera_ready) {
+                    receipt.failed = camera_receipt.state ==
+                        NativeD3D12RayTracingContextState::failed;
+                    receipt.unsupported = !receipt.failed;
+                    receipt.code = bounded_text(camera_receipt.code);
+                    receipt.detail = bounded_text(camera_receipt.detail);
+                    receipt.outcome = receipt.failed
+                        ? RayTracingContextSessionOutcome::failure
+                        : RayTracingContextSessionOutcome::unsupported;
+                    impl_->last = receipt;
+                    return receipt;
+                }
+            }
             auto ensure = impl_->d3d12->ensure_scene(make_d3d_scene(request.scene));
             receipt.scene_consumed = ensure.scene_received;
             append_stage(receipt, map_d3d_stage(
@@ -994,7 +1048,20 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
                 trace.direction = request.trace.direction;
                 trace.minimum_distance = request.trace.minimum_distance;
                 trace.maximum_distance = request.trace.maximum_distance;
+                if (request.view) {
+                    trace.camera_enabled = true;
+                    trace.camera.position = request.view->basis.position;
+                    trace.camera.forward = request.view->basis.forward;
+                    trace.camera.up = request.view->basis.up;
+                    trace.camera.vertical_fov_degrees =
+                        2.0F * std::atan(request.view->primary_ray_parameters.tan_half_fov_y) *
+                        57.2957795131F;
+                    trace.camera.near_distance = request.view->near_clip;
+                    trace.camera.far_distance = request.view->far_clip;
+                }
                 const auto native = impl_->vulkan->trace(trace);
+                vulkan_camera_valid = native.camera_valid;
+                vulkan_camera_shader_consumed = native.camera_shader_consumed;
                 append_stage(receipt, map_vulkan_stage(
                     RayTracingContextSessionStageKind::trace, native));
                 mark_pass_from_stage(*pass, receipt.stages.back());
@@ -1044,12 +1111,18 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
         receipt.output_resource_generation = native.output_surface.resource_generation;
         receipt.output_format = native.output_surface.format;
         receipt.shader_contract = native.shader_contract;
+        receipt.camera_valid = request.view && native.camera_ready;
+        receipt.camera_shader_consumed = request.view &&
+            native.camera_shader_consumed;
     } else {
         // Vulkan stage receipts remain the authority until its storage-image
         // output is wired into the session. Borrowed-handle presence alone is
         // deliberately insufficient to promote an interop candidate.
         receipt.shared_device = false;
         receipt.shared_queue = false;
+        receipt.camera_valid = request.view && vulkan_camera_valid;
+        receipt.camera_shader_consumed = request.view &&
+            vulkan_camera_shader_consumed;
     }
     for (auto& pass : receipt.passes)
         if (!pass.selected && pass.code.empty()) pass.code = "session.pass-not-selected";
@@ -1138,6 +1211,12 @@ std::string raytracing_context_session_observation_json(
         {"sceneConsumed", receipt.scene_consumed},
         {"executed", receipt.executed},
         {"nativeReady", receipt.native_ready},
+        {"cameraRequested", receipt.camera_requested},
+        {"cameraValid", receipt.camera_valid},
+        {"cameraShaderConsumed", receipt.camera_shader_consumed},
+        {"cameraId", bounded_text(receipt.camera_id)},
+        {"cameraProjection", bounded_text(receipt.camera_projection)},
+        {"cameraFingerprint", receipt.camera_fingerprint},
         {"sharedDevice", receipt.shared_device},
         {"sharedQueue", receipt.shared_queue},
         {"outputResourceLive", receipt.output_resource_live},

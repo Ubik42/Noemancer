@@ -184,6 +184,95 @@ void sort_scene(NativeD3D12RayTracingScene& scene) {
               });
 }
 
+struct CameraValidation final {
+    bool valid{};
+    std::string code;
+    std::string detail;
+};
+
+float camera_dot(const std::array<float, 3U>& left,
+                 const std::array<float, 3U>& right) noexcept {
+    return left[0U] * right[0U] + left[1U] * right[1U] + left[2U] * right[2U];
+}
+
+std::array<float, 3U> camera_cross(const std::array<float, 3U>& left,
+                                   const std::array<float, 3U>& right) noexcept {
+    return {
+        left[1U] * right[2U] - left[2U] * right[1U],
+        left[2U] * right[0U] - left[0U] * right[2U],
+        left[0U] * right[1U] - left[1U] * right[0U],
+    };
+}
+
+bool camera_vector_finite_bounded(const std::array<float, 3U>& value,
+                                  const float maximum) noexcept {
+    return std::all_of(value.begin(), value.end(), [maximum](const float component) {
+        return std::isfinite(component) && std::abs(component) <= maximum;
+    });
+}
+
+CameraValidation validate_camera(const NativeD3D12RayTracingCamera& camera) {
+    constexpr float maximum_coordinate = 1.0e9F;
+    constexpr float minimum_lens_value = 1.0e-6F;
+    constexpr float maximum_aspect_ratio = 16.0F;
+    constexpr float maximum_fov_tan_half = 100.0F;
+    constexpr float basis_length_tolerance = 0.05F;
+    constexpr float basis_orthogonality_tolerance = 0.05F;
+    constexpr float basis_handedness_minimum = 0.90F;
+
+    if (!camera_vector_finite_bounded(camera.position, maximum_coordinate) ||
+        !camera_vector_finite_bounded(camera.right, maximum_coordinate) ||
+        !camera_vector_finite_bounded(camera.up, maximum_coordinate) ||
+        !camera_vector_finite_bounded(camera.forward, maximum_coordinate)) {
+        return {false, "native-d3d12.context.camera-non-finite",
+                "Camera position and basis components must be finite and bounded."};
+    }
+    if (!std::isfinite(camera.vertical_fov_tan_half) ||
+        camera.vertical_fov_tan_half < minimum_lens_value ||
+        camera.vertical_fov_tan_half > maximum_fov_tan_half ||
+        !std::isfinite(camera.aspect_ratio) || camera.aspect_ratio < minimum_lens_value ||
+        camera.aspect_ratio > maximum_aspect_ratio || !std::isfinite(camera.near_plane) ||
+        !std::isfinite(camera.far_plane) || camera.near_plane < minimum_lens_value ||
+        camera.far_plane <= camera.near_plane || camera.far_plane > maximum_coordinate) {
+        return {false, "native-d3d12.context.camera-lens-invalid",
+                "Camera tan-half-FOV, aspect ratio and near/far planes are out of bounds."};
+    }
+    const auto right_length = std::sqrt(camera_dot(camera.right, camera.right));
+    const auto up_length = std::sqrt(camera_dot(camera.up, camera.up));
+    const auto forward_length = std::sqrt(camera_dot(camera.forward, camera.forward));
+    if (!std::isfinite(right_length) || !std::isfinite(up_length) ||
+        !std::isfinite(forward_length) ||
+        std::abs(right_length - 1.0F) > basis_length_tolerance ||
+        std::abs(up_length - 1.0F) > basis_length_tolerance ||
+        std::abs(forward_length - 1.0F) > basis_length_tolerance ||
+        std::abs(camera_dot(camera.right, camera.up)) > basis_orthogonality_tolerance ||
+        std::abs(camera_dot(camera.right, camera.forward)) > basis_orthogonality_tolerance ||
+        std::abs(camera_dot(camera.up, camera.forward)) > basis_orthogonality_tolerance) {
+        return {false, "native-d3d12.context.camera-basis-invalid",
+                "Camera right/up/forward must be an approximately orthonormal basis."};
+    }
+    const auto expected_forward = camera_cross(camera.right, camera.up);
+    if (camera_dot(expected_forward, camera.forward) < basis_handedness_minimum) {
+        return {false, "native-d3d12.context.camera-handedness-invalid",
+                "Camera basis must be right-handed: right cross up must point along forward."};
+    }
+    return {true, {}, {}};
+}
+
+std::uint64_t camera_signature(const NativeD3D12RayTracingCamera& camera) noexcept {
+    std::uint64_t hash = 14695981039346656037ULL;
+    hash = hash_bytes(hash, camera.position.data(), sizeof(camera.position));
+    hash = hash_bytes(hash, camera.right.data(), sizeof(camera.right));
+    hash = hash_bytes(hash, camera.up.data(), sizeof(camera.up));
+    hash = hash_bytes(hash, camera.forward.data(), sizeof(camera.forward));
+    hash = hash_bytes(hash, &camera.vertical_fov_tan_half,
+                      sizeof(camera.vertical_fov_tan_half));
+    hash = hash_bytes(hash, &camera.aspect_ratio, sizeof(camera.aspect_ratio));
+    hash = hash_bytes(hash, &camera.near_plane, sizeof(camera.near_plane));
+    hash = hash_bytes(hash, &camera.far_plane, sizeof(camera.far_plane));
+    return hash == 0U ? 1U : hash;
+}
+
 #if defined(_WIN32)
 
 using Microsoft::WRL::ComPtr;
@@ -388,6 +477,44 @@ bool fill_upload_buffer(ID3D12Resource* resource, const void* data,
     return true;
 }
 
+// Versioned full-frame camera ABI.  Each member is a float4 so HLSL cbuffer
+// packing is explicit and stable; the upload allocation itself is rounded to
+// D3D12's 256-byte CBV placement alignment.  No matrix transpose convention
+// is involved because RayGen consumes the world-space basis vectors directly.
+struct NativeD3D12RayTracingCameraConstants final {
+    float position[4U];
+    float right[4U];
+    float up[4U];
+    float forward[4U];
+    float lens[4U]; // tan-half vertical FOV, aspect, near, far
+};
+static_assert(sizeof(NativeD3D12RayTracingCameraConstants) == 80U);
+constexpr std::uint64_t native_d3d12_raytracing_camera_constants_bytes =
+    D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+
+bool fill_camera_constants(ID3D12Resource* resource,
+                           const NativeD3D12RayTracingCamera& camera) {
+    if (resource == nullptr) return false;
+    NativeD3D12RayTracingCameraConstants constants{};
+    constants.position[0U] = camera.position[0U];
+    constants.position[1U] = camera.position[1U];
+    constants.position[2U] = camera.position[2U];
+    constants.right[0U] = camera.right[0U];
+    constants.right[1U] = camera.right[1U];
+    constants.right[2U] = camera.right[2U];
+    constants.up[0U] = camera.up[0U];
+    constants.up[1U] = camera.up[1U];
+    constants.up[2U] = camera.up[2U];
+    constants.forward[0U] = camera.forward[0U];
+    constants.forward[1U] = camera.forward[1U];
+    constants.forward[2U] = camera.forward[2U];
+    constants.lens[0U] = camera.vertical_fov_tan_half;
+    constants.lens[1U] = camera.aspect_ratio;
+    constants.lens[2U] = camera.near_plane;
+    constants.lens[3U] = camera.far_plane;
+    return fill_upload_buffer(resource, &constants, sizeof(constants));
+}
+
 #endif
 
 } // namespace
@@ -408,6 +535,11 @@ struct NativeD3D12RayTracingContext::Impl final {
     std::optional<NativeD3D12RayTracingScene> scene;
     std::uint64_t scene_hash{};
     bool scene_dirty{};
+    NativeD3D12RayTracingCamera camera{};
+    bool camera_valid{};
+    bool camera_dirty{true};
+    std::uint64_t camera_fingerprint{};
+    bool camera_shader_consumed{};
     bool native_handles_exposed{};
     std::string device_name;
     std::uint32_t raytracing_tier{};
@@ -473,15 +605,19 @@ struct NativeD3D12RayTracingContext::Impl final {
     ComPtr<ID3D12StateObject> trace_state_object;
     ComPtr<ID3D12StateObjectProperties> trace_state_properties;
     ComPtr<ID3D12Resource> shader_table;
+    ComPtr<ID3D12Resource> camera_constants;
     ComPtr<ID3D12Resource> output_resource;
     ComPtr<ID3D12Resource> output_readback;
     std::uint64_t instance_buffer_bytes{};
     std::uint64_t tlas_result_bytes{};
     std::uint64_t tlas_scratch_bytes{};
     std::uint64_t shader_table_bytes{};
+    std::uint64_t camera_constants_bytes{};
     std::uint64_t output_resource_bytes{};
     bool shader_pipeline_ready{};
     bool shader_table_ready{};
+    bool camera_constants_ready{};
+    bool full_frame_shader_active{};
     bool output_resource_ready{};
     bool last_trace_submitted{};
     bool last_trace_completed{};
@@ -502,7 +638,7 @@ struct NativeD3D12RayTracingContext::Impl final {
 #endif
 
     explicit Impl(NativeD3D12RayTracingContextOptions input)
-        : options(std::move(input)) {
+        : options(std::move(input)), camera(options.camera) {
         if (options.output_width == 0U) options.output_width = 1U;
         if (options.output_height == 0U) options.output_height = 1U;
         options.output_width = std::min(options.output_width, 4096U);
@@ -522,6 +658,9 @@ struct NativeD3D12RayTracingContext::Impl final {
             options.synchronization_policy =
                 NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion;
         }
+        const auto validation = validate_camera(camera);
+        camera_valid = validation.valid;
+        camera_fingerprint = camera_valid ? camera_signature(camera) : 0U;
     }
 };
 
@@ -572,8 +711,12 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.submitted_fence_value = impl.last_submitted_fence_value;
     result.completed_fence_value = impl.last_completed_fence_value;
     result.full_frame_shader_ready =
-        impl.options.shaders.full_frame_contract == "noemancer.native-rt-full-frame/0.1" &&
+        impl.options.shaders.full_frame_contract == "noemancer.native-rt-full-frame/0.2" &&
         !impl.options.shaders.full_frame_library_dxil.empty();
+    result.camera_ready = impl.camera_valid;
+    result.camera_shader_consumed = impl.camera_shader_consumed;
+    result.camera_schema = std::string(native_d3d12_raytracing_camera_schema);
+    result.camera_fingerprint = impl.camera_fingerprint;
     result.shader_contract = result.full_frame_shader_ready
         ? impl.options.shaders.full_frame_contract
         : "noemancer.native-rt-marker-probe/0.1";
@@ -697,10 +840,15 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     detail = "The persistent D3D12 TraceRays pipeline is available only on Windows.";
     return false;
 #else
+    const bool has_full_frame_library =
+        !impl.options.shaders.full_frame_library_dxil.empty() ||
+        !impl.options.shaders.full_frame_contract.empty();
     if (impl.shader_pipeline_ready && impl.shader_table_ready &&
         impl.output_resource_ready && impl.trace_root_signature != nullptr &&
         impl.trace_state_object != nullptr && impl.shader_table != nullptr &&
-        impl.output_resource != nullptr && impl.output_readback != nullptr)
+        impl.output_resource != nullptr && impl.output_readback != nullptr &&
+        (!has_full_frame_library ||
+         (impl.camera_constants_ready && impl.camera_constants != nullptr)))
         return true;
     if (impl.device == nullptr) {
         code = "native-d3d12.context.device-not-ready";
@@ -722,14 +870,11 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
             : "A custom DXIL set must contain all RayGen/Miss/ClosestHit modules; the incomplete set is not guessed or merged.";
         return false;
     }
-    const bool has_full_frame_library =
-        !impl.options.shaders.full_frame_library_dxil.empty() ||
-        !impl.options.shaders.full_frame_contract.empty();
     if (has_full_frame_library &&
-        (impl.options.shaders.full_frame_contract != "noemancer.native-rt-full-frame/0.1" ||
+        (impl.options.shaders.full_frame_contract != "noemancer.native-rt-full-frame/0.2" ||
          impl.options.shaders.full_frame_library_dxil.empty())) {
         code = "native-d3d12.context.full-frame-shader-contract-invalid";
-        detail = "The production DXR library must provide the exact noemancer.native-rt-full-frame/0.1 contract and non-empty pinned DXIL bytes.";
+        detail = "The production DXR library must provide the exact camera-aware noemancer.native-rt-full-frame/0.2 contract and non-empty pinned DXIL bytes.";
         return false;
     }
 
@@ -741,7 +886,7 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
         return false;
     }
 
-    D3D12_ROOT_PARAMETER root_parameters[2U]{};
+    D3D12_ROOT_PARAMETER root_parameters[3U]{};
     root_parameters[0U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     root_parameters[0U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[0U].Descriptor.ShaderRegister = 0U;
@@ -750,8 +895,14 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     root_parameters[1U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[1U].Descriptor.ShaderRegister = 0U;
     root_parameters[1U].Descriptor.RegisterSpace = 0U;
+    if (has_full_frame_library) {
+        root_parameters[2U].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        root_parameters[2U].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        root_parameters[2U].Descriptor.ShaderRegister = 0U;
+        root_parameters[2U].Descriptor.RegisterSpace = 0U;
+    }
     D3D12_ROOT_SIGNATURE_DESC root_signature_description{};
-    root_signature_description.NumParameters = 2U;
+    root_signature_description.NumParameters = has_full_frame_library ? 3U : 2U;
     root_signature_description.pParameters = root_parameters;
     ComPtr<ID3DBlob> root_signature_blob;
     ComPtr<ID3DBlob> root_signature_error;
@@ -859,12 +1010,19 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     const auto output_bytes = static_cast<std::uint64_t>(impl.options.output_width) *
         impl.options.output_height * output_stride_bytes;
     const auto shader_table_bytes = static_cast<std::uint64_t>(shader_table_data.size());
+    const auto camera_constants_bytes = has_full_frame_library
+        ? native_d3d12_raytracing_camera_constants_bytes
+        : 0U;
     if (!resource_bytes_bounded(shader_table_bytes) || !resource_bytes_bounded(output_bytes) ||
+        (has_full_frame_library &&
+         !resource_bytes_bounded(camera_constants_bytes)) ||
         shader_table_bytes > impl.options.max_resource_bytes ||
         output_bytes > impl.options.max_resource_bytes - shader_table_bytes ||
-        output_bytes > impl.options.max_resource_bytes - shader_table_bytes - output_bytes) {
+        output_bytes > impl.options.max_resource_bytes - shader_table_bytes - output_bytes ||
+        camera_constants_bytes > impl.options.max_resource_bytes - shader_table_bytes -
+            output_bytes - output_bytes) {
         code = "native-d3d12.context.trace-resource-budget-exceeded";
-        detail = "Persistent shader-table/output resources exceed the configured D3D12 context budget.";
+        detail = "Persistent shader-table/output/camera resources exceed the configured D3D12 context budget.";
         return false;
     }
     ComPtr<ID3D12Resource> shader_table_resource;
@@ -898,17 +1056,40 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
         detail = "Persistent output readback resource creation failed with " + hresult_hex(hr) + ".";
         return false;
     }
+    ComPtr<ID3D12Resource> camera_constants_resource;
+    if (has_full_frame_library) {
+        hr = create_committed_buffer(
+            impl.device.Get(), camera_constants_bytes, D3D12_HEAP_TYPE_UPLOAD,
+            D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE,
+            camera_constants_resource);
+        if (FAILED(hr) || !camera_constants_resource) {
+            code = "native-d3d12.context.camera-constants-create-failed";
+            detail = "Persistent full-frame camera constant upload creation failed with " +
+                hresult_hex(hr) + ".";
+            return false;
+        }
+        if (!fill_camera_constants(camera_constants_resource.Get(), impl.camera)) {
+            code = "native-d3d12.context.camera-constants-upload-failed";
+            detail = "Persistent full-frame camera constant upload failed.";
+            return false;
+        }
+    }
 
     impl.trace_root_signature = std::move(root_signature);
     impl.trace_state_object = std::move(state_object);
     impl.trace_state_properties = std::move(state_properties);
     impl.shader_table = std::move(shader_table_resource);
+    impl.camera_constants = std::move(camera_constants_resource);
     impl.output_resource = std::move(output_resource);
     impl.output_readback = std::move(output_readback);
     impl.shader_table_bytes = shader_table_bytes;
+    impl.camera_constants_bytes = camera_constants_bytes;
     impl.output_resource_bytes = output_bytes;
     impl.shader_pipeline_ready = true;
     impl.shader_table_ready = true;
+    impl.camera_constants_ready = has_full_frame_library;
+    impl.full_frame_shader_active = has_full_frame_library;
+    impl.camera_dirty = false;
     impl.output_resource_ready = true;
     impl.output_surface_resource_ready = true;
     impl.output_surface_state = NativeD3D12RayTracingOutputSurfaceState::unordered_access;
@@ -920,7 +1101,7 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     impl.output_access_token = impl.next_output_access_token++;
     code = "native-d3d12.context.trace-resources-ready";
     detail = has_full_frame_library
-        ? "The versioned full-frame DXR library, persistent root signature, state object, aligned SBT and UAV/readback resources are ready for TraceRays."
+        ? "The versioned full-frame DXR library, camera CBV, persistent root signature, state object, aligned SBT and UAV/readback resources are ready for TraceRays."
         : "Persistent root signature, marker-probe DXR state object, aligned SBT and UAV/readback resources are ready for TraceRays.";
     return true;
 #endif
@@ -1067,6 +1248,7 @@ std::string_view native_d3d12_raytracing_context_failure_stage_name(
     case NativeD3D12RayTracingContextFailureStage::command_allocator: return "command-allocator";
     case NativeD3D12RayTracingContextFailureStage::command_list: return "command-list";
     case NativeD3D12RayTracingContextFailureStage::fence: return "fence";
+    case NativeD3D12RayTracingContextFailureStage::camera: return "camera";
     case NativeD3D12RayTracingContextFailureStage::scene: return "scene";
     case NativeD3D12RayTracingContextFailureStage::blas: return "blas";
     case NativeD3D12RayTracingContextFailureStage::tlas: return "tlas";
@@ -1133,6 +1315,17 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::initialize() {
                     "Output dimensions must be positive and bounded.");
         return receipt_from(*impl_, "initialize");
     }
+    const auto camera_validation = validate_camera(impl_->camera);
+    if (!camera_validation.valid) {
+        impl_->state = NativeD3D12RayTracingContextState::failed;
+        impl_->camera_valid = false;
+        impl_->camera_fingerprint = 0U;
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::camera,
+                    camera_validation.code, camera_validation.detail);
+        return receipt_from(*impl_, "initialize");
+    }
+    impl_->camera_valid = true;
+    impl_->camera_fingerprint = camera_signature(impl_->camera);
     const auto shader_bytes = static_cast<std::uint64_t>(
         impl_->options.shaders.ray_generation_dxil.size()) +
         static_cast<std::uint64_t>(impl_->options.shaders.miss_dxil.size()) +
@@ -1358,6 +1551,72 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::initialize() {
                 "Persistent D3D12 device, direct queue, command allocator/list and fence are retained; BLAS/TLAS materialization is available while shader/SBT/trace remain separate capability gates.");
     return receipt_from(*impl_, "initialize");
 #endif
+}
+
+NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::set_camera(
+    const NativeD3D12RayTracingCamera& camera) {
+    if (impl_->state == NativeD3D12RayTracingContextState::shutdown) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::cleanup,
+                    "native-d3d12.context.already-shutdown",
+                    "The D3D12 context was shut down; a new camera cannot be attached.");
+        auto result = receipt_from(*impl_, "set-camera");
+        result.state = NativeD3D12RayTracingContextState::shutdown;
+        return result;
+    }
+    const auto validation = validate_camera(camera);
+    if (!validation.valid) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::camera,
+                    validation.code, validation.detail);
+        auto result = receipt_from(*impl_, "set-camera");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        result.fallback_active = false;
+        return result;
+    }
+    if (impl_->state == NativeD3D12RayTracingContextState::uninitialized)
+        static_cast<void>(initialize());
+    if (impl_->state == NativeD3D12RayTracingContextState::shutdown) {
+        save_result(*impl_, NativeD3D12RayTracingContextFailureStage::cleanup,
+                    "native-d3d12.context.already-shutdown",
+                    "The D3D12 context was shut down while initializing the camera.");
+        auto result = receipt_from(*impl_, "set-camera");
+        result.state = NativeD3D12RayTracingContextState::shutdown;
+        return result;
+    }
+    if (impl_->state == NativeD3D12RayTracingContextState::failed) {
+        auto result = receipt_from(*impl_, "set-camera");
+        result.state = NativeD3D12RayTracingContextState::failed;
+        return result;
+    }
+    const auto fingerprint = camera_signature(camera);
+    const bool changed = !impl_->camera_valid || impl_->camera_fingerprint != fingerprint;
+    if (changed) {
+        impl_->camera = camera;
+        impl_->options.camera = camera;
+        impl_->camera_valid = true;
+        impl_->camera_fingerprint = fingerprint;
+        impl_->camera_dirty = true;
+        impl_->camera_shader_consumed = false;
+        // A view produced under the old camera must not remain consumable even
+        // though its scene and persistent AS resources are still reusable.
+        impl_->output_surface_trace_completed = false;
+        impl_->output_access_token = 0U;
+#if defined(_WIN32)
+        impl_->last_trace_completed = false;
+        impl_->last_readback_completed = false;
+        impl_->last_output_copy_submitted = false;
+        impl_->last_output_copy_completed = false;
+#endif
+    }
+    save_result(*impl_, NativeD3D12RayTracingContextFailureStage::none,
+                changed ? "native-d3d12.context.camera-updated"
+                        : "native-d3d12.context.camera-unchanged",
+                changed
+                    ? "The validated world-space camera will be uploaded before the next full-frame TraceRays dispatch."
+                    : "The camera fingerprint is unchanged; the retained camera constants can be reused.");
+    auto result = receipt_from(*impl_, "set-camera");
+    result.state = impl_->state;
+    result.fallback_active = impl_->state == NativeD3D12RayTracingContextState::unsupported;
+    return result;
 }
 
 NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::ensure_scene(
@@ -1942,6 +2201,7 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     impl_->last_trace_completed = false;
     impl_->last_readback_completed = false;
     impl_->output_surface_trace_completed = false;
+    impl_->camera_shader_consumed = false;
     impl_->output_access_token = 0U;
     impl_->last_output_copy_submitted = false;
     impl_->last_output_copy_completed = false;
@@ -1993,6 +2253,20 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
         return result;
     }
 
+    if (impl_->full_frame_shader_active && impl_->camera_dirty) {
+        if (!impl_->camera_valid || impl_->camera_constants == nullptr ||
+            !fill_camera_constants(impl_->camera_constants.Get(), impl_->camera)) {
+            impl_->state = NativeD3D12RayTracingContextState::failed;
+            save_result(*impl_, NativeD3D12RayTracingContextFailureStage::camera,
+                        "native-d3d12.context.camera-constants-upload-failed",
+                        "The validated camera could not be uploaded to the retained full-frame constant buffer.");
+            result = receipt_from(*impl_, "trace");
+            result.state = NativeD3D12RayTracingContextState::failed;
+            return result;
+        }
+        impl_->camera_dirty = false;
+    }
+
     HRESULT hr = impl_->command_allocator->Reset();
     if (FAILED(hr)) {
         impl_->state = NativeD3D12RayTracingContextState::failed;
@@ -2026,6 +2300,10 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
         0U, impl_->tlas_result->GetGPUVirtualAddress());
     impl_->command_list->SetComputeRootUnorderedAccessView(
         1U, impl_->output_resource->GetGPUVirtualAddress());
+    if (impl_->full_frame_shader_active) {
+        impl_->command_list->SetComputeRootConstantBufferView(
+            2U, impl_->camera_constants->GetGPUVirtualAddress());
+    }
     constexpr std::uint32_t shader_record_bytes =
         D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
     D3D12_DISPATCH_RAYS_DESC dispatch{};
@@ -2077,6 +2355,7 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::trace() {
     impl_->last_submitted_fence_value = submitted_fence_value;
     impl_->last_completed_fence_value = completed_fence_value;
     impl_->output_fence_value = submitted_fence_value;
+    impl_->camera_shader_consumed = impl_->full_frame_shader_active;
     impl_->output_in_copy_source = true;
     if (completed_fence_value < submitted_fence_value) {
         // The transition to COPY_SOURCE and the optional readback copy are
@@ -2366,12 +2645,16 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     impl_->trace_state_object.Reset();
     impl_->trace_state_properties.Reset();
     impl_->shader_table.Reset();
+    impl_->camera_constants.Reset();
     impl_->output_resource.Reset();
     impl_->output_readback.Reset();
     impl_->shader_table_bytes = 0U;
+    impl_->camera_constants_bytes = 0U;
     impl_->output_resource_bytes = 0U;
     impl_->shader_pipeline_ready = false;
     impl_->shader_table_ready = false;
+    impl_->camera_constants_ready = false;
+    impl_->full_frame_shader_active = false;
     impl_->output_resource_ready = false;
     impl_->output_surface_resource_ready = false;
     impl_->output_surface_trace_completed = false;
@@ -2391,6 +2674,7 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::shutdown() {
     impl_->output_sentinel = 0U;
     impl_->output_hit = 0U;
     impl_->output_hash = 0U;
+    impl_->camera_shader_consumed = false;
     impl_->command_list.Reset();
     impl_->command_allocator.Reset();
     impl_->command_queue.Reset();

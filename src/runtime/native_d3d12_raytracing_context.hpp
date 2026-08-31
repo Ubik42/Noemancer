@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -23,6 +24,26 @@ inline constexpr std::size_t native_d3d12_raytracing_context_max_index_count = 3
 inline constexpr std::uint64_t native_d3d12_raytracing_context_max_resource_bytes = 1ULL << 40U;
 inline constexpr std::string_view native_d3d12_raytracing_output_surface_schema =
     "noemancer.native-d3d12-raytracing-output-surface/0.1";
+// The camera is a versioned, bounded input to the full-frame shader ABI.  It
+// uses world-space basis vectors rather than a matrix, so there is no hidden
+// row/column-major convention at this boundary: right/up/forward are the
+// directions used directly by RayGen and must form a right-handed orthonormal
+// frame (right x up = forward).  vertical_fov_tan_half is tan(vertical-FOV / 2)
+// and avoids a per-ray trigonometric conversion; the default values preserve
+// the historical marker probe camera.
+inline constexpr std::string_view native_d3d12_raytracing_camera_schema =
+    "noemancer.native-d3d12-raytracing-camera/0.1";
+
+struct NativeD3D12RayTracingCamera final {
+    std::array<float, 3U> position{0.0F, 0.0F, -1.0F};
+    std::array<float, 3U> right{1.0F, 0.0F, 0.0F};
+    std::array<float, 3U> up{0.0F, 1.0F, 0.0F};
+    std::array<float, 3U> forward{0.0F, 0.0F, 1.0F};
+    float vertical_fov_tan_half{1.0F};
+    float aspect_ratio{1.0F};
+    float near_plane{0.001F};
+    float far_plane{1.0e6F};
+};
 
 // The default policy keeps the historical deterministic contract: trace() and
 // output-copy return only after their queue submission has completed.  The
@@ -57,6 +78,7 @@ enum class NativeD3D12RayTracingContextFailureStage : std::uint8_t {
     command_allocator,
     command_list,
     fence,
+    camera,
     scene,
     blas,
     tlas,
@@ -169,6 +191,10 @@ struct NativeD3D12RayTracingContextOptions final {
     std::uint32_t output_height{1U};
     std::size_t max_geometry_count{native_d3d12_raytracing_context_max_geometry_count};
     std::uint64_t max_resource_bytes{native_d3d12_raytracing_context_max_resource_bytes};
+    // Validated once at initialize() and uploadable per frame through
+    // set_camera().  The full-frame DXR contract consumes these constants;
+    // the marker probe deliberately reports camera_shader_consumed=false.
+    NativeD3D12RayTracingCamera camera{};
     NativeD3D12RayTracingSynchronizationPolicy synchronization_policy{
         NativeD3D12RayTracingSynchronizationPolicy::wait_for_completion};
     NativeD3D12RayTracingContextShaderSet shaders;
@@ -238,6 +264,10 @@ struct NativeD3D12RayTracingContextReceipt final {
     bool shared_command_queue{};
     bool output_copy_submitted{};
     bool output_copy_completed{};
+    bool camera_ready{};
+    bool camera_shader_consumed{};
+    std::string camera_schema;
+    std::uint64_t camera_fingerprint{};
     std::string synchronization_policy{"wait-for-completion"};
     bool completion_pending{};
     std::uint64_t submitted_fence_value{};
@@ -285,6 +315,12 @@ public:
         const NativeD3D12RayTracingScene& scene);
     [[nodiscard]] NativeD3D12RayTracingContextReceipt build_or_update();
     [[nodiscard]] NativeD3D12RayTracingContextReceipt trace();
+    // Replace the bounded world-space camera constants without rebuilding the
+    // retained scene/BLAS/TLAS.  The next full-frame trace uploads the values;
+    // a marker-probe trace keeps the values in the receipt but does not claim
+    // shader consumption because that legacy shader has no CBV parameter.
+    [[nodiscard]] NativeD3D12RayTracingContextReceipt set_camera(
+        const NativeD3D12RayTracingCamera& camera);
     // Poll or explicitly wait for the last asynchronous trace/copy submission.
     // The default is non-blocking; pass true at a hand-off boundary where the
     // output resource must be complete before the caller consumes it.

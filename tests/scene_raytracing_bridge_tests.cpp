@@ -136,11 +136,36 @@ bool test_explicit_fallbacks_and_shutdown() {
                  "post-shutdown bridge execution was not rejected safely");
 }
 
+bool test_project_camera_contract_reaches_session() {
+    SceneRayTracingBridge bridge({.output_width = 640U, .output_height = 360U});
+    NativeRayTracingViewInput view;
+    view.camera_id = "camera.project-main";
+    view.camera_revision = 7U;
+    view.position = {2.0F, 3.0F, -5.0F};
+    view.forward = {-0.2F, -0.1F, 1.0F};
+    view.up = {0.0F, 1.0F, 0.0F};
+    view.aspect = 16.0F / 9.0F;
+    view.output_width = 640U;
+    view.output_height = 360U;
+    SceneRayTracingBridgeRequest request;
+    request.backend = "vulkan";
+    request.request_readback = false;
+    request.view = view;
+    const auto receipt = bridge.execute(request, ready_snapshot());
+    return check(receipt.camera_requested && receipt.camera_valid &&
+                     receipt.camera_id == "camera.project-main" &&
+                     receipt.camera_projection == "perspective" &&
+                     receipt.camera_fingerprint != 0U &&
+                     !receipt.camera_shader_consumed,
+                 "project camera did not retain its bounded identity or Vulkan consumption boundary");
+}
+
 } // namespace
 
 int main() {
     if (!test_persistent_frames_and_revision_routing()) return 1;
     if (!test_explicit_fallbacks_and_shutdown()) return 2;
+    if (!test_project_camera_contract_reaches_session()) return 3;
     std::cout << "scene_raytracing_bridge_tests: ok\n";
     return 0;
 }
