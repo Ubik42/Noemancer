@@ -1,0 +1,47 @@
+// noemancer.native-rt-full-frame/0.1
+// Runtime-private DXR library. The Engine/Agent boundary observes only the
+// versioned output metadata and never depends on these native bindings.
+RaytracingAccelerationStructure sceneAccelerationStructure : register(t0);
+RWStructuredBuffer<uint4> outputPixels : register(u0);
+
+struct RayPayload
+{
+    uint hit;
+};
+
+[shader("raygeneration")]
+void RayGen()
+{
+    const uint2 pixel = DispatchRaysIndex().xy;
+    const uint2 dimensions = DispatchRaysDimensions().xy;
+    const float2 uv = ((float2(pixel) + 0.5F) / float2(dimensions)) * 2.0F - 1.0F;
+
+    RayDesc ray;
+    ray.Origin = float3(0.0F, 0.0F, -1.0F);
+    ray.Direction = normalize(float3(uv.x, -uv.y, 1.0F));
+    ray.TMin = 0.001F;
+    ray.TMax = 1000000.0F;
+
+    RayPayload payload;
+    payload.hit = 0U;
+    TraceRay(sceneAccelerationStructure, RAY_FLAG_NONE, 0xFFU, 0U, 1U, 0U, ray, payload);
+
+    const uint linearIndex = pixel.y * dimensions.x + pixel.x;
+    const uint3 missColour = uint3(20U, 25U, 29U);
+    const uint3 hitColour = uint3(190U, 119U, 74U);
+    outputPixels[linearIndex] = uint4(payload.hit != 0U ? hitColour : missColour, 255U);
+}
+
+[shader("miss")]
+void Miss(inout RayPayload payload)
+{
+    payload.hit = 0U;
+}
+
+[shader("closesthit")]
+void ClosestHit(inout RayPayload payload, BuiltInTriangleIntersectionAttributes attributes)
+{
+    payload.hit = 1U;
+}
+
+

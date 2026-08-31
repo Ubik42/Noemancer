@@ -425,6 +425,12 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
         session_options.vulkan_options.output_height = impl_->options.output_height;
         session_options.d3d12_options.output_width = impl_->options.output_width;
         session_options.d3d12_options.output_height = impl_->options.output_height;
+        if (!impl_->options.d3d12_full_frame_library_dxil.empty()) {
+            session_options.d3d12_options.shaders.full_frame_contract =
+                "noemancer.native-rt-full-frame/0.1";
+            session_options.d3d12_options.shaders.full_frame_library_dxil =
+                impl_->options.d3d12_full_frame_library_dxil;
+        }
         if (*parsed_backend == RayTracingContextSessionBackend::d3d12 &&
             impl_->options.native_device.backend == SdlGpuNativeBackend::d3d12 &&
             impl_->options.native_device.complete) {
@@ -465,8 +471,10 @@ SceneRayTracingBridgeReceipt SceneRayTracingBridge::update(
     result.output_resource_live = session_receipt.output_resource_live;
     result.output_trace_written = session_receipt.output_trace_written;
     result.output_transfer_candidate = session_receipt.output_transfer_candidate;
+    result.full_frame_shader_ready = session_receipt.full_frame_shader_ready;
     result.output_resource_generation = session_receipt.output_resource_generation;
     result.output_format = session_receipt.output_format;
+    result.shader_contract = session_receipt.shader_contract;
     if (session_receipt.failed) {
         const auto code = session_receipt.code.empty()
             ? std::string_view{"bridge.backend-failed"}

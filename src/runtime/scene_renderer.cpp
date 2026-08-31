@@ -2908,10 +2908,21 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
             device_,std::max(width_,1U),std::max(height_,1U),native_rt_texture_generation_);
         scene_raytracing_bridge_.reset();
     }
-    if(!scene_raytracing_bridge_)scene_raytracing_bridge_=std::make_unique<SceneRayTracingBridge>(
-        SceneRayTracingBridgeOptions{.allow_fallback=true,.output_width=std::max(width_,1U),
-            .output_height=std::max(height_,1U),.graph_generation=native_rt_texture_generation_,
-            .native_device=sdl_native_device_bridge_.handles});
+    if(!scene_raytracing_bridge_) {
+        std::vector<std::byte> native_rt_dxil;
+        if(backend=="d3d12") {
+            const auto bytes=read_binary(
+                default_shader_artifact_root()/"native_rt_full_frame.lib.dxil");
+            native_rt_dxil.resize(bytes.size());
+            std::transform(bytes.begin(),bytes.end(),native_rt_dxil.begin(),
+                [](const Uint8 value){return static_cast<std::byte>(value);});
+        }
+        scene_raytracing_bridge_=std::make_unique<SceneRayTracingBridge>(
+            SceneRayTracingBridgeOptions{.allow_fallback=true,.output_width=std::max(width_,1U),
+                .output_height=std::max(height_,1U),.graph_generation=native_rt_texture_generation_,
+                .d3d12_full_frame_library_dxil=std::move(native_rt_dxil),
+                .native_device=sdl_native_device_bridge_.handles});
+    }
     // Production rendering keeps the native result on the GPU. The context
     // readback path is a diagnostic proof for controlled fixtures and would
     // otherwise serialize every frame (and mistake a legitimate miss in an
@@ -2935,14 +2946,19 @@ void SceneRenderer::update_native_raytracing_scene(const RenderWorldSnapshot& re
         {"schema",receipt.schema},{"requested",receipt.requested},{"enabled",receipt.enabled},
         {"backend",receipt.backend},{"sceneAccepted",receipt.scene_accepted},{"cacheState",receipt.cache_state},
         {"nativeAsReady",receipt.native_as_ready},{"nativeTraceReady",receipt.native_trace_ready},
-        {"visualPath",receipt.visual_path},{"fallbackCode",receipt.fallback_code},
-        {"fallbackDetail",receipt.fallback_detail},{"planFingerprint",receipt.plan_fingerprint},
+        {"visualPath",receipt.visual_path},
+        {"fallbackCode",transfer.completed?"render-graph-composite-pending":receipt.fallback_code},
+        {"fallbackDetail",transfer.completed?
+            "The versioned full-frame native output reached the SDL texture; project-visible composition and RTGI remain pending.":
+            receipt.fallback_detail},{"planFingerprint",receipt.plan_fingerprint},
         {"planValid",receipt.plan_valid},{"planSupported",receipt.plan_supported},
         {"sessionExecuted",receipt.session_executed},{"failed",receipt.failed},
         {"sharedDevice",receipt.shared_device},{"sharedQueue",receipt.shared_queue},
         {"outputResourceLive",receipt.output_resource_live},
         {"outputTraceWritten",receipt.output_trace_written},
         {"outputTransferCandidate",receipt.output_transfer_candidate},
+        {"fullFrameShaderReady",receipt.full_frame_shader_ready},
+        {"shaderContract",receipt.shader_contract},
         {"outputTransferAttempted",transfer.attempted},
         {"outputTransferCompleted",transfer.completed},
         {"outputTransferCode",transfer.code},

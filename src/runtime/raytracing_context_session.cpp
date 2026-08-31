@@ -1036,11 +1036,14 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
         receipt.shared_device = native.shared_device;
         receipt.shared_queue = native.shared_command_queue;
         receipt.output_resource_live = native.output_surface.resource_ready;
-        receipt.output_trace_written = native.output_surface.gpu_write_complete;
+        receipt.output_trace_written = native.output_surface.gpu_write_complete &&
+            native.full_frame_shader_ready;
         receipt.output_transfer_candidate = native.output_surface.valid &&
             native.output_surface.direct_sdl_gpu_import_supported;
+        receipt.full_frame_shader_ready = native.full_frame_shader_ready;
         receipt.output_resource_generation = native.output_surface.resource_generation;
         receipt.output_format = native.output_surface.format;
+        receipt.shader_contract = native.shader_contract;
     } else {
         // Vulkan stage receipts remain the authority until its storage-image
         // output is wired into the session. Borrowed-handle presence alone is
@@ -1140,8 +1143,10 @@ std::string raytracing_context_session_observation_json(
         {"outputResourceLive", receipt.output_resource_live},
         {"outputTraceWritten", receipt.output_trace_written},
         {"outputTransferCandidate", receipt.output_transfer_candidate},
+        {"fullFrameShaderReady", receipt.full_frame_shader_ready},
         {"outputResourceGeneration", receipt.output_resource_generation},
         {"outputFormat", receipt.output_format},
+        {"shaderContract", bounded_text(receipt.shader_contract)},
         {"fallbackActive", receipt.fallback_active},
         {"unsupported", receipt.unsupported},
         {"failed", receipt.failed},

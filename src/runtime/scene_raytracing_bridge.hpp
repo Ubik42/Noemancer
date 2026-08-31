@@ -25,6 +25,7 @@ struct SceneRayTracingBridgeOptions final {
     std::uint32_t output_width{1U};
     std::uint32_t output_height{1U};
     std::uint64_t graph_generation{1U};
+    std::vector<std::byte> d3d12_full_frame_library_dxil;
     // Runtime-private borrowed SDL_GPU handles. They are consumed only by the
     // selected native context and never copied into a receipt.
     SdlGpuNativeDeviceHandles native_device;
@@ -63,8 +64,10 @@ struct SceneRayTracingBridgeReceipt final {
     bool output_resource_live{};
     bool output_trace_written{};
     bool output_transfer_candidate{};
+    bool full_frame_shader_ready{};
     std::uint64_t output_resource_generation{};
     std::string output_format;
+    std::string shader_contract;
 
     // Additional bounded lifecycle evidence keeps fallback and reuse
     // decisions inspectable without exposing backend objects.

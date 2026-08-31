@@ -135,6 +135,11 @@ struct NativeD3D12RayTracingContextShaderSet final {
     std::vector<std::byte> ray_generation_dxil;
     std::vector<std::byte> miss_dxil;
     std::vector<std::byte> closest_hit_dxil;
+    // Versioned production library containing RayGen, Miss and ClosestHit.
+    // This is loaded from the pinned build artifact by SceneRenderer; the
+    // embedded marker probe remains available only when this vector is empty.
+    std::string full_frame_contract;
+    std::vector<std::byte> full_frame_library_dxil;
 
     [[nodiscard]] bool complete() const noexcept {
         return !ray_generation_dxil.empty() && !miss_dxil.empty() &&
@@ -218,6 +223,8 @@ struct NativeD3D12RayTracingContextReceipt final {
     bool shared_command_queue{};
     bool output_copy_submitted{};
     bool output_copy_completed{};
+    bool full_frame_shader_ready{};
+    std::string shader_contract;
     std::uint64_t generation{};
     std::uint64_t scene_generation{};
     std::uint64_t resource_generation{};

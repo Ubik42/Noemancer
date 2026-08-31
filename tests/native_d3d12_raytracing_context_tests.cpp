@@ -1,8 +1,11 @@
 #include "runtime/native_d3d12_raytracing_context.hpp"
 
 #include <cstdint>
+#include <cstddef>
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -322,6 +325,39 @@ int main() {
     }
 
 #if defined(_WIN32)
+    if (native_available) {
+        std::ifstream shader_input(NOEMANCER_NATIVE_RT_TEST_DXIL,
+                                   std::ios::binary | std::ios::ate);
+        if (!shader_input) return fail("versioned full-frame DXIL was not generated", 19);
+        const auto shader_size = shader_input.tellg();
+        std::vector<std::byte> shader_bytes(static_cast<std::size_t>(shader_size));
+        shader_input.seekg(0);
+        shader_input.read(reinterpret_cast<char*>(shader_bytes.data()), shader_size);
+        noemancer::NativeD3D12RayTracingContextOptions full_frame_options;
+        full_frame_options.output_width = 16U;
+        full_frame_options.output_height = 2U;
+        full_frame_options.shaders.full_frame_contract =
+            "noemancer.native-rt-full-frame/0.1";
+        full_frame_options.shaders.full_frame_library_dxil = std::move(shader_bytes);
+        NativeD3D12RayTracingContext full_frame(full_frame_options);
+        const auto full_frame_init = full_frame.initialize();
+        if (!bounded_receipt(full_frame_init) ||
+            full_frame_init.state != NativeD3D12RayTracingContextState::ready ||
+            !full_frame_init.full_frame_shader_ready ||
+            full_frame_init.shader_contract != "noemancer.native-rt-full-frame/0.1") {
+            return fail("versioned full-frame DXR library did not initialize", 19);
+        }
+        const auto full_frame_scene = full_frame.ensure_scene(triangle_scene());
+        const auto full_frame_build = full_frame.build_or_update();
+        const auto full_frame_trace = full_frame.trace();
+        if (!full_frame_scene.scene_received || !full_frame_build.build_completed ||
+            !full_frame_trace.trace_completed || !full_frame_trace.full_frame_shader_ready ||
+            full_frame_trace.output_width != 16U || full_frame_trace.output_height != 2U) {
+            return fail("versioned full-frame DXR library did not execute its bounded dispatch", 19);
+        }
+        static_cast<void>(full_frame.shutdown());
+    }
+
     NativeD3D12RayTracingContextOptions malformed_borrowed_options;
     malformed_borrowed_options.borrowed_command_queue =
         reinterpret_cast<void*>(static_cast<std::uintptr_t>(1U));
@@ -332,7 +368,7 @@ int main() {
         malformed_borrowed_receipt.code !=
             "native-d3d12.context.borrowed-queue-without-device" ||
         malformed_borrowed_receipt.native_handle_exposed) {
-        return fail("borrowed queue without its device was not rejected at the runtime boundary", 19);
+        return fail("borrowed queue without its device was not rejected at the runtime boundary", 20);
     }
     static_cast<void>(malformed_borrowed.shutdown());
 #endif

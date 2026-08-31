@@ -318,6 +318,14 @@ add_executable(noemancer_native_d3d12_raytracing_context_tests
     ${PROJECT_SOURCE_DIR}/src/runtime/native_d3d12_raytracing_context.cpp)
 target_include_directories(noemancer_native_d3d12_raytracing_context_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src)
+if(TARGET noemancer_shaders)
+    add_dependencies(noemancer_native_d3d12_raytracing_context_tests noemancer_shaders)
+    file(TO_CMAKE_PATH
+        "${PROJECT_BINARY_DIR}/src/runtime/shaders/native_rt_full_frame.lib.dxil"
+        NOEMANCER_NATIVE_RT_TEST_DXIL)
+    target_compile_definitions(noemancer_native_d3d12_raytracing_context_tests PRIVATE
+        NOEMANCER_NATIVE_RT_TEST_DXIL="${NOEMANCER_NATIVE_RT_TEST_DXIL}")
+endif()
 add_test(NAME noemancer.native_d3d12_raytracing_context
     COMMAND noemancer_native_d3d12_raytracing_context_tests)
 

@@ -550,6 +550,12 @@ NativeD3D12RayTracingContextReceipt NativeD3D12RayTracingContext::receipt_from(
     result.shared_command_queue = impl.shared_command_queue;
     result.output_copy_submitted = impl.last_output_copy_submitted;
     result.output_copy_completed = impl.last_output_copy_completed;
+    result.full_frame_shader_ready =
+        impl.options.shaders.full_frame_contract == "noemancer.native-rt-full-frame/0.1" &&
+        !impl.options.shaders.full_frame_library_dxil.empty();
+    result.shader_contract = result.full_frame_shader_ready
+        ? impl.options.shaders.full_frame_contract
+        : "noemancer.native-rt-marker-probe/0.1";
     result.scene_received = impl.scene.has_value();
     if (impl.scene) {
         result.scene_revision = impl.scene->revision;
@@ -695,6 +701,16 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
             : "A custom DXIL set must contain all RayGen/Miss/ClosestHit modules; the incomplete set is not guessed or merged.";
         return false;
     }
+    const bool has_full_frame_library =
+        !impl.options.shaders.full_frame_library_dxil.empty() ||
+        !impl.options.shaders.full_frame_contract.empty();
+    if (has_full_frame_library &&
+        (impl.options.shaders.full_frame_contract != "noemancer.native-rt-full-frame/0.1" ||
+         impl.options.shaders.full_frame_library_dxil.empty())) {
+        code = "native-d3d12.context.full-frame-shader-contract-invalid";
+        detail = "The production DXR library must provide the exact noemancer.native-rt-full-frame/0.1 contract and non-empty pinned DXIL bytes.";
+        return false;
+    }
 
     const auto serialize_root_signature =
         impl.d3d12_module.symbol<SerializeRootSignatureFn>("D3D12SerializeRootSignature");
@@ -736,10 +752,16 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
         return false;
     }
 
-    const std::vector<std::uint8_t> dxil = decode_base64(kDxrProbeDxilBase64);
-    if (dxil.empty() || dxil.size() > impl.options.max_resource_bytes) {
+    const auto embedded_dxil = decode_base64(kDxrProbeDxilBase64);
+    const void* dxil_data = has_full_frame_library
+        ? static_cast<const void*>(impl.options.shaders.full_frame_library_dxil.data())
+        : static_cast<const void*>(embedded_dxil.data());
+    const auto dxil_size = has_full_frame_library
+        ? impl.options.shaders.full_frame_library_dxil.size()
+        : embedded_dxil.size();
+    if (dxil_data == nullptr || dxil_size == 0U || dxil_size > impl.options.max_resource_bytes) {
         code = "native-d3d12.context.dxil-artifact-invalid";
-        detail = "The pinned DXIL probe artifact was empty or exceeded the context resource budget.";
+        detail = "The selected pinned DXIL artifact was empty or exceeded the context resource budget.";
         return false;
     }
     D3D12_EXPORT_DESC exports[3U]{};
@@ -747,8 +769,8 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
     exports[1U].Name = L"Miss";
     exports[2U].Name = L"ClosestHit";
     D3D12_DXIL_LIBRARY_DESC dxil_library{};
-    dxil_library.DXILLibrary.BytecodeLength = dxil.size();
-    dxil_library.DXILLibrary.pShaderBytecode = dxil.data();
+    dxil_library.DXILLibrary.BytecodeLength = dxil_size;
+    dxil_library.DXILLibrary.pShaderBytecode = dxil_data;
     dxil_library.NumExports = 3U;
     dxil_library.pExports = exports;
     D3D12_HIT_GROUP_DESC hit_group{};
@@ -876,7 +898,9 @@ bool NativeD3D12RayTracingContext::ensure_trace_pipeline(
         impl.next_output_access_token = 1U;
     impl.output_access_token = impl.next_output_access_token++;
     code = "native-d3d12.context.trace-resources-ready";
-    detail = "Persistent root signature, DXR state object, aligned SBT and UAV/readback resources are ready for TraceRays.";
+    detail = has_full_frame_library
+        ? "The versioned full-frame DXR library, persistent root signature, state object, aligned SBT and UAV/readback resources are ready for TraceRays."
+        : "Persistent root signature, marker-probe DXR state object, aligned SBT and UAV/readback resources are ready for TraceRays.";
     return true;
 #endif
 }

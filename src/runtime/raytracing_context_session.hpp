@@ -189,8 +189,10 @@ struct RayTracingContextSessionReceipt final {
     bool output_resource_live{};
     bool output_trace_written{};
     bool output_transfer_candidate{};
+    bool full_frame_shader_ready{};
     std::uint64_t output_resource_generation{};
     std::string output_format;
+    std::string shader_contract;
 
     std::uint64_t frame_generation{};
     std::uint64_t graph_generation{};
