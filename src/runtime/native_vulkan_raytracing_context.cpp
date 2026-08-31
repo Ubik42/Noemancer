@@ -42,6 +42,60 @@ constexpr std::uint32_t kMissMarker = 0x4D495353U;
 constexpr std::uint64_t kFnvOffsetBasis = 1469598103934665603ULL;
 constexpr std::uint64_t kFnvPrime = 1099511628211ULL;
 
+#if NOEMANCER_HAS_VULKAN_HEADERS
+// Reused verbatim from the short-lived Vulkan RT executor.  The module has
+// RayGen, Miss and ClosestHit entry points and writes a four-byte marker via
+// set 0 binding 1.  Keeping this bounded fixture embedded makes the context
+// independent from a build-directory shader path.
+constexpr std::array<std::uint32_t, 349U> native_raytracing_probe_spirv{
+    0x07230203U, 0x00010400U, 0x000E0000U, 0x0000002FU, 0x00000000U, 0x00020011U, 0x00001178U, 0x00020011U,
+    0x0000117FU, 0x0006000AU, 0x5F565053U, 0x5F52484BU, 0x5F796172U, 0x72657571U, 0x00000079U, 0x0006000AU,
+    0x5F565053U, 0x5F52484BU, 0x5F796172U, 0x63617274U, 0x00676E69U, 0x0003000EU, 0x00000000U, 0x00000001U,
+    0x0008000FU, 0x000014C1U, 0x00000001U, 0x47796152U, 0x00006E65U, 0x00000002U, 0x00000003U, 0x00000004U,
+    0x0008000FU, 0x000014C5U, 0x00000005U, 0x7373694DU, 0x00000000U, 0x00000002U, 0x00000003U, 0x00000006U,
+    0x0009000FU, 0x000014C4U, 0x00000007U, 0x736F6C43U, 0x48747365U, 0x00007469U, 0x00000002U, 0x00000003U,
+    0x00000008U, 0x00030003U, 0x00000005U, 0x00000276U, 0x00080005U, 0x00000009U, 0x65636361U, 0x6172656CU,
+    0x6E6F6974U, 0x75727453U, 0x72757463U, 0x00564E65U, 0x00040005U, 0x00000002U, 0x6E656353U, 0x00000065U,
+    0x000A0005U, 0x0000000AU, 0x65707974U, 0x5357522EU, 0x63757274U, 0x65727574U, 0x66754264U, 0x2E726566U,
+    0x746E6975U, 0x00000000U, 0x00040005U, 0x00000003U, 0x7074754FU, 0x00007475U, 0x00040005U, 0x0000000BU,
+    0x6C796150U, 0x0064616FU, 0x00040006U, 0x0000000BU, 0x00000000U, 0x00746968U, 0x00030005U, 0x00000004U,
+    0x00000070U, 0x00030005U, 0x00000006U, 0x00000070U, 0x00030005U, 0x00000008U, 0x00000070U, 0x00040005U,
+    0x00000001U, 0x47796152U, 0x00006E65U, 0x00040005U, 0x00000005U, 0x7373694DU, 0x00000000U, 0x00050005U,
+    0x00000007U, 0x736F6C43U, 0x48747365U, 0x00007469U, 0x00040047U, 0x00000004U, 0x0000001EU, 0x00000000U,
+    0x00040047U, 0x00000002U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000002U, 0x00000021U, 0x00000000U,
+    0x00040047U, 0x00000003U, 0x00000022U, 0x00000000U, 0x00040047U, 0x00000003U, 0x00000021U, 0x00000001U,
+    0x00040047U, 0x0000000CU, 0x00000006U, 0x00000004U, 0x00050048U, 0x0000000AU, 0x00000000U, 0x00000023U,
+    0x00000000U, 0x00030047U, 0x0000000AU, 0x00000002U, 0x00040015U, 0x0000000DU, 0x00000020U, 0x00000000U,
+    0x0004002BU, 0x0000000DU, 0x0000000EU, 0x00000000U, 0x00040015U, 0x0000000FU, 0x00000020U, 0x00000001U,
+    0x0004002BU, 0x0000000FU, 0x00000010U, 0x00000000U, 0x00030016U, 0x00000011U, 0x00000020U, 0x0004002BU,
+    0x00000011U, 0x00000012U, 0x00000000U, 0x0004002BU, 0x00000011U, 0x00000013U, 0xC0000000U, 0x00040017U,
+    0x00000014U, 0x00000011U, 0x00000003U, 0x0006002CU, 0x00000014U, 0x00000015U, 0x00000012U, 0x00000012U,
+    0x00000013U, 0x0004002BU, 0x00000011U, 0x00000016U, 0x3F800000U, 0x0006002CU, 0x00000014U, 0x00000017U,
+    0x00000012U, 0x00000012U, 0x00000016U, 0x0004002BU, 0x00000011U, 0x00000018U, 0x41200000U, 0x0004002BU,
+    0x0000000DU, 0x00000019U, 0x000000FFU, 0x0004002BU, 0x0000000DU, 0x0000001AU, 0x00000001U, 0x0004002BU,
+    0x0000000DU, 0x0000001BU, 0x4D495353U, 0x0004002BU, 0x0000000DU, 0x0000001CU, 0x48495421U, 0x000214DDU,
+    0x00000009U, 0x00040020U, 0x0000001DU, 0x00000000U, 0x00000009U, 0x0003001DU, 0x0000000CU, 0x0000000DU,
+    0x0003001EU, 0x0000000AU, 0x0000000CU, 0x00040020U, 0x0000001EU, 0x0000000CU, 0x0000000AU, 0x0003001EU,
+    0x0000000BU, 0x0000000DU, 0x00040020U, 0x0000001FU, 0x000014DAU, 0x0000000BU, 0x00040020U, 0x00000020U,
+    0x000014DEU, 0x0000000BU, 0x00020013U, 0x00000021U, 0x00030021U, 0x00000022U, 0x00000021U, 0x00040020U,
+    0x00000023U, 0x0000000CU, 0x0000000DU, 0x0004003BU, 0x0000001DU, 0x00000002U, 0x00000000U, 0x0004003BU,
+    0x0000001EU, 0x00000003U, 0x0000000CU, 0x0004003BU, 0x0000001FU, 0x00000004U, 0x000014DAU, 0x0004003BU,
+    0x00000020U,
+    0x00000006U, 0x000014DEU, 0x0004003BU, 0x00000020U, 0x00000008U, 0x000014DEU, 0x0004002CU, 0x0000000BU,
+    0x00000024U, 0x0000000EU, 0x0004002CU, 0x0000000BU, 0x00000025U, 0x0000001BU, 0x0004002CU, 0x0000000BU,
+    0x00000026U, 0x0000001CU, 0x00040020U, 0x00000027U, 0x000014DAU, 0x0000000DU, 0x00050036U, 0x00000021U,
+    0x00000001U, 0x00000000U, 0x00000022U, 0x000200F8U, 0x00000028U, 0x0003003EU, 0x00000004U, 0x00000024U,
+    0x0004003DU, 0x00000009U, 0x00000029U, 0x00000002U, 0x000C115DU, 0x00000029U, 0x0000000EU, 0x00000019U,
+    0x0000000EU, 0x0000001AU, 0x0000000EU, 0x00000015U, 0x00000012U, 0x00000017U, 0x00000018U, 0x00000004U,
+    0x00050041U, 0x00000027U, 0x0000002AU, 0x00000004U, 0x0000000EU, 0x0004003DU, 0x0000000DU, 0x0000002BU,
+    0x0000002AU, 0x00060041U, 0x00000023U, 0x0000002CU, 0x00000003U, 0x00000010U, 0x0000000EU, 0x0003003EU,
+    0x0000002CU, 0x0000002BU, 0x000100FDU, 0x00010038U, 0x00050036U, 0x00000021U, 0x00000005U, 0x00000000U,
+    0x00000022U, 0x000200F8U, 0x0000002DU, 0x0003003EU, 0x00000006U, 0x00000025U, 0x000100FDU, 0x00010038U,
+    0x00050036U, 0x00000021U, 0x00000007U, 0x00000000U, 0x00000022U, 0x000200F8U, 0x0000002EU, 0x0003003EU,
+    0x00000008U, 0x00000026U, 0x000100FDU, 0x00010038U,
+};
+#endif
+
 std::string bounded_text(const std::string_view value) {
     return std::string(value.substr(0U, std::min(value.size(), native_vulkan_raytracing_context_max_text_bytes)));
 }
@@ -244,6 +298,22 @@ struct DeviceFunctions final {
     PFN_vkResetFences reset_fences{};
     PFN_vkWaitForFences wait_for_fences{};
     PFN_vkQueueSubmit queue_submit{};
+    PFN_vkCreateShaderModule create_shader_module{};
+    PFN_vkDestroyShaderModule destroy_shader_module{};
+    PFN_vkCreateDescriptorSetLayout create_descriptor_set_layout{};
+    PFN_vkDestroyDescriptorSetLayout destroy_descriptor_set_layout{};
+    PFN_vkCreatePipelineLayout create_pipeline_layout{};
+    PFN_vkDestroyPipelineLayout destroy_pipeline_layout{};
+    PFN_vkCreateDescriptorPool create_descriptor_pool{};
+    PFN_vkDestroyDescriptorPool destroy_descriptor_pool{};
+    PFN_vkAllocateDescriptorSets allocate_descriptor_sets{};
+    PFN_vkUpdateDescriptorSets update_descriptor_sets{};
+    PFN_vkCreateRayTracingPipelinesKHR create_ray_tracing_pipelines{};
+    PFN_vkDestroyPipeline destroy_pipeline{};
+    PFN_vkGetRayTracingShaderGroupHandlesKHR get_ray_tracing_shader_group_handles{};
+    PFN_vkCmdBindPipeline cmd_bind_pipeline{};
+    PFN_vkCmdBindDescriptorSets cmd_bind_descriptor_sets{};
+    PFN_vkCmdTraceRaysKHR cmd_trace_rays{};
 };
 
 struct BufferResource final {
@@ -264,6 +334,8 @@ struct SelectedPhysicalDevice final {
     VkPhysicalDeviceMemoryProperties memory_properties{};
     VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_properties{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_properties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
     std::uint32_t queue_family_index{};
     bool buffer_device_address_extension{};
 };
@@ -318,7 +390,15 @@ bool require_device_functions(const DeviceFunctions& functions) {
            functions.end_command_buffer != nullptr && functions.cmd_pipeline_barrier != nullptr &&
            functions.create_fence != nullptr && functions.destroy_fence != nullptr &&
            functions.reset_fences != nullptr && functions.wait_for_fences != nullptr &&
-           functions.queue_submit != nullptr;
+           functions.queue_submit != nullptr && functions.create_shader_module != nullptr &&
+           functions.destroy_shader_module != nullptr && functions.create_descriptor_set_layout != nullptr &&
+           functions.destroy_descriptor_set_layout != nullptr && functions.create_pipeline_layout != nullptr &&
+           functions.destroy_pipeline_layout != nullptr && functions.create_descriptor_pool != nullptr &&
+           functions.destroy_descriptor_pool != nullptr && functions.allocate_descriptor_sets != nullptr &&
+           functions.update_descriptor_sets != nullptr && functions.create_ray_tracing_pipelines != nullptr &&
+           functions.destroy_pipeline != nullptr && functions.get_ray_tracing_shader_group_handles != nullptr &&
+           functions.cmd_bind_pipeline != nullptr && functions.cmd_bind_descriptor_sets != nullptr &&
+           functions.cmd_trace_rays != nullptr;
 }
 
 bool create_buffer(const DeviceFunctions& functions,
@@ -503,6 +583,8 @@ struct NativeVulkanRayTracingContext::Impl final {
     VkPhysicalDeviceMemoryProperties memory_properties{};
     VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_properties{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_properties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
     std::uint32_t queue_family_index{};
     VkDeviceSize scratch_alignment{256U};
 
@@ -513,15 +595,30 @@ struct NativeVulkanRayTracingContext::Impl final {
     BufferResource tlas_result_buffer;
     BufferResource tlas_scratch_buffer;
     BufferResource output_buffer;
+    BufferResource sbt_buffer;
     AccelerationStructureResource blas;
     AccelerationStructureResource tlas;
     std::uint32_t native_primitive_count{};
     std::size_t native_vertex_bytes{};
     VkDeviceSize blas_scratch_bytes{};
     VkDeviceSize tlas_scratch_bytes{};
+    VkDeviceSize sbt_stride{};
+    VkDeviceSize sbt_bytes{};
+    VkShaderModule shader_module{};
+    VkDescriptorSetLayout descriptor_set_layout{};
+    VkPipelineLayout pipeline_layout{};
+    VkDescriptorPool descriptor_pool{};
+    VkDescriptorSet descriptor_set{};
+    VkPipeline pipeline{};
+    bool trace_pipeline_ready{};
+    bool output_readback_available{};
     bool native_scene_allocated{};
     bool native_scene_dirty{};
     bool native_scene_requires_rebuild{};
+    // Tracks whether the resident native BLAS/TLAS contain the latest scene.
+    // build_completed is an operation receipt and is intentionally cleared by
+    // a cached frame; this bit keeps trace legal across those frame calls.
+    bool native_scene_built{};
 
     explicit Impl(const NativeVulkanRayTracingContextOptions& source) : options(source) {
         options.maximum_triangles = std::min(options.maximum_triangles,
@@ -562,11 +659,41 @@ struct NativeVulkanRayTracingContext::Impl final {
         native_scene_allocated = false;
         native_scene_dirty = false;
         native_scene_requires_rebuild = false;
+        native_scene_built = false;
+    }
+
+    void destroy_trace_objects() noexcept {
+        if (device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE &&
+            device_functions.destroy_pipeline != nullptr)
+            device_functions.destroy_pipeline(device, pipeline, nullptr);
+        pipeline = VK_NULL_HANDLE;
+        if (device != VK_NULL_HANDLE && descriptor_pool != VK_NULL_HANDLE &&
+            device_functions.destroy_descriptor_pool != nullptr)
+            device_functions.destroy_descriptor_pool(device, descriptor_pool, nullptr);
+        descriptor_pool = VK_NULL_HANDLE;
+        descriptor_set = VK_NULL_HANDLE;
+        if (device != VK_NULL_HANDLE && pipeline_layout != VK_NULL_HANDLE &&
+            device_functions.destroy_pipeline_layout != nullptr)
+            device_functions.destroy_pipeline_layout(device, pipeline_layout, nullptr);
+        pipeline_layout = VK_NULL_HANDLE;
+        if (device != VK_NULL_HANDLE && descriptor_set_layout != VK_NULL_HANDLE &&
+            device_functions.destroy_descriptor_set_layout != nullptr)
+            device_functions.destroy_descriptor_set_layout(device, descriptor_set_layout, nullptr);
+        descriptor_set_layout = VK_NULL_HANDLE;
+        if (device != VK_NULL_HANDLE && shader_module != VK_NULL_HANDLE &&
+            device_functions.destroy_shader_module != nullptr)
+            device_functions.destroy_shader_module(device, shader_module, nullptr);
+        shader_module = VK_NULL_HANDLE;
+        destroy_buffer(sbt_buffer);
+        sbt_stride = 0U;
+        sbt_bytes = 0U;
+        trace_pipeline_ready = false;
     }
 
     void destroy_native() noexcept {
         if (device != VK_NULL_HANDLE && device_functions.device_wait_idle != nullptr)
             static_cast<void>(device_functions.device_wait_idle(device));
+        destroy_trace_objects();
         destroy_scene_native();
         destroy_buffer(output_buffer);
         if (device != VK_NULL_HANDLE && fence != VK_NULL_HANDLE && device_functions.destroy_fence != nullptr)
@@ -735,18 +862,24 @@ struct NativeVulkanRayTracingContext::Impl final {
                 if (extension_result != VK_SUCCESS && extension_result != VK_INCOMPLETE) continue;
             }
             if (!has_extension(extensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) ||
-                !has_extension(extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) continue;
+                !has_extension(extensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) ||
+                !has_extension(extensions, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) ||
+                !has_extension(extensions, VK_KHR_SPIRV_1_4_EXTENSION_NAME) ||
+                !has_extension(extensions, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME)) continue;
             VkPhysicalDeviceProperties candidate_properties{};
             instance_functions.get_physical_device_properties(candidate, &candidate_properties);
             const bool bda_extension = has_extension(extensions, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
             if (!bda_extension && candidate_properties.apiVersion < VK_API_VERSION_1_2) continue;
             VkPhysicalDeviceBufferDeviceAddressFeatures bda{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
             VkPhysicalDeviceAccelerationStructureFeaturesKHR as{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+            VkPhysicalDeviceRayTracingPipelineFeaturesKHR ray_pipeline{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+            ray_pipeline.pNext = &as;
             as.pNext = &bda;
             VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-            features.pNext = &as;
+            features.pNext = &ray_pipeline;
             instance_functions.get_physical_device_features2(candidate, &features);
-            if (as.accelerationStructure != VK_TRUE || bda.bufferDeviceAddress != VK_TRUE) continue;
+            if (ray_pipeline.rayTracingPipeline != VK_TRUE || as.accelerationStructure != VK_TRUE ||
+                bda.bufferDeviceAddress != VK_TRUE) continue;
             std::uint32_t family_count = 0U;
             instance_functions.get_physical_device_queue_family_properties(candidate, &family_count, nullptr);
             std::vector<VkQueueFamilyProperties> families(family_count);
@@ -765,7 +898,10 @@ struct NativeVulkanRayTracingContext::Impl final {
             selected.properties = candidate_properties;
             instance_functions.get_physical_device_memory_properties(candidate, &selected.memory_properties);
             VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-            properties2.pNext = &selected.acceleration_properties;
+            selected.ray_tracing_properties = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+            selected.ray_tracing_properties.pNext = &selected.acceleration_properties;
+            properties2.pNext = &selected.ray_tracing_properties;
             instance_functions.get_physical_device_properties2(candidate, &properties2);
             selected.buffer_device_address_extension = bda_extension;
             found = true;
@@ -780,6 +916,7 @@ struct NativeVulkanRayTracingContext::Impl final {
         physical_device = selected.handle;
         memory_properties = selected.memory_properties;
         acceleration_properties = selected.acceleration_properties;
+        ray_tracing_properties = selected.ray_tracing_properties;
         queue_family_index = selected.queue_family_index;
         const float queue_priority = 1.0F;
         VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -788,16 +925,22 @@ struct NativeVulkanRayTracingContext::Impl final {
         queue_info.pQueuePriorities = &queue_priority;
         std::vector<const char*> extensions{
             VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-            VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME};
+            VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+            VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+            VK_KHR_SPIRV_1_4_EXTENSION_NAME,
+            VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME};
         if (selected.buffer_device_address_extension)
             extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
         VkPhysicalDeviceBufferDeviceAddressFeatures enabled_bda{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
         enabled_bda.bufferDeviceAddress = VK_TRUE;
         VkPhysicalDeviceAccelerationStructureFeaturesKHR enabled_as{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
         enabled_as.accelerationStructure = VK_TRUE;
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR enabled_ray_pipeline{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+        enabled_ray_pipeline.rayTracingPipeline = VK_TRUE;
+        enabled_ray_pipeline.pNext = &enabled_as;
         enabled_as.pNext = &enabled_bda;
         VkPhysicalDeviceFeatures2 enabled_features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        enabled_features.pNext = &enabled_as;
+        enabled_features.pNext = &enabled_ray_pipeline;
         VkDeviceCreateInfo device_info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         device_info.pNext = &enabled_features;
         device_info.queueCreateInfoCount = 1U;
@@ -841,6 +984,22 @@ struct NativeVulkanRayTracingContext::Impl final {
         NOEMANCER_LOAD_DEVICE(reset_fences, PFN_vkResetFences, "vkResetFences");
         NOEMANCER_LOAD_DEVICE(wait_for_fences, PFN_vkWaitForFences, "vkWaitForFences");
         NOEMANCER_LOAD_DEVICE(queue_submit, PFN_vkQueueSubmit, "vkQueueSubmit");
+        NOEMANCER_LOAD_DEVICE(create_shader_module, PFN_vkCreateShaderModule, "vkCreateShaderModule");
+        NOEMANCER_LOAD_DEVICE(destroy_shader_module, PFN_vkDestroyShaderModule, "vkDestroyShaderModule");
+        NOEMANCER_LOAD_DEVICE(create_descriptor_set_layout, PFN_vkCreateDescriptorSetLayout, "vkCreateDescriptorSetLayout");
+        NOEMANCER_LOAD_DEVICE(destroy_descriptor_set_layout, PFN_vkDestroyDescriptorSetLayout, "vkDestroyDescriptorSetLayout");
+        NOEMANCER_LOAD_DEVICE(create_pipeline_layout, PFN_vkCreatePipelineLayout, "vkCreatePipelineLayout");
+        NOEMANCER_LOAD_DEVICE(destroy_pipeline_layout, PFN_vkDestroyPipelineLayout, "vkDestroyPipelineLayout");
+        NOEMANCER_LOAD_DEVICE(create_descriptor_pool, PFN_vkCreateDescriptorPool, "vkCreateDescriptorPool");
+        NOEMANCER_LOAD_DEVICE(destroy_descriptor_pool, PFN_vkDestroyDescriptorPool, "vkDestroyDescriptorPool");
+        NOEMANCER_LOAD_DEVICE(allocate_descriptor_sets, PFN_vkAllocateDescriptorSets, "vkAllocateDescriptorSets");
+        NOEMANCER_LOAD_DEVICE(update_descriptor_sets, PFN_vkUpdateDescriptorSets, "vkUpdateDescriptorSets");
+        NOEMANCER_LOAD_DEVICE(create_ray_tracing_pipelines, PFN_vkCreateRayTracingPipelinesKHR, "vkCreateRayTracingPipelinesKHR");
+        NOEMANCER_LOAD_DEVICE(destroy_pipeline, PFN_vkDestroyPipeline, "vkDestroyPipeline");
+        NOEMANCER_LOAD_DEVICE(get_ray_tracing_shader_group_handles, PFN_vkGetRayTracingShaderGroupHandlesKHR, "vkGetRayTracingShaderGroupHandlesKHR");
+        NOEMANCER_LOAD_DEVICE(cmd_bind_pipeline, PFN_vkCmdBindPipeline, "vkCmdBindPipeline");
+        NOEMANCER_LOAD_DEVICE(cmd_bind_descriptor_sets, PFN_vkCmdBindDescriptorSets, "vkCmdBindDescriptorSets");
+        NOEMANCER_LOAD_DEVICE(cmd_trace_rays, PFN_vkCmdTraceRaysKHR, "vkCmdTraceRaysKHR");
 #undef NOEMANCER_LOAD_DEVICE
         if (!require_device_functions(device_functions)) {
             error_code = "native-vulkan-rt.device-entrypoint-unavailable";
@@ -877,13 +1036,281 @@ struct NativeVulkanRayTracingContext::Impl final {
             return false;
         }
         scratch_alignment = std::max<VkDeviceSize>(acceleration_properties.minAccelerationStructureScratchOffsetAlignment, 256U);
-        const std::uint32_t output_marker = 0U;
+        const std::uint32_t output_marker = 0x4E4F5254U; // "NORT" until a trace writes hit/miss.
         if (!create_buffer(device_functions, device, memory_properties, sizeof(output_marker),
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                            &output_marker, sizeof(output_marker), output_buffer, error_code, error_detail))
             return false;
+        const std::array<VkDescriptorSetLayoutBinding, 2U> descriptor_bindings{
+            VkDescriptorSetLayoutBinding{
+                0U, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
+                    VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                nullptr},
+            VkDescriptorSetLayoutBinding{
+                1U, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
+                    VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                nullptr}};
+        VkDescriptorSetLayoutCreateInfo descriptor_layout_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        descriptor_layout_info.bindingCount = static_cast<std::uint32_t>(descriptor_bindings.size());
+        descriptor_layout_info.pBindings = descriptor_bindings.data();
+        if (device_functions.create_descriptor_set_layout(
+                device, &descriptor_layout_info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.create-descriptor-set-layout-failed";
+            error_detail = "vkCreateDescriptorSetLayout failed for the persistent RT resources.";
+            return false;
+        }
+        VkPipelineLayoutCreateInfo pipeline_layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pipeline_layout_info.setLayoutCount = 1U;
+        pipeline_layout_info.pSetLayouts = &descriptor_set_layout;
+        if (device_functions.create_pipeline_layout(
+                device, &pipeline_layout_info, nullptr, &pipeline_layout) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.create-pipeline-layout-failed";
+            error_detail = "vkCreatePipelineLayout failed for the persistent RT pipeline.";
+            return false;
+        }
+        const std::array<VkDescriptorPoolSize, 2U> descriptor_pool_sizes{
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1U},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1U}};
+        VkDescriptorPoolCreateInfo descriptor_pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        descriptor_pool_info.maxSets = 1U;
+        descriptor_pool_info.poolSizeCount = static_cast<std::uint32_t>(descriptor_pool_sizes.size());
+        descriptor_pool_info.pPoolSizes = descriptor_pool_sizes.data();
+        if (device_functions.create_descriptor_pool(
+                device, &descriptor_pool_info, nullptr, &descriptor_pool) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.create-descriptor-pool-failed";
+            error_detail = "vkCreateDescriptorPool failed for the persistent RT resources.";
+            return false;
+        }
+        VkDescriptorSetAllocateInfo descriptor_allocate_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        descriptor_allocate_info.descriptorPool = descriptor_pool;
+        descriptor_allocate_info.descriptorSetCount = 1U;
+        descriptor_allocate_info.pSetLayouts = &descriptor_set_layout;
+        if (device_functions.allocate_descriptor_sets(
+                device, &descriptor_allocate_info, &descriptor_set) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.allocate-descriptor-set-failed";
+            error_detail = "vkAllocateDescriptorSets failed for the persistent RT resources.";
+            return false;
+        }
+        VkShaderModuleCreateInfo shader_module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        shader_module_info.codeSize = native_raytracing_probe_spirv.size() * sizeof(std::uint32_t);
+        shader_module_info.pCode = native_raytracing_probe_spirv.data();
+        if (device_functions.create_shader_module(
+                device, &shader_module_info, nullptr, &shader_module) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.create-shader-module-failed";
+            error_detail = "vkCreateShaderModule failed for the embedded RT probe.";
+            return false;
+        }
+        const std::array<VkPipelineShaderStageCreateInfo, 3U> shader_stages{
+            VkPipelineShaderStageCreateInfo{
+                VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0U,
+                VK_SHADER_STAGE_RAYGEN_BIT_KHR, shader_module, "RayGen", nullptr},
+            VkPipelineShaderStageCreateInfo{
+                VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0U,
+                VK_SHADER_STAGE_MISS_BIT_KHR, shader_module, "Miss", nullptr},
+            VkPipelineShaderStageCreateInfo{
+                VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0U,
+                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, shader_module, "ClosestHit", nullptr}};
+        std::array<VkRayTracingShaderGroupCreateInfoKHR, 3U> shader_groups{};
+        for (auto& group : shader_groups) {
+            group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+            group.generalShader = VK_SHADER_UNUSED_KHR;
+            group.closestHitShader = VK_SHADER_UNUSED_KHR;
+            group.anyHitShader = VK_SHADER_UNUSED_KHR;
+            group.intersectionShader = VK_SHADER_UNUSED_KHR;
+        }
+        shader_groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+        shader_groups[0].generalShader = 0U;
+        shader_groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+        shader_groups[1].generalShader = 1U;
+        shader_groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+        shader_groups[2].closestHitShader = 2U;
+        VkRayTracingPipelineInterfaceCreateInfoKHR pipeline_interface{
+            VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_INTERFACE_CREATE_INFO_KHR};
+        pipeline_interface.maxPipelineRayPayloadSize = sizeof(std::uint32_t);
+        pipeline_interface.maxPipelineRayHitAttributeSize = sizeof(float) * 2U;
+        VkRayTracingPipelineCreateInfoKHR pipeline_info{
+            VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
+        pipeline_info.pNext = &pipeline_interface;
+        pipeline_info.stageCount = static_cast<std::uint32_t>(shader_stages.size());
+        pipeline_info.pStages = shader_stages.data();
+        pipeline_info.groupCount = static_cast<std::uint32_t>(shader_groups.size());
+        pipeline_info.pGroups = shader_groups.data();
+        pipeline_info.maxPipelineRayRecursionDepth = 1U;
+        pipeline_info.layout = pipeline_layout;
+        if (device_functions.create_ray_tracing_pipelines(
+                device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1U, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.create-ray-tracing-pipeline-failed";
+            error_detail = "vkCreateRayTracingPipelinesKHR failed for the persistent RT pipeline.";
+            return false;
+        }
+        const auto handle_size = ray_tracing_properties.shaderGroupHandleSize;
+        const auto handle_alignment = std::max(ray_tracing_properties.shaderGroupHandleAlignment, 1U);
+        const auto base_alignment = std::max(ray_tracing_properties.shaderGroupBaseAlignment, 1U);
+        const auto aligned_handle_size = align_address(handle_size, handle_alignment);
+        sbt_stride = align_address(aligned_handle_size, base_alignment);
+        if (handle_size == 0U || sbt_stride == 0U ||
+            sbt_stride > ray_tracing_properties.maxShaderGroupStride ||
+            sbt_stride > std::numeric_limits<VkDeviceSize>::max() / 3U) {
+            error_code = "native-vulkan-rt.sbt-properties-invalid";
+            error_detail = "The device reported invalid shader-group handle or SBT stride properties.";
+            return false;
+        }
+        sbt_bytes = sbt_stride * 3U;
+        std::vector<std::uint8_t> handles(static_cast<std::size_t>(handle_size) * 3U);
+        if (device_functions.get_ray_tracing_shader_group_handles(
+                device, pipeline, 0U, 3U, handles.size(), handles.data()) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.get-sbt-handles-failed";
+            error_detail = "vkGetRayTracingShaderGroupHandlesKHR failed for the persistent SBT.";
+            return false;
+        }
+        std::vector<std::uint8_t> table(static_cast<std::size_t>(sbt_bytes), 0U);
+        for (std::uint32_t group = 0U; group < 3U; ++group)
+            std::memcpy(table.data() + static_cast<std::size_t>(group * sbt_stride),
+                        handles.data() + static_cast<std::size_t>(group * handle_size), handle_size);
+        if (!create_buffer(device_functions, device, memory_properties, sbt_bytes,
+                           VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           table.data(), table.size(), sbt_buffer, error_code, error_detail)) return false;
+        trace_pipeline_ready = true;
+        return true;
+    }
+
+    bool update_descriptor_bindings(std::string& error_code, std::string& error_detail) {
+        if (descriptor_set == VK_NULL_HANDLE || tlas.acceleration_structure == VK_NULL_HANDLE ||
+            output_buffer.buffer == VK_NULL_HANDLE) {
+            error_code = "native-vulkan-rt.descriptor-resources-missing";
+            error_detail = "The persistent descriptor set has no current TLAS or output buffer.";
+            return false;
+        }
+        VkWriteDescriptorSetAccelerationStructureKHR acceleration_write{
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+        acceleration_write.accelerationStructureCount = 1U;
+        acceleration_write.pAccelerationStructures = &tlas.acceleration_structure;
+        VkDescriptorBufferInfo output_info{output_buffer.buffer, 0U, sizeof(std::uint32_t)};
+        std::array<VkWriteDescriptorSet, 2U> writes{
+            VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+            VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+        writes[0].pNext = &acceleration_write;
+        writes[0].dstSet = descriptor_set;
+        writes[0].dstBinding = 0U;
+        writes[0].descriptorCount = 1U;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        writes[1].dstSet = descriptor_set;
+        writes[1].dstBinding = 1U;
+        writes[1].descriptorCount = 1U;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].pBufferInfo = &output_info;
+        device_functions.update_descriptor_sets(device, static_cast<std::uint32_t>(writes.size()),
+                                                writes.data(), 0U, nullptr);
+        return true;
+    }
+
+    bool record_and_submit_native_trace(std::string& error_code, std::string& error_detail) {
+        if (!trace_pipeline_ready || pipeline == VK_NULL_HANDLE || sbt_buffer.buffer == VK_NULL_HANDLE) {
+            error_code = "native-vulkan-rt.trace-pipeline-unavailable";
+            error_detail = "The persistent Vulkan trace pipeline or SBT is unavailable.";
+            return false;
+        }
+        trace_submitted = false;
+        trace_completed = false;
+        output_readback_available = false;
+        const std::uint32_t sentinel = 0x4E4F5254U;
+        if (!write_buffer(device_functions, device, output_buffer, &sentinel, sizeof(sentinel),
+                          error_code, error_detail)) return false;
+        VkCommandBufferBeginInfo begin_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        if (device_functions.begin_command_buffer(command_buffer, &begin_info) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.begin-trace-command-buffer-failed";
+            error_detail = "vkBeginCommandBuffer failed for the persistent RT trace.";
+            return false;
+        }
+        VkMemoryBarrier as_to_trace{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        as_to_trace.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        as_to_trace.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        device_functions.cmd_pipeline_barrier(
+            command_buffer, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0U, 1U, &as_to_trace,
+            0U, nullptr, 0U, nullptr);
+        VkMemoryBarrier host_to_trace{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        host_to_trace.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        host_to_trace.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        device_functions.cmd_pipeline_barrier(
+            command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0U, 1U, &host_to_trace,
+            0U, nullptr, 0U, nullptr);
+        const VkStridedDeviceAddressRegionKHR raygen_region{
+            sbt_buffer.device_address, sbt_stride, sbt_stride};
+        const VkStridedDeviceAddressRegionKHR miss_region{
+            sbt_buffer.device_address + sbt_stride, sbt_stride, sbt_stride};
+        const VkStridedDeviceAddressRegionKHR hit_region{
+            sbt_buffer.device_address + sbt_stride * 2U, sbt_stride, sbt_stride};
+        const VkStridedDeviceAddressRegionKHR callable_region{};
+        device_functions.cmd_bind_pipeline(command_buffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline);
+        device_functions.cmd_bind_descriptor_sets(command_buffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                                                   pipeline_layout, 0U, 1U, &descriptor_set, 0U, nullptr);
+        device_functions.cmd_trace_rays(command_buffer, &raygen_region, &miss_region, &hit_region,
+                                        &callable_region, 1U, 1U, 1U);
+        VkMemoryBarrier trace_to_host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        trace_to_host.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        trace_to_host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        device_functions.cmd_pipeline_barrier(
+            command_buffer, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            VK_PIPELINE_STAGE_HOST_BIT, 0U, 1U, &trace_to_host,
+            0U, nullptr, 0U, nullptr);
+        if (device_functions.end_command_buffer(command_buffer) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.end-trace-command-buffer-failed";
+            error_detail = "vkEndCommandBuffer failed for the persistent RT trace.";
+            return false;
+        }
+        if (device_functions.reset_fences(device, 1U, &fence) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.reset-trace-fence-failed";
+            error_detail = "vkResetFences failed before the persistent RT trace.";
+            return false;
+        }
+        VkSubmitInfo submit_info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit_info.commandBufferCount = 1U;
+        submit_info.pCommandBuffers = &command_buffer;
+        if (device_functions.queue_submit(queue, 1U, &submit_info, fence) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.trace-submit-failed";
+            error_detail = "vkQueueSubmit failed for the persistent RT trace.";
+            return false;
+        }
+        trace_submitted = true;
+        if (device_functions.wait_for_fences(device, 1U, &fence, VK_TRUE,
+                                             std::numeric_limits<std::uint64_t>::max()) != VK_SUCCESS) {
+            error_code = "native-vulkan-rt.trace-fence-wait-failed";
+            error_detail = "vkWaitForFences failed for the persistent RT trace.";
+            return false;
+        }
+        trace_completed = true;
+        output_readback_available = true;
+        return true;
+    }
+
+    bool read_output(std::string& error_code, std::string& error_detail) {
+        if (!output_readback_available || output_buffer.memory == VK_NULL_HANDLE) {
+            error_code = "native-vulkan-rt.output-readback-unavailable";
+            error_detail = "No completed native RT output is available for readback.";
+            return false;
+        }
+        void* mapped = nullptr;
+        if (device_functions.map_memory(device, output_buffer.memory, 0U, sizeof(std::uint32_t), 0U, &mapped) != VK_SUCCESS ||
+            mapped == nullptr) {
+            error_code = "native-vulkan-rt.output-readback-map-failed";
+            error_detail = "vkMapMemory failed for the persistent RT output.";
+            return false;
+        }
+        std::memcpy(&output_value, mapped, sizeof(output_value));
+        device_functions.unmap_memory(device, output_buffer.memory);
+        output_hash = kFnvOffsetBasis;
+        for (std::size_t index = 0U; index < sizeof(output_value); ++index) {
+            output_hash ^= static_cast<std::uint8_t>((output_value >> (index * 8U)) & 0xffU);
+            output_hash *= kFnvPrime;
+        }
         return true;
     }
 
@@ -982,6 +1409,7 @@ struct NativeVulkanRayTracingContext::Impl final {
         native_scene_allocated = true;
         native_scene_dirty = true;
         native_scene_requires_rebuild = true;
+        if (!update_descriptor_bindings(error_code, error_detail)) return false;
         return true;
     }
 
@@ -1103,6 +1531,7 @@ struct NativeVulkanRayTracingContext::Impl final {
             return false;
         }
         build_completed = true;
+        native_scene_built = true;
         native_scene_dirty = false;
         native_scene_requires_rebuild = false;
         return true;
@@ -1325,6 +1754,9 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::ensure_scene
         impl_->output_value = 0U;
         impl_->output_hash = 0U;
 #if NOEMANCER_HAS_VULKAN_HEADERS
+        impl_->output_readback_available = false;
+#endif
+#if NOEMANCER_HAS_VULKAN_HEADERS
         if (impl_->state == NativeVulkanRayTracingContextState::ready) {
             std::vector<float> vertices;
             vertices.reserve(scene.triangles.size() * 9U);
@@ -1334,6 +1766,7 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::ensure_scene
             std::string error_code;
             std::string error_detail;
             bool native_ok = false;
+            impl_->native_scene_built = false;
             if (topology_changed)
                 native_ok = impl_->allocate_native_scene(vertices, static_cast<std::uint32_t>(scene.triangles.size()),
                                                          error_code, error_detail);
@@ -1438,11 +1871,23 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::trace(
                                 "native-vulkan-rt.context-trace-invalid-request",
                                 "Trace origin, direction and distance range must be finite and bounded.");
 #if NOEMANCER_HAS_VULKAN_HEADERS
-    if (impl_->state == NativeVulkanRayTracingContextState::ready)
-        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
-                              NativeVulkanRayTracingContextFailureStage::pipeline,
-                              "native-vulkan-rt.context-trace-pipeline-unavailable",
-                              "Persistent BLAS/TLAS are live, but this context has no Vulkan RT pipeline or SBT yet; no CPU fallback is substituted.");
+    if (impl_->state == NativeVulkanRayTracingContextState::ready) {
+        if (!impl_->native_scene_built)
+            return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::acceleration_structure,
+                                    "native-vulkan-rt.context-build-missing",
+                                    "build_or_update must complete before a native trace; the resident AS is not built.");
+        std::string error_code;
+        std::string error_detail;
+        if (!impl_->record_and_submit_native_trace(error_code, error_detail)) {
+            impl_->state = NativeVulkanRayTracingContextState::error;
+            return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::trace,
+                                    error_code.empty() ? "native-vulkan-rt.context-trace-failed" : error_code,
+                                    error_detail.empty() ? "The persistent Vulkan RT trace failed." : error_detail);
+        }
+        return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::trace,
+                              "native-vulkan-rt.context-native-trace-completed",
+                              "A persistent Vulkan RT pipeline traced the resident TLAS and completed its fence.");
+    }
 #endif
     const auto origin = to_vec3(request.origin);
     const auto direction = to_vec3(request.direction);
@@ -1474,11 +1919,22 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::readback() {
                               "native-vulkan-rt.context-unsupported",
                               "The persistent Vulkan backend is unsupported and fallback is disabled.");
 #if NOEMANCER_HAS_VULKAN_HEADERS
-    if (impl_->state == NativeVulkanRayTracingContextState::ready)
-        return impl_->receipt(NativeVulkanRayTracingContextState::unsupported,
-                              NativeVulkanRayTracingContextFailureStage::readback,
-                              "native-vulkan-rt.context-readback-pipeline-unavailable",
-                              "No Vulkan RT output pipeline exists in this context slice; no readback is claimed.");
+    if (impl_->state == NativeVulkanRayTracingContextState::ready) {
+        if (!impl_->trace_completed)
+            return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::readback,
+                                    "native-vulkan-rt.context-trace-missing",
+                                    "trace must complete before native readback.");
+        std::string error_code;
+        std::string error_detail;
+        if (!impl_->read_output(error_code, error_detail))
+            return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::readback,
+                                    error_code.empty() ? "native-vulkan-rt.context-readback-failed" : error_code,
+                                    error_detail.empty() ? "The persistent Vulkan output readback failed." : error_detail);
+        impl_->readback_completed = true;
+        return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::readback,
+                              "native-vulkan-rt.context-native-readback-completed",
+                              "The persistent Vulkan RT output marker was read back from host-visible memory.");
+    }
 #endif
     if (!impl_->trace_completed)
         return impl_->not_ready(NativeVulkanRayTracingContextFailureStage::readback,
@@ -1515,6 +1971,9 @@ NativeVulkanRayTracingContextReceipt NativeVulkanRayTracingContext::shutdown() n
     impl_->scene_fingerprint = 0U;
     impl_->output_value = 0U;
     impl_->output_hash = 0U;
+#if NOEMANCER_HAS_VULKAN_HEADERS
+    impl_->output_readback_available = false;
+#endif
     impl_->state = NativeVulkanRayTracingContextState::shutdown;
     return impl_->receipt(impl_->state, NativeVulkanRayTracingContextFailureStage::shutdown,
                           "native-vulkan-rt.context-shutdown-complete",

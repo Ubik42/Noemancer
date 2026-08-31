@@ -77,7 +77,7 @@ Noemancer 不是现成引擎的编辑器外壳。目前仓库已经包含原生 
 
 如果不熟悉 PBR、HiZ、SSR、SSGI、时域降噪或 Tone Mapping，可以阅读[当前开发程度与渲染小白说明](docs/rendering-explained.zh-CN.md)。它按一帧画面的真实加工顺序解释每项功能，也明确区分“已经形成画面”“只有底层基础”和“尚未实现”。
 
-Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vulkan Handle 泄漏进 Scene 或 Agent API。RTX 4080 已在 DXR 1.1 与 Vulkan RT 上真实完成短生命周期的三角形 BLAS、单实例 TLAS、光追 Pipeline、SBT、`1×1×1` Trace Dispatch、GPU 时间戳与 CPU Readback。新的跨帧 Render Graph 规划与统一 session 已接入，两端 context 都会持有并真实构建、更新和复用 BLAS/TLAS；当前 session 在 SBT Pass 明确停止，因此持久 SBT/pipeline/output、项目场景可见光追、RTGI 与商业性能仍不属于现有能力。
+Native Ray Tracing 当前采用独立的 bounded Adapter，而不是把 D3D12/Vulkan Handle 泄漏进 Scene 或 Agent API。RTX 4080 已在 DXR 1.1 与 Vulkan RT 上真实完成三角形 BLAS、单实例 TLAS、光追 Pipeline、SBT、`1×1×1` Trace Dispatch 与 CPU Readback。新的跨帧 Render Graph 规划与统一 session 已接入，两端 context 会跨调用持有并复用 device/queue/command/fence、几何、BLAS/TLAS、Pipeline、SBT、输出与回读资源；`rhi session` 已在两端完成真实 Trace/Readback。引擎也已有稳定几何/Primitive/Instance 身份和 revision 驱动的场景光追几何缓存，但尚未从生产 `SceneRenderer` 填充。当前成果仍是一条射线的有界执行证明，不是项目可见的全帧纹理、RTGI 或商业性能结论。
 
 ### 资产与发布
 
@@ -209,7 +209,7 @@ docs/           架构、ADR、开发计划与验收索引
 
 ## 开发状态
 
-商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的最小光追闭环、统一执行 Receipt、跨帧逻辑资源/Pass 规划和持久 AS context 已经成立；当前正在把 SBT/pipeline/output/readback 迁入持久 context，随后接入生产 Renderer/Render Graph、Raster fallback、项目场景可见输出与 RTGI。当前 `1×1` 探针与 AS session 都不能描述成生产光追画面。
+商业 Raster 的动态天空、共享 HiZ/History、SSR、SSGI、GPU Scene 遮挡决策和阴影扩展决策均已形成双后端证据。Native D3D12/Vulkan 的最小光追闭环、统一执行 Receipt、跨帧逻辑资源/Pass 规划，以及持久 AS/SBT/Pipeline/输出/回读 context 已经成立；当前正在把场景几何缓存和统一 session 接入生产 `SceneRenderer`，并在原生输出尚不能与 SDL_GPU 画面共享时保留明确的 SSGI Raster fallback。随后才是项目可见全帧输出、RTGI、History 与时域降噪；当前 `1×1` session 不能描述成生产光追画面。
 
 仍未完成的产品边界包括：稳定 SDK/插件生态、完整高 DPI 编辑器响应式布局、可再分发 CJK/Arabic 字体、签名安装器、独立机器矩阵、生产网络与跨平台支持。
 

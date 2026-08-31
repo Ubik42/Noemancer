@@ -88,6 +88,11 @@ bool test_lifecycle_and_stable_scene_cache() {
                         initialized.persistent_backend;
     const bool fallback = initialized.state == NativeVulkanRayTracingContextState::fallback &&
                           initialized.fallback_active;
+    std::cout << "native_vulkan_raytracing_context_tests: backend="
+              << (native ? "native" : (fallback ? "fallback" : "error")) << '\n';
+    if (!native)
+        std::cout << "native_vulkan_raytracing_context_tests: init=" << initialized.code
+                  << " detail=" << initialized.detail << '\n';
     if (!check((native || fallback) && initialized.initialized &&
                    initialized.resources_live == native &&
                    !initialized.build_submitted && !initialized.build_completed &&
@@ -105,10 +110,11 @@ bool test_lifecycle_and_stable_scene_cache() {
     std::vector<NativeVulkanRayTracingTriangle> triangles{test_triangle()};
     const auto scene = scene_for(triangles);
     const auto ensured = context.ensure_scene(scene);
-    if (!check(ensured.state == NativeVulkanRayTracingContextState::fallback &&
+    if (!check(ensured.state == (native ? NativeVulkanRayTracingContextState::ready
+                                        : NativeVulkanRayTracingContextState::fallback) &&
                    ensured.scene_ready && ensured.scene_rebuilt && !ensured.scene_updated &&
                    !ensured.scene_reused && ensured.triangle_count == 1U &&
-                   ensured.generation == 2U,
+                   ensured.persistent_backend == native && ensured.generation == 2U,
                "first scene submission did not create a deterministic snapshot"))
         return false;
 
@@ -138,18 +144,21 @@ bool test_lifecycle_and_stable_scene_cache() {
     }
 
     const auto traced = context.trace();
-    if (!check(traced.state == NativeVulkanRayTracingContextState::fallback &&
-                   traced.trace_completed && !traced.trace_submitted &&
-                   traced.output_hit == 1U && traced.output_value == 0x48495421U &&
-                   traced.output_bytes == sizeof(std::uint32_t),
-               "fallback trace did not produce the expected bounded hit marker"))
+    if (!check(traced.state == (native ? NativeVulkanRayTracingContextState::ready
+                                       : NativeVulkanRayTracingContextState::fallback) &&
+                   traced.trace_completed && traced.trace_submitted == native &&
+                   traced.persistent_backend == native && traced.output_bytes == sizeof(std::uint32_t),
+               native ? "native trace did not complete through the persistent pipeline"
+                      : "fallback trace did not complete with an honest receipt"))
         return false;
 
     const auto readback = context.readback();
     if (!check(readback.readback_completed &&
                    readback.readback_bytes == sizeof(std::uint32_t) &&
-                   readback.output_hash != 0U && !readback.persistent_backend,
-               "fallback readback receipt was incomplete or overclaimed native work"))
+                   readback.output_hash != 0U && readback.persistent_backend == native &&
+                   readback.output_hit == 1U && readback.output_value == 0x48495421U,
+               native ? "native output readback did not return the shader hit marker"
+                      : "fallback readback receipt was incomplete or overclaimed native work"))
         return false;
 
     const auto generation_before_reuse = context.generation();
@@ -227,14 +236,21 @@ bool test_missing_invalid_and_unsupported_paths() {
     no_fallback_options.allow_fallback = false;
     NativeVulkanRayTracingContext no_fallback(no_fallback_options);
     const auto unsupported = no_fallback.initialize();
-    if (!check(unsupported.state == NativeVulkanRayTracingContextState::unsupported &&
-                   unsupported.initialized && !unsupported.fallback_active &&
-                   !unsupported.persistent_backend,
-               "fallback-disabled initialization was not explicitly unsupported"))
+    const bool native_without_fallback =
+        unsupported.state == NativeVulkanRayTracingContextState::ready &&
+        unsupported.persistent_backend;
+    const bool explicitly_unsupported =
+        unsupported.state == NativeVulkanRayTracingContextState::unsupported &&
+        !unsupported.fallback_active && !unsupported.persistent_backend;
+    if (!check((native_without_fallback || explicitly_unsupported) && unsupported.initialized,
+               "fallback-disabled initialization was neither native nor explicitly unsupported"))
         return false;
     const auto unsupported_scene = no_fallback.ensure_scene(scene_for(two_triangles));
-    if (!check(unsupported_scene.state == NativeVulkanRayTracingContextState::unsupported,
-               "unsupported context accepted scene work"))
+    if (!check(unsupported_scene.state ==
+                   (native_without_fallback ? NativeVulkanRayTracingContextState::ready
+                                             : NativeVulkanRayTracingContextState::unsupported),
+               native_without_fallback ? "native context rejected scene work"
+                                       : "unsupported context accepted scene work"))
         return false;
 
     std::vector<NativeVulkanRayTracingTriangle> valid_triangles{test_triangle()};

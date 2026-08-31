@@ -116,13 +116,13 @@ struct NativeVulkanRayTracingContextReceipt final {
 };
 
 // A single-owner RAII context boundary for persistent Vulkan RT work.  When
-// the device exposes the required acceleration-structure features, the
-// implementation owns the loader/instance/device/queue/command stream and
-// persistent geometry, BLAS, TLAS, scratch and output resources.  It supports
-// rebuild/update submissions but intentionally stops before a shader pipeline
-// and SBT; trace/readback therefore remain explicit unsupported operations on
-// the native path.  Devices without those capabilities use a deterministic
-// CPU fallback and never project fallback work as `ready`.
+// the device exposes the required acceleration-structure and ray-tracing
+// pipeline features, the implementation owns the loader/instance/device/
+// queue/command stream plus persistent geometry, BLAS, TLAS, scratch,
+// descriptor, pipeline, SBT and output/readback resources.  It supports
+// rebuild/update submissions and separate trace/readback calls while keeping
+// every native handle private to the PImpl.  Devices without those capabilities
+// use a deterministic CPU fallback and never project fallback work as `ready`.
 class NativeVulkanRayTracingContext final {
 public:
     explicit NativeVulkanRayTracingContext(

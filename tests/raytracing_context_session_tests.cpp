@@ -172,11 +172,16 @@ bool test_plan_to_fallback_and_bounded_observation() {
         return false;
 
     const auto second = session.execute(request_for(plan));
-    return check(second.outcome == receipt.outcome &&
-                     second.plan_fingerprint == receipt.plan_fingerprint &&
-                     second.execution_order == receipt.execution_order &&
-                     second.resources.size() == receipt.resources.size(),
-                 "reusing a context session changed the plan projection");
+    const bool reused = second.outcome == receipt.outcome &&
+        second.plan_fingerprint == receipt.plan_fingerprint &&
+        second.execution_order == receipt.execution_order &&
+        second.resources.size() == receipt.resources.size();
+    if (!reused) {
+        std::cerr << "first=" << raytracing_context_session_outcome_name(receipt.outcome)
+                  << " second=" << raytracing_context_session_outcome_name(second.outcome)
+                  << " firstCode=" << receipt.code << " secondCode=" << second.code << '\n';
+    }
+    return check(reused, "reusing a context session changed the plan projection");
 }
 
 bool test_explicit_plan_fallback_and_unsupported() {

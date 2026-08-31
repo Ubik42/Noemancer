@@ -436,7 +436,7 @@ int run_rhi_cli(const int argc,char** argv) {
             {"success",!receipt.failed},{"backend",backend},{"nativeReady",receipt.native_ready},
             {"session",nlohmann::json::parse(noemancer::raytracing_context_session_observation_json(receipt))},
             {"shutdown",nlohmann::json::parse(noemancer::raytracing_context_session_observation_json(shutdown))},
-            {"boundary","The Engine plan reached persistent native BLAS/TLAS. SBT, RT pipeline, visible output and RTGI remain unsupported and are not promoted."}};
+            {"boundary","The Engine plan reached persistent native BLAS/TLAS, SBT, RT pipeline, trace and readback. The bounded output is a one-ray proof, not a project-visible texture or RTGI."}};
         std::cout<<document.dump()<<'\n';return receipt.failed?33:0;
     }
     if(operation=="context") {

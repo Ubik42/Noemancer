@@ -111,7 +111,6 @@ bool is_build_pass(const RayTracingRenderGraphPassKind kind) noexcept {
 
 bool is_context_unmapped_pass(const RayTracingRenderGraphPassKind kind) noexcept {
     switch (kind) {
-    case RayTracingRenderGraphPassKind::build_sbt:
     case RayTracingRenderGraphPassKind::denoise:
     case RayTracingRenderGraphPassKind::resolve:
     case RayTracingRenderGraphPassKind::clear_history:
@@ -119,6 +118,25 @@ bool is_context_unmapped_pass(const RayTracingRenderGraphPassKind kind) noexcept
         return true;
     default:
         return false;
+    }
+}
+
+void resolve_deferred_sbt_passes(
+    RayTracingContextSessionReceipt& receipt,
+    const RayTracingContextSessionStageReceipt& trace_stage) {
+    for (auto& pass : receipt.passes) {
+        if (!pass.selected || pass.kind != RayTracingRenderGraphPassKind::build_sbt ||
+            pass.code != "session.pipeline-deferred-to-trace")
+            continue;
+        pass.attempted = true;
+        pass.completed = trace_stage.completed;
+        pass.native_executed = trace_stage.native_executed;
+        pass.fallback_executed = trace_stage.fallback_executed;
+        pass.unsupported = trace_stage.unsupported;
+        pass.failed = trace_stage.failed;
+        pass.code = trace_stage.completed
+            ? "session.pipeline-and-sbt-ready"
+            : trace_stage.code;
     }
 }
 
@@ -296,9 +314,10 @@ RayTracingContextSessionStageReceipt map_d3d_stage(
     case RayTracingContextSessionStageKind::build:
         result.accepted = native.scene_received && !result.failed &&
             native.state != NativeD3D12RayTracingContextState::shutdown;
-        result.completed = native.build_completed;
-        result.native_executed = native.build_completed && native.blas_ready &&
-            native.tlas_ready && !native.fallback_active;
+        result.completed = native.blas_ready && native.tlas_ready;
+        result.native_executed = result.completed &&
+            native.state == NativeD3D12RayTracingContextState::ready &&
+            !native.fallback_active;
         break;
     case RayTracingContextSessionStageKind::trace:
         result.accepted = native.scene_received && !result.failed &&
@@ -355,8 +374,10 @@ RayTracingContextSessionStageReceipt map_vulkan_stage(
         break;
     case RayTracingContextSessionStageKind::build:
         result.accepted = native.scene_ready && !result.failed && !native.shutdown;
-        result.completed = native.build_completed;
-        result.native_executed = native.build_completed && native.persistent_backend &&
+        result.completed = native.build_completed ||
+            native.code == "native-vulkan-rt.context-native-build-cached";
+        result.native_executed = result.completed && native.persistent_backend &&
+            native.state == NativeVulkanRayTracingContextState::ready &&
             !native.fallback_active;
         break;
     case RayTracingContextSessionStageKind::trace:
@@ -843,10 +864,16 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
                 append_stage(receipt, map_d3d_stage(
                     RayTracingContextSessionStageKind::trace, native));
                 mark_pass_from_stage(*pass, receipt.stages.back());
+                resolve_deferred_sbt_passes(receipt, receipt.stages.back());
                 if (receipt.stages.back().failed || receipt.stages.back().unsupported) {
                     stopped = true;
                     stop_index = index;
                 }
+                continue;
+            }
+            if (planned->kind == RayTracingRenderGraphPassKind::build_sbt) {
+                pass->translated = true;
+                pass->code = "session.pipeline-deferred-to-trace";
                 continue;
             }
             if (is_context_unmapped_pass(planned->kind)) {
@@ -936,10 +963,16 @@ RayTracingContextSessionReceipt RayTracingContextSession::execute(
                 append_stage(receipt, map_vulkan_stage(
                     RayTracingContextSessionStageKind::trace, native));
                 mark_pass_from_stage(*pass, receipt.stages.back());
+                resolve_deferred_sbt_passes(receipt, receipt.stages.back());
                 if (receipt.stages.back().failed || receipt.stages.back().unsupported) {
                     stopped = true;
                     stop_index = index;
                 }
+                continue;
+            }
+            if (planned->kind == RayTracingRenderGraphPassKind::build_sbt) {
+                pass->translated = true;
+                pass->code = "session.pipeline-deferred-to-trace";
                 continue;
             }
             if (is_context_unmapped_pass(planned->kind)) {

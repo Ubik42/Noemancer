@@ -3,7 +3,7 @@
   "updated": "2026-08-30",
   "status": "in-development",
   "currentSlice": "render.native-rhi-raytracing-foundation",
-  "currentStep": "materialize-persistent-d3d12-and-vulkan-sbt-pipeline-output-resources-and-bind-the-session-into-the-production-render-graph",
+  "currentStep": "integrate-scene-raytracing-geometry-cache-and-persistent-session-into-scene-renderer-with-explicit-ssgi-visual-fallback",
   "authority": {
     "architecture": "docs/architecture.md",
     "roadmap": "docs/development-plan.zh-CN.md",
